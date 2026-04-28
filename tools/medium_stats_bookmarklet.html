@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Medium Stats Bookmarklet Helper</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+      margin: 32px;
+      max-width: 900px;
+      color: #1f1f1f;
+    }
+
+    h1 {
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+
+    h2 {
+      font-size: 20px;
+      margin-top: 28px;
+    }
+
+    .bookmarklet {
+      display: inline-block;
+      margin: 12px 0;
+      padding: 10px 14px;
+      border-radius: 6px;
+      background: #111;
+      color: white;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 220px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      padding: 12px;
+    }
+
+    code {
+      background: #f2f2f2;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+
+    li {
+      margin-bottom: 6px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Medium Stats Bookmarklet Helper</h1>
+  <p>
+    This bookmarklet runs only on the page you have already opened in your normal browser.
+    It does not make network requests, does not use automation, and does not save full HTML.
+    It copies only visible article text and public metadata from the current page.
+  </p>
+
+  <h2>Install</h2>
+  <ol>
+    <li>Open this HTML file in your browser.</li>
+    <li>Drag this bookmarklet link to your bookmarks bar:</li>
+  </ol>
+
+  <p><a id="bookmarkletLink" class="bookmarklet" href="#">Medium Stats JSON</a></p>
+
+  <ol start="3">
+    <li>Open a Medium article normally in your browser.</li>
+    <li>Click the <code>Medium Stats JSON</code> bookmarklet.</li>
+    <li>Review or edit claps, responses, and follower counts in the review modal.</li>
+    <li>Press OK so the bookmarklet copies one JSON object to your clipboard.</li>
+    <li>Return to Terminal and import the current clipboard.</li>
+  </ol>
+
+  <h2>Manual Copy</h2>
+  <p>
+    If dragging the link does not work, copy the code below and create a new browser bookmark manually.
+    Paste this code into the bookmark URL/location field.
+  </p>
+  <textarea id="bookmarkletCode" readonly></textarea>
+
+  <script>
+    const bookmarkletSource = `(() => {
+  const source = "bookmarklet_manual_browser";
+  const maxVisibleArticleTextChars = 50000;
+
+  function cleanText(value) {
+    if (value === undefined || value === null) return "";
+    return String(value).replace(/\\s+/g, " ").trim();
+  }
+
+  function sanitizeField(value) {
+    return cleanText(value).replace(/[\\t\\r\\n]+/g, " ");
+  }
+
+  function showCopiedMessage() {
+    window.alert("Medium stats JSON copied.");
+  }
+
+  function copyJsonToClipboard(jsonText) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(jsonText).then(showCopiedMessage).catch(() => {
+        window.prompt("Clipboard copy failed. Copy this JSON manually:", jsonText);
+      });
+    } else {
+      window.prompt("Copy this JSON manually:", jsonText);
+    }
+  }
+
+  function showReviewModal(values, onCopy) {
+    const existing = document.getElementById("medium-stats-review-overlay-v1");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "medium-stats-review-overlay-v1";
+    overlay.style.cssText = [
+      "position:fixed",
+      "inset:0",
+      "z-index:2147483647",
+      "display:flex",
+      "align-items:center",
+      "justify-content:center",
+      "background:rgba(0,0,0,0.55)",
+      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif",
+      "color:#111"
+    ].join(";");
+
+    const modal = document.createElement("div");
+    modal.style.cssText = [
+      "width:min(620px,calc(100vw - 40px))",
+      "background:#fff",
+      "border-radius:14px",
+      "box-shadow:0 24px 80px rgba(0,0,0,0.32)",
+      "overflow:hidden"
+    ].join(";");
+
+    const body = document.createElement("div");
+    body.style.cssText = "padding:32px 36px 28px";
+
+    const titleNode = document.createElement("h2");
+    titleNode.textContent = "Review Medium stats";
+    titleNode.style.cssText = "margin:0 0 12px;font-size:28px;line-height:1.2;font-weight:700;color:#111";
+
+    const helper = document.createElement("p");
+    helper.textContent = "Check the detected values below. Leave a field blank if unavailable, then click Copy JSON.";
+    helper.style.cssText = "margin:0 0 28px;font-size:17px;line-height:1.45;color:#333";
+
+    const form = document.createElement("div");
+    form.style.cssText = "display:grid;grid-template-columns:180px 1fr;gap:18px 18px;align-items:center";
+
+    const fields = [
+      ["claps_raw", "Claps"],
+      ["responses_raw", "Responses"],
+      ["author_followers_raw", "Author followers"],
+      ["publication_followers_raw", "Publication followers"]
+    ];
+    const inputs = {};
+
+    fields.forEach(([key, labelText]) => {
+      const label = document.createElement("label");
+      label.textContent = labelText;
+      label.style.cssText = "font-size:16px;font-weight:650;color:#111";
+
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = values[key] || "";
+      input.placeholder = "optional";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.style.cssText = [
+        "box-sizing:border-box",
+        "width:100%",
+        "height:48px",
+        "padding:0 16px",
+        "border:1px solid #d0d7de",
+        "border-radius:7px",
+        "font-size:16px",
+        "color:#111",
+        "background:#fff",
+        "outline:none"
+      ].join(";");
+      input.addEventListener("focus", () => {
+        input.style.borderColor = "#0969da";
+        input.style.boxShadow = "0 0 0 3px rgba(9,105,218,0.14)";
+      });
+      input.addEventListener("blur", () => {
+        input.style.borderColor = "#d0d7de";
+        input.style.boxShadow = "none";
+      });
+
+      inputs[key] = input;
+      form.appendChild(label);
+      form.appendChild(input);
+    });
+
+    if (values.followerCandidates && values.followerCandidates.length > 0) {
+      const candidateBox = document.createElement("div");
+      candidateBox.style.cssText = [
+        "margin-top:24px",
+        "padding:14px 16px",
+        "border:1px solid #e5e7eb",
+        "border-radius:7px",
+        "background:#fafafa"
+      ].join(";");
+
+      const candidateTitle = document.createElement("div");
+      candidateTitle.textContent = "Detected follower counts:";
+      candidateTitle.style.cssText = "font-size:14px;font-weight:700;color:#111;margin-bottom:8px";
+      candidateBox.appendChild(candidateTitle);
+
+      const list = document.createElement("ul");
+      list.style.cssText = "margin:0;padding-left:18px;font-size:13px;line-height:1.45;color:#333";
+
+      values.followerCandidates.slice(0, 8).forEach((candidate) => {
+        const item = document.createElement("li");
+        item.textContent = candidate;
+        item.style.cssText = "margin:3px 0";
+        list.appendChild(item);
+      });
+
+      candidateBox.appendChild(list);
+      body.appendChild(candidateBox);
+    }
+
+    const note = document.createElement("div");
+    note.textContent = "Info: Article metadata and visible text will be copied automatically.";
+    note.style.cssText = [
+      "margin-top:28px",
+      "padding:14px 16px",
+      "border-radius:7px",
+      "background:#f1f3f5",
+      "font-size:14px",
+      "line-height:1.35",
+      "color:#333"
+    ].join(";");
+
+    body.appendChild(titleNode);
+    body.appendChild(helper);
+    body.appendChild(form);
+    body.appendChild(note);
+
+    const footer = document.createElement("div");
+    footer.style.cssText = [
+      "display:flex",
+      "justify-content:flex-end",
+      "gap:12px",
+      "padding:16px 36px",
+      "border-top:1px solid #e5e7eb",
+      "background:#fff"
+    ].join(";");
+
+    const cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancel";
+    cancelButton.style.cssText = [
+      "height:44px",
+      "padding:0 22px",
+      "border:1px solid #d0d7de",
+      "border-radius:7px",
+      "background:#fff",
+      "color:#111",
+      "font-size:15px",
+      "font-weight:650",
+      "cursor:pointer"
+    ].join(";");
+
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.textContent = "Copy JSON";
+    copyButton.style.cssText = [
+      "height:44px",
+      "padding:0 22px",
+      "border:1px solid #075fc5",
+      "border-radius:7px",
+      "background:#0969da",
+      "color:#fff",
+      "font-size:15px",
+      "font-weight:650",
+      "cursor:pointer"
+    ].join(";");
+
+    function closeModal() {
+      document.removeEventListener("keydown", handleKeydown, true);
+      overlay.remove();
+    }
+
+    function handleKeydown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeModal();
+      }
+    }
+
+    cancelButton.addEventListener("click", closeModal);
+    copyButton.addEventListener("click", () => {
+      const editedValues = {};
+      Object.keys(inputs).forEach((key) => {
+        editedValues[key] = sanitizeField(inputs[key].value);
+      });
+      closeModal();
+      onCopy(editedValues);
+    });
+
+    footer.appendChild(cancelButton);
+    footer.appendChild(copyButton);
+    modal.appendChild(body);
+    modal.appendChild(footer);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", handleKeydown, true);
+
+    setTimeout(() => inputs.claps_raw.focus(), 0);
+  }
+
+  function metaContent(selector) {
+    const node = document.querySelector(selector);
+    return node ? cleanText(node.getAttribute("content")) : "";
+  }
+
+  function jsonLdObjects() {
+    return Array.from(document.querySelectorAll('script[type="application/ld+json"]')).flatMap((node) => {
+      try {
+        const parsed = JSON.parse(node.textContent || "{}");
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch (_) {
+        return [];
+      }
+    });
+  }
+
+  function firstJsonLdValue(paths) {
+    const objects = jsonLdObjects();
+
+    for (const object of objects) {
+      for (const path of paths) {
+        let value = object;
+
+        for (const part of path) {
+          value = value && value[part];
+        }
+
+        if (Array.isArray(value)) value = value[0];
+        if (value && typeof value === "object" && value.name) value = value.name;
+        if (value !== undefined && value !== null && value !== "") return cleanText(value);
+      }
+    }
+
+    return "";
+  }
+
+  function parseCompactNumber(value) {
+    const cleaned = cleanText(value).replace(/,/g, "").replace(/\\s+/g, "").toUpperCase();
+    const match = cleaned.match(/^([0-9]+(?:\\.[0-9]+)?)([KM])?$/);
+    if (!match) return "";
+    const multiplier = match[2] === "K" ? 1000 : match[2] === "M" ? 1000000 : 1;
+    return String(Math.round(Number(match[1]) * multiplier));
+  }
+
+  function textFromSelector(selector) {
+    const node = document.querySelector(selector);
+    if (!node) return "";
+    return cleanText(node.innerText || node.textContent);
+  }
+
+  function canonicalUrl() {
+    return cleanText((document.querySelector('link[rel="canonical"]') || {}).href || "");
+  }
+
+  function cleanUrl(value) {
+    if (!cleanText(value)) return "";
+
+    try {
+      const parsed = new URL(value, window.location.href);
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString();
+    } catch (_) {
+      return cleanText(value).split(/[?#]/)[0];
+    }
+  }
+
+  function textFromVisibleClassName(classText) {
+    const nodes = Array.from(document.querySelectorAll("*"));
+    const found = nodes.find((node) => {
+      const className = typeof node.className === "string" ? node.className : "";
+      return className.includes(classText) && isVisible(node);
+    });
+
+    return found ? cleanText(found.innerText || found.textContent) : "";
+  }
+
+  function compactNumberFromText(value) {
+    const match = cleanText(value).match(/\\b([0-9][0-9,.]*\\s*[KkMm]?)\\b/);
+    return match ? cleanText(match[1]) : "";
+  }
+
+  function nearbyClapNumber() {
+    const clapControls = Array.from(document.querySelectorAll("button, [role='button'], [aria-label], svg"))
+      .filter((node) => {
+        const label = [
+          node.getAttribute && node.getAttribute("aria-label"),
+          node.getAttribute && node.getAttribute("title"),
+          node.innerText,
+          node.textContent,
+          node.outerHTML
+        ].filter(Boolean).join(" ").toLowerCase();
+
+        return /clap|applause|recommend|multi-vote/.test(label);
+      });
+
+    for (const control of clapControls) {
+      const container = control.closest("button, [role='button'], div, section, article") || control.parentElement;
+      const nearbyText = cleanText(container ? container.innerText || container.textContent : "");
+      const nearbyNumber = compactNumberFromText(nearbyText);
+
+      if (nearbyNumber) return nearbyNumber;
+
+      let sibling = container ? container.nextElementSibling : null;
+      for (let i = 0; sibling && i < 3; i += 1) {
+        const siblingNumber = compactNumberFromText(sibling.innerText || sibling.textContent);
+        if (siblingNumber) return siblingNumber;
+        sibling = sibling.nextElementSibling;
+      }
+    }
+
+    return "";
+  }
+
+  function isVisible(node) {
+    if (!(node instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+  }
+
+  function contextText(node, maxDepth) {
+    let current = node;
+
+    for (let depth = 0; current && depth < maxDepth; depth += 1) {
+      const text = cleanText(current.innerText || current.textContent);
+
+      if (text && /followers?/i.test(text) && text.length < 800) {
+        return text;
+      }
+
+      current = current.parentElement;
+    }
+
+    return "";
+  }
+
+  function textIncludesName(text, name) {
+    if (!text || !name) return false;
+    return text.toLowerCase().includes(name.toLowerCase());
+  }
+
+  function followerValueFromText(text) {
+    const match = cleanText(text).match(/\\b([0-9][0-9,.]*\\s*[KkMm]?\\s+followers?)\\b/i);
+    return match ? cleanText(match[1]) : "";
+  }
+
+  function shortFollowerContext(context, value) {
+    const cleaned = cleanText(context);
+    if (!cleaned || !value) return "";
+
+    const publishedMatch = cleaned.match(/Published in\\s+(.{1,90}?)(?:\\s+Follow|\\s+[0-9][0-9,.]*\\s*[KkMm]?\\s+followers?|$)/i);
+    if (publishedMatch && publishedMatch[1]) {
+      return "Published in " + cleanText(publishedMatch[1]) + " - " + value;
+    }
+
+    const writtenMatch = cleaned.match(/Written by\\s+(.{1,90}?)(?:\\s+Follow|\\s+[0-9][0-9,.]*\\s*[KkMm]?\\s+followers?|$)/i);
+    if (writtenMatch && writtenMatch[1]) {
+      return "Written by " + cleanText(writtenMatch[1]) + " - " + value;
+    }
+
+    const followerIndex = cleaned.toLowerCase().indexOf(value.toLowerCase());
+    if (followerIndex >= 0) {
+      const start = Math.max(0, followerIndex - 90);
+      const end = Math.min(cleaned.length, followerIndex + value.length + 30);
+      return cleanText(cleaned.slice(start, end));
+    }
+
+    return value;
+  }
+
+  function followerCountCandidates() {
+    const candidateMap = new Map();
+
+    function addCandidate(value, context) {
+      let cleanedValue = cleanText(value);
+      const cleanedContext = cleanText(context);
+      if (!cleanedValue) return;
+      if (!/followers?/i.test(cleanedValue) && /followers?/i.test(cleanedContext) && /^[0-9][0-9,.]*\\s*[KkMm]?$/i.test(cleanedValue)) {
+        cleanedValue = cleanedValue + " followers";
+      }
+      if (!/followers?/i.test(cleanedValue)) return;
+
+      const label = shortFollowerContext(cleanedContext || cleanedValue, cleanedValue);
+      if (!label) return;
+      candidateMap.set(label.toLowerCase(), label);
+    }
+
+    Array.from(document.querySelectorAll(".pw-follower-count, [class*='pw-follower-count']"))
+      .filter(isVisible)
+      .forEach((node) => {
+        const value = cleanText(node.innerText || node.textContent);
+        addCandidate(value, contextText(node, 8));
+      });
+
+    Array.from(document.querySelectorAll("span, div, p, a"))
+      .filter(isVisible)
+      .forEach((node) => {
+        const text = cleanText(node.innerText || node.textContent);
+        if (!text || text.length > 300 || !/followers?/i.test(text)) return;
+        const value = followerValueFromText(text);
+        if (value) addCandidate(value, text);
+      });
+
+    return Array.from(candidateMap.values());
+  }
+
+  function followerCountsByContext(authorName, publicationName, candidateLabels) {
+    const counts = Array.from(document.querySelectorAll(".pw-follower-count, [class*='pw-follower-count']"))
+      .filter(isVisible)
+      .map((node) => ({
+        value: cleanText(node.innerText || node.textContent),
+        context: contextText(node, 8)
+      }))
+      .filter((item) => item.value);
+
+    let authorFollowers = "";
+    let publicationFollowers = "";
+
+    for (const item of counts) {
+      const context = item.context;
+      const looksAuthor = /written by/i.test(context) && textIncludesName(context, authorName);
+      const looksPublication = /published in/i.test(context) && textIncludesName(context, publicationName);
+
+      if (looksPublication && !looksAuthor && !publicationFollowers) {
+        publicationFollowers = item.value;
+      } else if (looksAuthor && !looksPublication && !authorFollowers) {
+        authorFollowers = item.value;
+      }
+    }
+
+    (candidateLabels || []).forEach((label) => {
+      const value = followerValueFromText(label);
+      if (!value) return;
+
+      const looksAuthor = /^written by/i.test(label) && textIncludesName(label, authorName);
+      const looksPublication = /^published in/i.test(label) && textIncludesName(label, publicationName);
+
+      if (looksPublication && !looksAuthor && !publicationFollowers) {
+        publicationFollowers = value;
+      } else if (looksAuthor && !looksPublication && !authorFollowers) {
+        authorFollowers = value;
+      }
+    });
+
+    return { authorFollowers, publicationFollowers };
+  }
+
+  function isArticleContentNode(node) {
+    if (!isVisible(node)) return false;
+
+    if (node.closest("button, nav, aside, footer, form, [role='button']")) {
+      return false;
+    }
+
+    const classText = typeof node.className === "string" ? node.className : "";
+
+    if (/pw-multi-vote-count|pw-responses-count|pw-follower-count/i.test(classText)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function articleNodeText(node) {
+    const clone = node.cloneNode(true);
+
+    clone.querySelectorAll("button, nav, aside, footer, form, [role='button'], .pw-multi-vote-count, [class*='pw-multi-vote-count'], .pw-responses-count, [class*='pw-responses-count'], .pw-follower-count, [class*='pw-follower-count']").forEach((child) => {
+      child.remove();
+    });
+
+    // Keep <mark> contents: Medium uses marks for real highlighted article text.
+    return cleanText(clone.innerText || clone.textContent);
+  }
+
+  function isUiOrNoiseText(text) {
+    if (!text) return true;
+
+    const compact = cleanText(text);
+    const lower = compact.toLowerCase();
+
+    if (/^\\d+$/.test(compact)) return true;
+    if (/^[0-9][0-9,.]*\\s*[KkMm]?$/.test(compact)) return true;
+    if (/^\\d+\\s*[·•-]\\s*top highlight$/i.test(compact)) return true;
+    if (/top highlight/i.test(compact) && compact.length < 60) return true;
+    if (/^member-only story$/i.test(compact)) return true;
+    if (/^(listen|share|bookmark|save|follow|following|respond|responses?|comments?|claps?|applause|recommend|read more|sign in|sign up)$/i.test(compact)) return true;
+    if (/^\\d+[,.]?\\d*\\s*(followers?|following)$/i.test(compact)) return true;
+    if (/^\\d+\\s+min read$/i.test(compact)) return true;
+    if ((lower.includes("become a member to read this story") || lower.includes("put this story behind our paywall")) && compact.length < 220) return true;
+
+    return false;
+  }
+
+  function visibleArticleText() {
+    const root = document.querySelector("article.meteredContent") || document.querySelector("article");
+    if (!root) return "";
+
+    const stopPattern = /become a member to read this story|put this story behind our paywall|upgrade to read|sign up to read|sign in to read/i;
+    const nodes = Array.from(root.querySelectorAll("h1, h2, h3, h4, p, blockquote, figcaption, li"));
+    const parts = [];
+
+    for (const node of nodes) {
+      if (!isArticleContentNode(node)) continue;
+      const text = articleNodeText(node);
+      if (!text) continue;
+      if (stopPattern.test(text)) break;
+      if (isUiOrNoiseText(text)) continue;
+      parts.push(text);
+    }
+
+    return cleanText(Array.from(new Set(parts)).join("\\n\\n"));
+  }
+
+  function wordCount(text) {
+    const words = cleanText(text).match(/\\b[\\p{L}\\p{N}'’-]+\\b/gu);
+    return words ? words.length : 0;
+  }
+
+  function visibleCandidates() {
+    const nodes = Array.from(document.querySelectorAll("button, a, [role='button'], [aria-label], [title]"));
+    const controlText = nodes
+      .filter(isVisible)
+      .flatMap((node) => [
+        node.innerText,
+        node.textContent,
+        node.getAttribute("aria-label"),
+        node.getAttribute("title")
+      ]);
+
+    const bodyLines = cleanText(document.body ? document.body.innerText : "")
+      .split(/(?<=\\D)\\s+(?=\\d|clap|applause|recommend|response|comment|respond)/i)
+      .filter((line) => /clap|applause|recommend|response|comment|respond/i.test(line));
+
+    return Array.from(new Set(controlText.concat(bodyLines).map(cleanText).filter(Boolean)));
+  }
+
+  function findRaw(candidates, patterns) {
+    for (const candidate of candidates) {
+      if (/followers?|following|read|min read|published|updated|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/i.test(candidate)) {
+        continue;
+      }
+
+      for (const pattern of patterns) {
+        const match = candidate.match(pattern);
+        if (match && match[1]) return cleanText(match[1]);
+      }
+    }
+    return "";
+  }
+
+  const numberPattern = "([0-9][0-9,.]*\\\\s*[KkMm]?)";
+  const candidates = visibleCandidates();
+
+  const targetedClapsRaw =
+    textFromSelector(".pw-multi-vote-count") ||
+    textFromSelector('[class*="pw-multi-vote-count"]') ||
+    textFromVisibleClassName("pw-multi-vote-count") ||
+    nearbyClapNumber();
+  const targetedResponsesRaw =
+    textFromSelector(".pw-responses-count") ||
+    textFromSelector('[class*="pw-responses-count"]') ||
+    textFromVisibleClassName("pw-responses-count");
+
+  const fallbackClapsRaw = findRaw(candidates, [
+    new RegExp(numberPattern + "\\\\s+(?:claps?|applause|recommends?|recommendations?)\\\\b", "i"),
+    new RegExp("\\\\b(?:claps?|applause|recommends?|recommendations?)\\\\b\\\\D{0,60}" + numberPattern, "i"),
+    new RegExp("\\\\b(?:clap|recommend)\\\\b[^\\\\n]{0,90}\\\\b" + numberPattern + "\\\\b", "i")
+  ]);
+
+  const fallbackResponsesRaw = findRaw(candidates, [
+    new RegExp(numberPattern + "\\\\s+(?:responses?|comments?)\\\\b", "i"),
+    new RegExp("\\\\b(?:responses?|comments?)\\\\b\\\\D{0,60}" + numberPattern, "i"),
+    new RegExp("\\\\b(?:respond|response|comment)\\\\b[^\\\\n]{0,90}\\\\b" + numberPattern + "\\\\b", "i")
+  ]);
+
+  const clapsRaw = targetedClapsRaw || fallbackClapsRaw;
+  const responsesRaw = targetedResponsesRaw || fallbackResponsesRaw;
+  const title =
+    textFromSelector(".pw-post-title") ||
+    metaContent('meta[property="og:title"]') ||
+    cleanText(document.title);
+  const subtitle =
+    textFromSelector(".pw-subtitle-paragraph") ||
+    metaContent('meta[property="og:description"]') ||
+    metaContent('meta[name="description"]');
+  const author =
+    textFromSelector('[data-testid="authorName"]') ||
+    metaContent('meta[name="author"]') ||
+    firstJsonLdValue([["author", "name"], ["creator", "name"]]);
+  const publication = firstJsonLdValue([["publisher", "name"], ["isPartOf", "name"]]);
+  const publishedDate =
+    textFromSelector('[data-testid="storyPublishDate"]') ||
+    metaContent('meta[property="article:published_time"]') ||
+    firstJsonLdValue([["datePublished"]]);
+  const modifiedDate =
+    firstJsonLdValue([["dateModified"]]) ||
+    metaContent('meta[property="article:modified_time"]');
+  const readTime =
+    textFromSelector('[data-testid="storyReadTime"]') ||
+    (/reading time/i.test(metaContent('meta[name="twitter:label1"]')) ? metaContent('meta[name="twitter:data1"]') : "");
+  const isAccessibleForFree = firstJsonLdValue([["isAccessibleForFree"]]);
+  const isMemberOnly =
+    /member-only story/i.test(cleanText(document.body ? document.body.innerText : "")) ||
+    String(isAccessibleForFree).toLowerCase() === "false";
+  const followerCandidates = followerCountCandidates();
+  const followerCounts = followerCountsByContext(author, publication, followerCandidates);
+  const pageCanonicalUrl = canonicalUrl();
+  const postIdMatch = cleanUrl(pageCanonicalUrl || window.location.href).match(/([a-f0-9]{12})(?:\\/?$)/i);
+  let articleText = visibleArticleText();
+  let visibleArticleTextTruncated = false;
+
+  if (articleText.length > maxVisibleArticleTextChars) {
+    articleText = articleText.slice(0, maxVisibleArticleTextChars);
+    articleText = cleanText(articleText);
+    visibleArticleTextTruncated = true;
+  }
+
+  showReviewModal(
+    {
+      claps_raw: clapsRaw || "",
+      responses_raw: responsesRaw || "",
+      author_followers_raw: followerCounts.authorFollowers || "",
+      publication_followers_raw: followerCounts.publicationFollowers || "",
+      followerCandidates
+    },
+    (editedFields) => {
+      const observedAt = new Date().toISOString().replace(/\\.\\d{3}Z$/, "Z");
+      const payload = {
+        observed_at: observedAt,
+        url: cleanUrl(window.location.href),
+        canonical_url: cleanUrl(pageCanonicalUrl),
+        title,
+        subtitle,
+        author,
+        publication,
+        published_date: publishedDate,
+        modified_date: modifiedDate,
+        read_time: readTime,
+        is_member_only: Boolean(isMemberOnly),
+        claps_raw: editedFields.claps_raw || "",
+        responses_raw: editedFields.responses_raw || "",
+        author_followers_raw: editedFields.author_followers_raw || "",
+        publication_followers_raw: editedFields.publication_followers_raw || "",
+        medium_post_id: firstJsonLdValue([["identifier"]]) || (postIdMatch ? postIdMatch[1] : ""),
+        image_url: metaContent('meta[property="og:image"]'),
+        visible_article_text: articleText,
+        visible_article_text_truncated: visibleArticleTextTruncated,
+        visible_article_text_max_chars: maxVisibleArticleTextChars,
+        visible_text_word_count: wordCount(articleText),
+        source
+      };
+
+      copyJsonToClipboard(JSON.stringify(payload));
+    }
+  );
+})();`;
+
+    const bookmarkletCode = "javascript:" + encodeURIComponent(bookmarkletSource);
+    document.getElementById("bookmarkletLink").setAttribute("href", bookmarkletCode);
+    document.getElementById("bookmarkletCode").value = bookmarkletCode;
+  </script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+data/*.sqlite
+data/*.db
+data/raw/
+node_modules/
+debug_samples/
+.DS_Store
+Rplots.pdf
