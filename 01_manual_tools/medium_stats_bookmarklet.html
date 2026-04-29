@@ -170,7 +170,9 @@
       const input = document.createElement("input");
       input.type = "text";
       input.value = values[key] || "";
-      input.placeholder = "optional";
+      input.placeholder = key === "publication_followers_raw" && values.publication_status === "none"
+        ? "no publication"
+        : "optional / unknown";
       input.autocomplete = "off";
       input.spellcheck = false;
       input.style.cssText = [
@@ -199,8 +201,26 @@
       form.appendChild(input);
     });
 
-    if (values.followerCandidates && values.followerCandidates.length > 0) {
-      const candidateBox = document.createElement("div");
+    const representedFollowerValues = new Set([
+      cleanText(values.author_followers_raw).toLowerCase(),
+      cleanText(values.publication_followers_raw).toLowerCase()
+    ].filter(Boolean));
+    const usefulFollowerCandidates = (values.followerCandidates || []).filter((candidate) => {
+      const cleaned = cleanText(candidate);
+      if (!cleaned) return false;
+      if (Array.from(representedFollowerValues).some((value) => cleaned.toLowerCase().includes(value))) {
+        return false;
+      }
+      return true;
+    });
+    const shouldShowFollowerCandidates =
+      usefulFollowerCandidates.length > 1 &&
+      (!values.author_followers_raw || (!values.publication_followers_raw && values.publication_status !== "none"));
+
+    let candidateBox = null;
+
+    if (shouldShowFollowerCandidates) {
+      candidateBox = document.createElement("div");
       candidateBox.style.cssText = [
         "margin-top:24px",
         "padding:14px 16px",
@@ -210,14 +230,14 @@
       ].join(";");
 
       const candidateTitle = document.createElement("div");
-      candidateTitle.textContent = "Detected follower counts:";
+      candidateTitle.textContent = "Possible follower counts:";
       candidateTitle.style.cssText = "font-size:14px;font-weight:700;color:#111;margin-bottom:8px";
       candidateBox.appendChild(candidateTitle);
 
       const list = document.createElement("ul");
       list.style.cssText = "margin:0;padding-left:18px;font-size:13px;line-height:1.45;color:#333";
 
-      values.followerCandidates.slice(0, 8).forEach((candidate) => {
+      usefulFollowerCandidates.slice(0, 8).forEach((candidate) => {
         const item = document.createElement("li");
         item.textContent = candidate;
         item.style.cssText = "margin:3px 0";
@@ -225,7 +245,22 @@
       });
 
       candidateBox.appendChild(list);
-      body.appendChild(candidateBox);
+    }
+
+    let zeroNote = null;
+
+    if (values.zeroInferenceNote) {
+      zeroNote = document.createElement("div");
+      zeroNote.textContent = "Blank visible engagement count interpreted as 0.";
+      zeroNote.style.cssText = [
+        "margin-top:16px",
+        "padding:10px 12px",
+        "border-radius:7px",
+        "background:#fff8c5",
+        "font-size:13px",
+        "line-height:1.35",
+        "color:#5f4b00"
+      ].join(";");
     }
 
     const note = document.createElement("div");
@@ -243,6 +278,8 @@
     body.appendChild(titleNode);
     body.appendChild(helper);
     body.appendChild(form);
+    if (candidateBox) body.appendChild(candidateBox);
+    if (zeroNote) body.appendChild(zeroNote);
     body.appendChild(note);
 
     const footer = document.createElement("div");
@@ -354,6 +391,64 @@
     return "";
   }
 
+  function publishedInPublicationFromText() {
+    const nodes = Array.from(document.querySelectorAll("a, span, div, p"))
+      .filter(isVisible);
+
+    for (const node of nodes) {
+      const text = cleanText(node.innerText || node.textContent);
+      if (!text || text.length > 260 || !/published in/i.test(text)) continue;
+
+      const match = text.match(/Published in\\s+(.{1,100}?)(?:\\s+Follow|\\s+Written by|\\s+[0-9][0-9,.]*\\s*[KkMm]?\\s+followers?|$)/i);
+      if (match && match[1]) {
+        const publicationName = cleanText(match[1]);
+        if (publicationName && !/^medium$/i.test(publicationName)) return publicationName;
+      }
+    }
+
+    return "";
+  }
+
+  function detectPublicationInfo(authorName) {
+    const publishedInPublication = publishedInPublicationFromText();
+
+    if (publishedInPublication) {
+      return {
+        publication: publishedInPublication,
+        publication_status: "publication"
+      };
+    }
+
+    const jsonLdPublisher = firstJsonLdValue([["publisher", "name"], ["isPartOf", "name"]]);
+
+    if (
+      jsonLdPublisher &&
+      !/^medium$/i.test(jsonLdPublisher) &&
+      (!authorName || jsonLdPublisher.toLowerCase() !== authorName.toLowerCase())
+    ) {
+      return {
+        publication: jsonLdPublisher,
+        publication_status: "publication"
+      };
+    }
+
+    const bodyText = cleanText(document.body ? document.body.innerText : "");
+    const hasAuthorContext = Boolean(authorName) || /written by/i.test(bodyText);
+    const hasPublicationContext = /published in/i.test(bodyText);
+
+    if (hasAuthorContext && !hasPublicationContext) {
+      return {
+        publication: "",
+        publication_status: "none"
+      };
+    }
+
+    return {
+      publication: "",
+      publication_status: "unknown"
+    };
+  }
+
   function parseCompactNumber(value) {
     const cleaned = cleanText(value).replace(/,/g, "").replace(/\\s+/g, "").toUpperCase();
     const match = cleaned.match(/^([0-9]+(?:\\.[0-9]+)?)([KM])?$/);
@@ -430,6 +525,23 @@
     }
 
     return "";
+  }
+
+  function engagementControlExists(pattern) {
+    return Array.from(document.querySelectorAll("button, a, [role='button'], [aria-label], [title], svg"))
+      .some((node) => {
+        if (!isVisible(node)) return false;
+
+        const label = [
+          node.getAttribute && node.getAttribute("aria-label"),
+          node.getAttribute && node.getAttribute("title"),
+          node.innerText,
+          node.textContent,
+          node.outerHTML
+        ].filter(Boolean).join(" ").toLowerCase();
+
+        return pattern.test(label);
+      });
   }
 
   function isVisible(node) {
@@ -525,7 +637,7 @@
     return Array.from(candidateMap.values());
   }
 
-  function followerCountsByContext(authorName, publicationName, candidateLabels) {
+  function followerCountsByContext(authorName, publicationName, publicationStatus, candidateLabels) {
     const counts = Array.from(document.querySelectorAll(".pw-follower-count, [class*='pw-follower-count']"))
       .filter(isVisible)
       .map((node) => ({
@@ -540,7 +652,7 @@
     for (const item of counts) {
       const context = item.context;
       const looksAuthor = /written by/i.test(context) && textIncludesName(context, authorName);
-      const looksPublication = /published in/i.test(context) && textIncludesName(context, publicationName);
+      const looksPublication = publicationStatus === "publication" && /published in/i.test(context) && textIncludesName(context, publicationName);
 
       if (looksPublication && !looksAuthor && !publicationFollowers) {
         publicationFollowers = item.value;
@@ -554,7 +666,7 @@
       if (!value) return;
 
       const looksAuthor = /^written by/i.test(label) && textIncludesName(label, authorName);
-      const looksPublication = /^published in/i.test(label) && textIncludesName(label, publicationName);
+      const looksPublication = publicationStatus === "publication" && /^published in/i.test(label) && textIncludesName(label, publicationName);
 
       if (looksPublication && !looksAuthor && !publicationFollowers) {
         publicationFollowers = value;
@@ -694,8 +806,12 @@
     new RegExp("\\\\b(?:respond|response|comment)\\\\b[^\\\\n]{0,90}\\\\b" + numberPattern + "\\\\b", "i")
   ]);
 
-  const clapsRaw = targetedClapsRaw || fallbackClapsRaw;
-  const responsesRaw = targetedResponsesRaw || fallbackResponsesRaw;
+  const detectedClapsRaw = targetedClapsRaw || fallbackClapsRaw;
+  const detectedResponsesRaw = targetedResponsesRaw || fallbackResponsesRaw;
+  const inferredZeroClaps = !detectedClapsRaw && engagementControlExists(/clap|applause|recommend|multi-vote/);
+  const inferredZeroResponses = !detectedResponsesRaw && engagementControlExists(/response|respond|comment|discussion/);
+  const clapsRaw = detectedClapsRaw || (inferredZeroClaps ? "0" : "");
+  const responsesRaw = detectedResponsesRaw || (inferredZeroResponses ? "0" : "");
   const title =
     textFromSelector(".pw-post-title") ||
     metaContent('meta[property="og:title"]') ||
@@ -708,7 +824,9 @@
     textFromSelector('[data-testid="authorName"]') ||
     metaContent('meta[name="author"]') ||
     firstJsonLdValue([["author", "name"], ["creator", "name"]]);
-  const publication = firstJsonLdValue([["publisher", "name"], ["isPartOf", "name"]]);
+  const publicationInfo = detectPublicationInfo(author);
+  const publication = publicationInfo.publication;
+  const publicationStatus = publicationInfo.publication_status;
   const publishedDate =
     textFromSelector('[data-testid="storyPublishDate"]') ||
     metaContent('meta[property="article:published_time"]') ||
@@ -724,7 +842,7 @@
     /member-only story/i.test(cleanText(document.body ? document.body.innerText : "")) ||
     String(isAccessibleForFree).toLowerCase() === "false";
   const followerCandidates = followerCountCandidates();
-  const followerCounts = followerCountsByContext(author, publication, followerCandidates);
+  const followerCounts = followerCountsByContext(author, publication, publicationStatus, followerCandidates);
   const pageCanonicalUrl = canonicalUrl();
   const postIdMatch = cleanUrl(pageCanonicalUrl || window.location.href).match(/([a-f0-9]{12})(?:\\/?$)/i);
   let articleText = visibleArticleText();
@@ -741,7 +859,9 @@
       claps_raw: clapsRaw || "",
       responses_raw: responsesRaw || "",
       author_followers_raw: followerCounts.authorFollowers || "",
-      publication_followers_raw: followerCounts.publicationFollowers || "",
+      publication_followers_raw: publicationStatus === "none" ? "" : (followerCounts.publicationFollowers || ""),
+      publication_status: publicationStatus,
+      zeroInferenceNote: inferredZeroClaps || inferredZeroResponses,
       followerCandidates
     },
     (editedFields) => {
@@ -754,6 +874,7 @@
         subtitle,
         author,
         publication,
+        publication_status: publicationStatus,
         published_date: publishedDate,
         modified_date: modifiedDate,
         read_time: readTime,
@@ -761,7 +882,7 @@
         claps_raw: editedFields.claps_raw || "",
         responses_raw: editedFields.responses_raw || "",
         author_followers_raw: editedFields.author_followers_raw || "",
-        publication_followers_raw: editedFields.publication_followers_raw || "",
+        publication_followers_raw: publicationStatus === "none" ? "" : (editedFields.publication_followers_raw || ""),
         medium_post_id: firstJsonLdValue([["identifier"]]) || (postIdMatch ? postIdMatch[1] : ""),
         image_url: metaContent('meta[property="og:image"]'),
         visible_article_text: articleText,
