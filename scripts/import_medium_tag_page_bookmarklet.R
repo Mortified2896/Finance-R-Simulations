@@ -1,0 +1,454 @@
+required_packages <- c("DBI", "RSQLite", "jsonlite")
+
+missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
+
+if (length(missing_packages) > 0) {
+  stop(
+    "Some required R packages are missing.\n\n",
+    "Please install them by running this command in R:\n\n",
+    'install.packages(c("DBI", "RSQLite", "jsonlite"))',
+    call. = FALSE
+  )
+}
+
+library(DBI)
+library(RSQLite)
+library(jsonlite)
+
+source(file.path("scripts", "medium_tag_import_helpers.R"))
+
+database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "medium_articles.sqlite"))
+
+first_non_missing <- function(primary_value, fallback_value) {
+  if (!is_missing_text(primary_value)) {
+    return(clean_text(primary_value))
+  }
+
+  clean_text(fallback_value)
+}
+
+clean_card <- function(card, fallback_position = NA_integer_) {
+  normalized_url <- normalize_medium_url(scalar_from_json(card$article_url))
+  article_tags <- card$article_tags
+  article_tags_json <- if (is.null(article_tags) || length(article_tags) == 0) {
+    NA_character_
+  } else {
+    jsonlite::toJSON(unlist(article_tags), auto_unbox = TRUE)
+  }
+
+  list(
+    position = if (!is.na(integer_from_json(card$position))) integer_from_json(card$position) else fallback_position,
+    section = clean_text(card$section),
+    article_url = normalized_url,
+    medium_post_id = {
+      post_id <- clean_text(card$medium_post_id)
+      if (is.na(post_id)) extract_medium_post_id(normalized_url) else tolower(post_id)
+    },
+    title = clean_text(card$title),
+    subtitle = clean_text(card$subtitle),
+    author_name = clean_text(card$author_name),
+    author_url = normalize_medium_url(scalar_from_json(card$author_url)),
+    author_username = clean_text(card$author_username),
+    author_medium_user_id = clean_text(card$author_medium_user_id),
+    publication_name = clean_text(card$publication_name),
+    publication_url = normalize_medium_url(scalar_from_json(card$publication_url)),
+    publication_id = clean_text(card$publication_id),
+    publication_slug = clean_text(card$publication_slug),
+    publication_domain = clean_text(card$publication_domain),
+    publication_subscriber_count = integer_from_json(card$publication_subscriber_count),
+    publication_status = clean_text(card$publication_status),
+    published_label = clean_text(card$published_label),
+    published_at = clean_text(card$published_at),
+    published_date_inferred = clean_text(card$published_date_inferred),
+    published_date_inferred_from = clean_text(card$published_date_inferred_from),
+    published_at_inferred = clean_text(card$published_at_inferred),
+    published_at_inferred_precision = clean_text(card$published_at_inferred_precision),
+    updated_at = clean_text(card$updated_at),
+    read_time_minutes = real_from_json(card$read_time_minutes),
+    article_tags_json = clean_text(article_tags_json),
+    claps = integer_from_json(card$claps),
+    responses = integer_from_json(card$responses),
+    is_member_only = logical_flag_from_json(card$is_member_only),
+    thumbnail_url = clean_text(card$thumbnail_url),
+    thumbnail_alt = clean_text(card$thumbnail_alt),
+    recommendation_source = clean_text(card$recommendation_source),
+    recommendation_surface = clean_text(card$recommendation_surface),
+    recommendation_tag_slug = clean_text(card$recommendation_tag_slug),
+    recommendation_position = integer_from_json(card$recommendation_position),
+    recommendation_result_set_size = integer_from_json(card$recommendation_result_set_size)
+  )
+}
+
+deduplicate_cards <- function(cards) {
+  deduplicated <- list()
+  seen_urls <- character()
+
+  for (index in seq_along(cards)) {
+    cleaned <- clean_card(cards[[index]], fallback_position = index)
+
+    if (is.na(cleaned$article_url)) {
+      next
+    }
+
+    if (cleaned$article_url %in% seen_urls) {
+      next
+    }
+
+    seen_urls <- c(seen_urls, cleaned$article_url)
+    deduplicated[[length(deduplicated) + 1]] <- cleaned
+  }
+
+  deduplicated
+}
+
+read_tag_page_payload <- function(input_path) {
+  parsed <- fromJSON(input_path, simplifyVector = FALSE)
+  source_type <- clean_text(parsed$source_type)
+
+  if (!identical(source_type, "medium_tag_page_bookmarklet")) {
+    stop(
+      "The JSON file does not contain source_type = 'medium_tag_page_bookmarklet'.",
+      call. = FALSE
+    )
+  }
+
+  cards <- parsed$cards
+
+  if (is.null(cards) || !length(cards)) {
+    cards <- list()
+  }
+
+  list(
+    source_type = source_type,
+    schema_version = integer_from_json(parsed$schema_version),
+    tag_slug = clean_text(parsed$tag_slug),
+    tag_url = normalize_medium_url(scalar_from_json(parsed$tag_url)),
+    page_variant = {
+      parsed_variant <- clean_text(parsed$page_variant)
+      inferred_variant <- infer_page_variant_from_url(scalar_from_json(parsed$tag_url))
+      if (!is_missing_text(parsed_variant)) parsed_variant else inferred_variant
+    },
+    captured_at = clean_text(parsed$captured_at),
+    page_title = clean_text(parsed$page_title),
+    cards = deduplicate_cards(cards)
+  )
+}
+
+find_existing_snapshot_by_hash <- function(connection, source_file_hash) {
+  if (!dbExistsTable(connection, "medium_tag_page_snapshots") || is.na(source_file_hash)) {
+    return(data.frame())
+  }
+
+  dbGetQuery(
+    connection,
+    "
+      SELECT *
+      FROM medium_tag_page_snapshots
+      WHERE source_file_hash = ?
+      LIMIT 1
+    ",
+    params = list(source_file_hash)
+  )
+}
+
+insert_snapshot <- function(connection, payload, input_path, source_file_hash) {
+  snapshot_columns <- table_columns(connection, "medium_tag_page_snapshots")
+  insert_values <- list(
+    tag_slug = payload$tag_slug,
+    page_variant = payload$page_variant,
+    tag_url = payload$tag_url,
+    page_title = payload$page_title,
+    captured_at = payload$captured_at,
+    imported_at = current_timestamp(),
+    source_json_path = normalizePath(input_path, winslash = "/", mustWork = FALSE),
+    source_file_hash = source_file_hash,
+    source_type = payload$source_type,
+    schema_version = payload$schema_version,
+    cards_found = length(payload$cards)
+  )
+
+  insert_names <- names(insert_values)[names(insert_values) %in% snapshot_columns]
+
+  dbExecute(
+    connection,
+    paste0(
+      "INSERT INTO medium_tag_page_snapshots (",
+      paste(insert_names, collapse = ", "),
+      ") VALUES (",
+      paste(rep("?", length(insert_names)), collapse = ", "),
+      ")"
+    ),
+    params = unname(insert_values[insert_names])
+  )
+
+  dbGetQuery(connection, "SELECT last_insert_rowid() AS id")$id[1]
+}
+
+insert_observation <- function(connection, snapshot_id, article_id, card, payload, imported_at) {
+  observed_at <- first_non_missing(payload$captured_at, imported_at)
+
+  dbExecute(
+    connection,
+    "
+      INSERT OR IGNORE INTO medium_tag_page_observations (
+        snapshot_id,
+        article_id,
+        article_url_normalized,
+        medium_post_id,
+        tag_slug,
+        page_position,
+        section_name,
+        title,
+        subtitle,
+        author_name,
+        author_url,
+        author_username,
+        author_medium_user_id,
+        publication_name,
+        publication_url,
+        publication_id,
+        publication_slug,
+        publication_domain,
+        publication_subscriber_count,
+        publication_status,
+        published_label,
+        published_at,
+        published_date_inferred,
+        published_date_inferred_from,
+        published_at_inferred,
+        published_at_inferred_precision,
+        updated_at,
+        read_time_minutes,
+        article_tags_json,
+        claps,
+        responses,
+        is_member_only,
+        thumbnail_url,
+        thumbnail_alt,
+        recommendation_source,
+        recommendation_surface,
+        recommendation_tag_slug,
+        recommendation_position,
+        recommendation_result_set_size,
+        observed_at,
+        imported_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ",
+    params = list(
+      snapshot_id,
+      article_id,
+      card$article_url,
+      card$medium_post_id,
+      payload$tag_slug,
+      card$position,
+      card$section,
+      card$title,
+      card$subtitle,
+      card$author_name,
+      card$author_url,
+      card$author_username,
+      card$author_medium_user_id,
+      card$publication_name,
+      card$publication_url,
+      card$publication_id,
+      card$publication_slug,
+      card$publication_domain,
+      card$publication_subscriber_count,
+      card$publication_status,
+      card$published_label,
+      card$published_at,
+      card$published_date_inferred,
+      card$published_date_inferred_from,
+      card$published_at_inferred,
+      card$published_at_inferred_precision,
+      card$updated_at,
+      card$read_time_minutes,
+      card$article_tags_json,
+      card$claps,
+      card$responses,
+      card$is_member_only,
+      card$thumbnail_url,
+      card$thumbnail_alt,
+      card$recommendation_source,
+      card$recommendation_surface,
+      card$recommendation_tag_slug,
+      card$recommendation_position,
+      card$recommendation_result_set_size,
+      observed_at,
+      imported_at
+    )
+  )
+}
+
+print_new_import_summary <- function(summary, payload, source_file_hash, snapshot_id, database_path) {
+  message("Imported Medium tag page")
+  message("------------------------")
+  message("Tag: ", payload$tag_slug)
+  message("Page variant: ", payload$page_variant)
+  message("Cards found: ", summary$cards_found)
+  message("New articles: ", summary$new_articles)
+  message("Existing articles reused/updated: ", summary$existing_articles)
+  message("Tag observations saved: ", summary$observations_saved)
+  message("Queued for article import: ", summary$queued_for_import)
+  message("Already queued/imported: ", summary$already_queued_or_imported)
+  message("Already had full text: ", summary$already_had_full_text)
+  message("Thumbnail URLs saved: ", summary$thumbnail_urls_saved)
+  if (length(summary$warnings) > 0) {
+    message("Warnings: ", length(summary$warnings))
+    for (warning_message in unique(summary$warnings)) {
+      message("- ", warning_message)
+    }
+  }
+  message("source_file_hash: ", source_file_hash)
+  message("snapshot_id: ", snapshot_id)
+  message("DB: ", database_path)
+}
+
+print_duplicate_summary <- function(snapshot_row, source_file_hash, database_path) {
+  message("Already imported")
+  message("----------------")
+  message("source_file_hash: ", source_file_hash)
+  if ("id" %in% names(snapshot_row)) {
+    message("snapshot_id: ", snapshot_row$id[1])
+  }
+  if ("tag_slug" %in% names(snapshot_row)) {
+    message("Tag: ", snapshot_row$tag_slug[1])
+  }
+  if ("page_variant" %in% names(snapshot_row) && !is_missing_text(snapshot_row$page_variant[1])) {
+    message("Page variant: ", snapshot_row$page_variant[1])
+  }
+  if ("captured_at" %in% names(snapshot_row) && !is_missing_text(snapshot_row$captured_at[1])) {
+    message("Captured at: ", snapshot_row$captured_at[1])
+  }
+  if ("imported_at" %in% names(snapshot_row) && !is_missing_text(snapshot_row$imported_at[1])) {
+    message("Originally imported at: ", snapshot_row$imported_at[1])
+  }
+  message("No new observations were inserted.")
+  message("DB: ", database_path)
+}
+
+args <- commandArgs(trailingOnly = TRUE)
+
+if (length(args) != 1) {
+  stop(
+    "Please provide exactly one Medium tag-page bookmarklet JSON file path.\n\n",
+    "Example:\n",
+    "Rscript scripts/import_medium_tag_page_bookmarklet.R debug_samples/medium_tag_page_fixture_small.json",
+    call. = FALSE
+  )
+}
+
+input_path <- args[1]
+
+if (!file.exists(input_path)) {
+  stop("The input file does not exist:\n\n", input_path, call. = FALSE)
+}
+
+dir.create(dirname(database_path), showWarnings = FALSE, recursive = TRUE)
+
+connection <- dbConnect(SQLite(), database_path)
+on.exit(dbDisconnect(connection), add = TRUE)
+
+ensure_medium_articles_schema(connection)
+schema_info <- inspect_medium_articles_schema(connection)
+ensure_medium_tag_page_schema(connection, schema_info)
+
+payload <- read_tag_page_payload(input_path)
+source_file_hash <- compute_source_file_hash(input_path)
+existing_snapshot <- find_existing_snapshot_by_hash(connection, source_file_hash)
+
+if (nrow(existing_snapshot) > 0) {
+  print_duplicate_summary(existing_snapshot, source_file_hash, database_path)
+  quit(status = 0)
+}
+
+imported_at <- current_timestamp()
+summary <- list(
+  cards_found = length(payload$cards),
+  new_articles = 0L,
+  existing_articles = 0L,
+  observations_saved = 0L,
+  queued_for_import = 0L,
+  already_queued_or_imported = 0L,
+  already_had_full_text = 0L,
+  thumbnail_urls_saved = 0L,
+  warnings = character()
+)
+
+if (!"page_variant" %in% table_columns(connection, "medium_tag_page_snapshots")) {
+  summary$warnings <- c(
+    summary$warnings,
+    "medium_tag_page_snapshots.page_variant is not available. The importer will continue without storing page_variant."
+  )
+}
+
+dbBegin(connection)
+
+transaction_ok <- FALSE
+snapshot_id <- NA_integer_
+
+tryCatch(
+  {
+    snapshot_id <- insert_snapshot(connection, payload, input_path, source_file_hash)
+
+    for (card in payload$cards) {
+      observed_at_for_row <- first_non_missing(payload$captured_at, imported_at)
+      article_result <- find_or_create_medium_article(connection, card, schema_info, observed_at_for_row)
+
+      if (!is.null(article_result$warning_message)) {
+        summary$warnings <- c(summary$warnings, article_result$warning_message)
+      }
+
+      if (identical(article_result$status, "created")) {
+        summary$new_articles <- summary$new_articles + 1L
+      } else {
+        summary$existing_articles <- summary$existing_articles + 1L
+      }
+
+      article_row <- fetch_medium_article_by_id(connection, article_result$article_id)
+      full_content_result <- article_has_full_content(article_row, schema_info)
+
+      if (!is.null(full_content_result$warning_message)) {
+        summary$warnings <- c(summary$warnings, full_content_result$warning_message)
+      }
+
+      insert_observation(connection, snapshot_id, article_result$article_id, card, payload, imported_at)
+      summary$observations_saved <- summary$observations_saved + 1L
+
+      if (!is.na(card$thumbnail_url)) {
+        summary$thumbnail_urls_saved <- summary$thumbnail_urls_saved + 1L
+      }
+
+      queue_result <- insert_or_update_queue_row(
+        connection = connection,
+        article_id = article_result$article_id,
+        normalized_url = card$article_url,
+        medium_post_id = card$medium_post_id,
+        tag_slug = payload$tag_slug,
+        observed_at = observed_at_for_row,
+        has_full_content = isTRUE(full_content_result$has_full_content)
+      )
+
+      if (identical(queue_result, "queued")) {
+        summary$queued_for_import <- summary$queued_for_import + 1L
+      } else if (identical(queue_result, "already_queued_or_imported")) {
+        summary$already_queued_or_imported <- summary$already_queued_or_imported + 1L
+      } else if (identical(queue_result, "already_had_full_content")) {
+        summary$already_had_full_text <- summary$already_had_full_text + 1L
+      }
+    }
+
+    dbCommit(connection)
+    transaction_ok <- TRUE
+  },
+  error = function(error) {
+    try(dbRollback(connection), silent = TRUE)
+    stop("Tag-page import failed: ", conditionMessage(error), call. = FALSE)
+  }
+)
+
+if (!isTRUE(transaction_ok)) {
+  stop("Tag-page import failed before commit.", call. = FALSE)
+}
+
+print_new_import_summary(summary, payload, source_file_hash, snapshot_id, database_path)

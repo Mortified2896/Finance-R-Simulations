@@ -1,4 +1,5 @@
 data/*.sqlite
+data/*.sqlite.backup_*
 data/*.db
 data/raw/
 node_modules/

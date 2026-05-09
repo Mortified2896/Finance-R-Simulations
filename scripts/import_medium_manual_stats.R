@@ -772,6 +772,25 @@ read_input_file_text <- function(input_path) {
   paste(readLines(input_path, warn = FALSE), collapse = "\n")
 }
 
+detect_json_source_type <- function(input_text) {
+  trimmed <- trimws(input_text)
+
+  if (!grepl("^\\{", trimmed)) {
+    return(NA_character_)
+  }
+
+  parsed <- tryCatch(
+    fromJSON(trimmed, simplifyVector = FALSE),
+    error = function(error) NULL
+  )
+
+  if (is.null(parsed)) {
+    return(NA_character_)
+  }
+
+  clean_text(parsed$source_type)
+}
+
 read_arbitrary_import_text <- function() {
   message("\nAdd/import arbitrary Medium article")
   message("----------------------------------")
@@ -829,6 +848,13 @@ import_arbitrary_article <- function(connection) {
     }
 
     if (identical(input_result$status, "error")) {
+      next
+    }
+
+    if (identical(detect_json_source_type(input_result$input_text), "medium_tag_page_bookmarklet")) {
+      message("\nThis file is Medium tag-page bookmarklet JSON.")
+      message("Use the shared file-drop launcher or run:")
+      message("Rscript scripts/import_medium_tag_page_bookmarklet.R <path-to-json>")
       next
     }
 
@@ -1266,6 +1292,17 @@ if (length(args) == 1) {
   message("Reading bookmarklet data from file:")
   message(input_path)
   input_text <- read_input_file_text(input_path)
+
+  if (identical(detect_json_source_type(input_text), "medium_tag_page_bookmarklet")) {
+    stop(
+      "This file is Medium tag-page bookmarklet JSON.\n\n",
+      "Use the shared file-drop launcher or run:\n\n",
+      "Rscript scripts/import_medium_tag_page_bookmarklet.R ",
+      input_path,
+      call. = FALSE
+    )
+  }
+
   import_bookmarklet_text(connection, input_text)
 } else {
   run_review_queue(connection)

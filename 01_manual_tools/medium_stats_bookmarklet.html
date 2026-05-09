@@ -480,13 +480,19 @@
     }
   }
 
-  function textFromVisibleClassName(classText) {
+  function textFromVisibleClassName(classText, postId) {
     const nodes = Array.from(document.querySelectorAll("*"));
     const found = nodes.find((node) => {
       const className = typeof node.className === "string" ? node.className : "";
-      return className.includes(classText) && isVisible(node);
+      return className.includes(classText) && isVisible(node) && nodeContextContainsPostId(node, postId);
     });
 
+    return found ? cleanText(found.innerText || found.textContent) : "";
+  }
+
+  function textFromScopedSelector(selector, postId) {
+    const nodes = Array.from(document.querySelectorAll(selector));
+    const found = nodes.find((node) => isVisible(node) && nodeContextContainsPostId(node, postId));
     return found ? cleanText(found.innerText || found.textContent) : "";
   }
 
@@ -495,8 +501,74 @@
     return match ? cleanText(match[1]) : "";
   }
 
-  function nearbyClapNumber() {
+  function mediumPostIdFromUrl(value) {
+    const match = cleanUrl(value).match(/([a-f0-9]{12})(?:\\/?$)/i);
+    return match ? match[1].toLowerCase() : "";
+  }
+
+  function elementAttributeText(node) {
+    if (!(node instanceof Element)) return "";
+
+    const attributes = [
+      "href",
+      "action",
+      "data-action",
+      "data-action-source",
+      "data-testid",
+      "aria-label",
+      "title"
+    ];
+
+    return attributes.map((attribute) => node.getAttribute(attribute)).filter(Boolean).join(" ").toLowerCase();
+  }
+
+  function textMatchesCurrentArticleAction(text, postId) {
+    if (!postId || !text) return false;
+
+    const lower = text.toLowerCase();
+    const encodedVotePath = "%2f_%2fvote%2fp%2f" + postId;
+    const encodedBookmarkPath = "%2f_%2fbookmark%2fp%2f" + postId;
+
+    return (
+      lower.includes("/_/vote/p/" + postId) ||
+      lower.includes("/_/bookmark/p/" + postId) ||
+      lower.includes(encodedVotePath) ||
+      lower.includes(encodedBookmarkPath) ||
+      lower.includes("---header_actions--" + postId) ||
+      lower.includes("---footer_actions--" + postId) ||
+      lower.includes("---post_responses--" + postId)
+    );
+  }
+
+  function nodeContextContainsPostId(node, postId) {
+    if (!postId) return true;
+    if (!(node instanceof Element)) return false;
+
+    let current = node;
+
+    for (let depth = 0; current && depth < 7; depth += 1) {
+      if (/^(BODY|MAIN|ARTICLE)$/i.test(current.tagName)) return false;
+      if (textMatchesCurrentArticleAction(elementAttributeText(current), postId)) return true;
+
+      const linkedControl = Array.from(current.querySelectorAll("a[href], form[action], [data-action-source]"))
+        .find((candidate) => textMatchesCurrentArticleAction(elementAttributeText(candidate), postId));
+      if (linkedControl) return true;
+
+      current = current.parentElement;
+    }
+
+    return false;
+  }
+
+  function noResponsesYetVisible() {
+    return Array.from(document.querySelectorAll("h1, h2, h3, h4, p, div, span"))
+      .filter(isVisible)
+      .some((node) => /^no responses yet$/i.test(cleanText(node.innerText || node.textContent)));
+  }
+
+  function nearbyClapNumber(postId) {
     const clapControls = Array.from(document.querySelectorAll("button, [role='button'], [aria-label], svg"))
+      .filter(isVisible)
       .filter((node) => {
         const label = [
           node.getAttribute && node.getAttribute("aria-label"),
@@ -506,7 +578,7 @@
           node.outerHTML
         ].filter(Boolean).join(" ").toLowerCase();
 
-        return /clap|applause|recommend|multi-vote/.test(label);
+        return /clap|applause|recommend|multi-vote/.test(label) && nodeContextContainsPostId(node, postId);
       });
 
     for (const control of clapControls) {
@@ -527,10 +599,11 @@
     return "";
   }
 
-  function engagementControlExists(pattern) {
+  function engagementControlExists(pattern, postId) {
     return Array.from(document.querySelectorAll("button, a, [role='button'], [aria-label], [title], svg"))
       .some((node) => {
         if (!isVisible(node)) return false;
+        if (!nodeContextContainsPostId(node, postId)) return false;
 
         const label = [
           node.getAttribute && node.getAttribute("aria-label"),
@@ -545,7 +618,7 @@
   }
 
   function isVisible(node) {
-    if (!(node instanceof HTMLElement)) return false;
+    if (!(node instanceof Element)) return false;
     const style = window.getComputedStyle(node);
     const rect = node.getBoundingClientRect();
     return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
@@ -749,10 +822,11 @@
     return words ? words.length : 0;
   }
 
-  function visibleCandidates() {
+  function visibleCandidates(postId) {
     const nodes = Array.from(document.querySelectorAll("button, a, [role='button'], [aria-label], [title]"));
     const controlText = nodes
       .filter(isVisible)
+      .filter((node) => nodeContextContainsPostId(node, postId))
       .flatMap((node) => [
         node.innerText,
         node.textContent,
@@ -760,9 +834,11 @@
         node.getAttribute("title")
       ]);
 
-    const bodyLines = cleanText(document.body ? document.body.innerText : "")
-      .split(/(?<=\\D)\\s+(?=\\d|clap|applause|recommend|response|comment|respond)/i)
-      .filter((line) => /clap|applause|recommend|response|comment|respond/i.test(line));
+    const bodyLines = postId
+      ? []
+      : cleanText(document.body ? document.body.innerText : "")
+        .split(/(?<=\\D)\\s+(?=\\d|clap|applause|recommend|response|comment|respond)/i)
+        .filter((line) => /clap|applause|recommend|response|comment|respond/i.test(line));
 
     return Array.from(new Set(controlText.concat(bodyLines).map(cleanText).filter(Boolean)));
   }
@@ -782,17 +858,19 @@
   }
 
   const numberPattern = "([0-9][0-9,.]*\\\\s*[KkMm]?)";
-  const candidates = visibleCandidates();
+  const pageCanonicalUrl = canonicalUrl();
+  const currentMediumPostId = mediumPostIdFromUrl(pageCanonicalUrl || window.location.href);
+  const candidates = visibleCandidates(currentMediumPostId);
 
   const targetedClapsRaw =
-    textFromSelector(".pw-multi-vote-count") ||
-    textFromSelector('[class*="pw-multi-vote-count"]') ||
-    textFromVisibleClassName("pw-multi-vote-count") ||
-    nearbyClapNumber();
+    textFromScopedSelector(".pw-multi-vote-count", currentMediumPostId) ||
+    textFromScopedSelector('[class*="pw-multi-vote-count"]', currentMediumPostId) ||
+    textFromVisibleClassName("pw-multi-vote-count", currentMediumPostId) ||
+    nearbyClapNumber(currentMediumPostId);
   const targetedResponsesRaw =
-    textFromSelector(".pw-responses-count") ||
-    textFromSelector('[class*="pw-responses-count"]') ||
-    textFromVisibleClassName("pw-responses-count");
+    textFromScopedSelector(".pw-responses-count", currentMediumPostId) ||
+    textFromScopedSelector('[class*="pw-responses-count"]', currentMediumPostId) ||
+    textFromVisibleClassName("pw-responses-count", currentMediumPostId);
 
   const fallbackClapsRaw = findRaw(candidates, [
     new RegExp(numberPattern + "\\\\s+(?:claps?|applause|recommends?|recommendations?)\\\\b", "i"),
@@ -808,8 +886,11 @@
 
   const detectedClapsRaw = targetedClapsRaw || fallbackClapsRaw;
   const detectedResponsesRaw = targetedResponsesRaw || fallbackResponsesRaw;
-  const inferredZeroClaps = !detectedClapsRaw && engagementControlExists(/clap|applause|recommend|multi-vote/);
-  const inferredZeroResponses = !detectedResponsesRaw && engagementControlExists(/response|respond|comment|discussion/);
+  const inferredZeroClaps = !detectedClapsRaw && engagementControlExists(/clap|applause|recommend|multi-vote/, currentMediumPostId);
+  const inferredZeroResponses = !detectedResponsesRaw && (
+    engagementControlExists(/response|respond|comment|discussion/, currentMediumPostId) ||
+    noResponsesYetVisible()
+  );
   const clapsRaw = detectedClapsRaw || (inferredZeroClaps ? "0" : "");
   const responsesRaw = detectedResponsesRaw || (inferredZeroResponses ? "0" : "");
   const title =
@@ -843,8 +924,6 @@
     String(isAccessibleForFree).toLowerCase() === "false";
   const followerCandidates = followerCountCandidates();
   const followerCounts = followerCountsByContext(author, publication, publicationStatus, followerCandidates);
-  const pageCanonicalUrl = canonicalUrl();
-  const postIdMatch = cleanUrl(pageCanonicalUrl || window.location.href).match(/([a-f0-9]{12})(?:\\/?$)/i);
   let articleText = visibleArticleText();
   let visibleArticleTextTruncated = false;
 
@@ -883,7 +962,7 @@
         responses_raw: editedFields.responses_raw || "",
         author_followers_raw: editedFields.author_followers_raw || "",
         publication_followers_raw: publicationStatus === "none" ? "" : (editedFields.publication_followers_raw || ""),
-        medium_post_id: firstJsonLdValue([["identifier"]]) || (postIdMatch ? postIdMatch[1] : ""),
+        medium_post_id: firstJsonLdValue([["identifier"]]) || currentMediumPostId,
         image_url: metaContent('meta[property="og:image"]'),
         visible_article_text: articleText,
         visible_article_text_truncated: visibleArticleTextTruncated,

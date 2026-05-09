@@ -1,0 +1,963 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Medium Tag Page Bookmarklet Helper</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+      margin: 32px;
+      max-width: 920px;
+      color: #1f1f1f;
+    }
+
+    h1 {
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+
+    h2 {
+      font-size: 20px;
+      margin-top: 28px;
+    }
+
+    .bookmarklet {
+      display: inline-block;
+      margin: 12px 0;
+      padding: 10px 14px;
+      border-radius: 6px;
+      background: #111;
+      color: white;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 220px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      padding: 12px;
+    }
+
+    code {
+      background: #f2f2f2;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+
+    li {
+      margin-bottom: 6px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Medium Tag Page Bookmarklet Helper</h1>
+  <p>
+    This bookmarklet runs on a Medium tag page you already opened in your normal browser.
+    It does not use automation. It extracts the currently visible tag-page article cards and downloads a JSON file.
+  </p>
+
+  <h2>Install</h2>
+  <ol>
+    <li>Open this HTML file in your browser.</li>
+    <li>Drag this bookmarklet link to your bookmarks bar:</li>
+  </ol>
+
+  <p><a id="bookmarkletLink" class="bookmarklet" href="#">Medium Tag Page JSON</a></p>
+
+  <ol start="3">
+    <li>Open a Medium tag page such as <code>https://medium.com/tag/finance</code> or <code>https://medium.com/tag/finance/recommended</code>.</li>
+    <li>Scroll until enough article cards are visible.</li>
+    <li>Click the <code>Medium Tag Page JSON</code> bookmarklet.</li>
+    <li>Import the downloaded JSON file with <code>01_manual_tools/start_medium_own_stats_importer.command</code>.</li>
+  </ol>
+
+  <h2>Manual Copy</h2>
+  <p>
+    If dragging the link does not work, copy the code below and create a new browser bookmark manually.
+    Paste this code into the bookmark URL/location field.
+  </p>
+  <textarea id="bookmarkletCode" readonly></textarea>
+
+  <script>
+    const bookmarkletSource = `(() => {
+  const sourceType = "medium_tag_page_bookmarklet";
+  const schemaVersion = 12;
+
+  function cleanText(value) {
+    if (value === undefined || value === null) return "";
+    return String(value).replace(/\\s+/g, " ").trim();
+  }
+
+  function normalizeMediumUrl(value) {
+    const cleaned = cleanText(value);
+    if (!cleaned) return "";
+
+    try {
+      const parsed = new URL(cleaned, window.location.href);
+      parsed.search = "";
+      parsed.hash = "";
+      let normalized = parsed.toString();
+      normalized = normalized.replace(/\\/+$/, "");
+      return normalized;
+    } catch (_) {
+      return cleaned.split(/[?#]/)[0].replace(/\\/+$/, "");
+    }
+  }
+
+  function parseSourceParam(value) {
+    try {
+      return cleanText(new URL(value, window.location.href).searchParams.get("source"));
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function parseRecommendationSource(value) {
+    const source = parseSourceParam(value);
+    const empty = {
+      recommendation_source: source,
+      recommendation_surface: "",
+      recommendation_tag_slug: "",
+      recommendation_position: null,
+      recommendation_result_set_size: null
+    };
+
+    if (!source) return empty;
+
+    const match = source.match(/^(.+?)------([a-z0-9_-]+)---([0-9]+)-([0-9]+)/i);
+    if (!match) return empty;
+
+    return {
+      recommendation_source: source,
+      recommendation_surface: cleanText(match[1]),
+      recommendation_tag_slug: cleanText(match[2]),
+      recommendation_position: Number(match[3]),
+      recommendation_result_set_size: Number(match[4])
+    };
+  }
+
+  function withRecommendationFallback(recommendation, pageVariant, position) {
+    if (recommendation.recommendation_surface || pageVariant !== "tag_recommended") {
+      return recommendation;
+    }
+
+    const pageInfo = parseTagPageInfo();
+
+    return {
+      ...recommendation,
+      recommendation_surface: "tag_recommended_stories_page",
+      recommendation_tag_slug: pageInfo.tagSlug,
+      recommendation_position: Number.isFinite(position) ? position - 1 : null,
+      recommendation_result_set_size: null
+    };
+  }
+
+  function extractMediumPostId(value) {
+    const match = normalizeMediumUrl(value).match(/([a-f0-9]{12})(?:\\/?$)/i);
+    return match ? match[1].toLowerCase() : "";
+  }
+
+  function timestampFromMillis(value) {
+    if (!Number.isFinite(value) || value <= 0) return "";
+    try {
+      return new Date(value).toISOString().replace(/\\.\\d{3}Z$/, "Z");
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function roundReadingTime(value) {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return Math.round(value * 10) / 10;
+  }
+
+  function todayDateString() {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, "0");
+    return [now.getFullYear(), pad(now.getMonth() + 1), pad(now.getDate())].join("-");
+  }
+
+  function dateStringFromParts(year, monthIndex, day) {
+    const pad = (value) => String(value).padStart(2, "0");
+    return [year, pad(monthIndex + 1), pad(day)].join("-");
+  }
+
+  function monthIndexFromName(value) {
+    const month = cleanText(value).slice(0, 3).toLowerCase();
+    return ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(month);
+  }
+
+  function isVisible(node) {
+    if (!(node instanceof Element)) return false;
+    const style = window.getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+  }
+
+  function hasVisibleCardContent(root) {
+    if (isVisible(root)) return true;
+
+    return Array.from(root.querySelectorAll("a[href], h1, h2, h3, h4, img, button, [role='link'], [role='button']"))
+      .some(isVisible);
+  }
+
+  function parseTagPageInfo() {
+    const match = window.location.pathname.match(/^\\/tag\\/([^/?#]+)(?:\\/([^/?#]+))?/i);
+
+    if (!match) {
+      return { tagSlug: "", pageVariant: "unknown" };
+    }
+
+    const tagSlug = cleanText(decodeURIComponent(match[1]));
+    const suffix = cleanText(match[2] || "").toLowerCase();
+
+    if (suffix === "recommended") {
+      return { tagSlug, pageVariant: "tag_recommended" };
+    }
+
+    return { tagSlug, pageVariant: "tag_landing" };
+  }
+
+  function looksLikeArticleUrl(url) {
+    const normalized = normalizeMediumUrl(url);
+    if (!normalized) return false;
+    if (!/^https?:\\/\\//i.test(normalized)) return false;
+    if (!/medium\\.com/i.test(normalized)) return false;
+    if (/\\/tag\\//i.test(normalized)) return false;
+    if (/\\/(topics|about|search|membership|m|me|signin|signup|notifications|lists|bookmarks)(\\/|$)/i.test(normalized)) return false;
+    if (/\\/followers(\\/|$)/i.test(normalized)) return false;
+    return Boolean(extractMediumPostId(normalized));
+  }
+
+  function firstVisibleText(root, selectors) {
+    for (const selector of selectors) {
+      for (const node of root.querySelectorAll(selector)) {
+        if (!isVisible(node)) continue;
+        const text = cleanText(node.innerText || node.textContent);
+        if (text) return text;
+      }
+    }
+    return "";
+  }
+
+  function collectJsonLdMap() {
+    const map = new Map();
+
+    for (const scriptNode of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const parsed = JSON.parse(scriptNode.textContent || "{}");
+        const objects = Array.isArray(parsed) ? parsed : [parsed];
+
+        for (const object of objects) {
+          const entities = Array.isArray(object.mainEntity) ? object.mainEntity : [];
+
+          for (const entity of entities) {
+            const url = normalizeMediumUrl(entity.url || entity.mainEntityOfPage || entity["@id"]);
+            if (!looksLikeArticleUrl(url)) continue;
+
+            map.set(url, {
+              title: cleanText(entity.headline || entity.name),
+              subtitle: cleanText(entity.description),
+              author_name: cleanText(entity.author && entity.author.name),
+              author_url: normalizeMediumUrl(entity.author && entity.author.url),
+              medium_post_id: cleanText(entity.identifier) || extractMediumPostId(url),
+              published_label: cleanText(entity.datePublished),
+              is_member_only: entity.isAccessibleForFree === false,
+              thumbnail_url: Array.isArray(entity.image) ? cleanText(entity.image[0]) : cleanText(entity.image)
+            });
+          }
+        }
+      } catch (_) {
+        // Ignore malformed script blocks.
+      }
+    }
+
+    return map;
+  }
+
+  function collectApolloPostMap() {
+    const map = new Map();
+
+    for (const scriptNode of document.querySelectorAll("script")) {
+      const rawText = scriptNode.textContent || "";
+      if (!rawText.includes("window.__APOLLO_STATE__")) continue;
+
+      const match = rawText.match(/window\\.__APOLLO_STATE__\\s*=\\s*({[\\s\\S]*})\\s*;?\\s*$/);
+      if (!match) continue;
+
+      try {
+        const parsed = JSON.parse(match[1]);
+
+        for (const [key, value] of Object.entries(parsed)) {
+          if (!/^Post:/i.test(key) || !value || typeof value !== "object") continue;
+
+          const url = normalizeMediumUrl(value.mediumUrl || value.canonicalUrl || "");
+          const mediumPostId = cleanText(value.id) || extractMediumPostId(url) || cleanText(key.replace(/^Post:/i, ""));
+
+          if (!mediumPostId && !url) continue;
+
+            const creatorRef = value.creator && cleanText(value.creator.__ref);
+            const collectionRef = value.collection && cleanText(value.collection.__ref);
+            const hasEmbeddedCollectionField = Object.prototype.hasOwnProperty.call(value, "collection");
+            const creator = creatorRef ? parsed[creatorRef] || {} : {};
+            const collection = collectionRef ? parsed[collectionRef] || {} : {};
+            const publicationStatus = collectionRef
+              ? "publication"
+              : (hasEmbeddedCollectionField && value.collection === null ? "self_published_known" : "unknown");
+            const tagNames = Array.isArray(value.tags)
+              ? value.tags
+                  .map((tagRef) => parsed[cleanText(tagRef && tagRef.__ref)] || {})
+                  .map((tag) => cleanText(tag.normalizedTagSlug || tag.displayTitle || tag.id))
+                  .filter(Boolean)
+              : [];
+            const previewImageRef = value.previewImage && cleanText(value.previewImage.__ref);
+            const previewImage = previewImageRef ? parsed[previewImageRef] || {} : {};
+            const record = {
+              medium_post_id: mediumPostId.toLowerCase(),
+              article_url: url,
+              title: cleanText(value.title),
+              subtitle: cleanText(value.extendedPreviewContent && value.extendedPreviewContent.subtitle),
+              author_name: cleanText(creator.name),
+              author_username: cleanText(creator.username),
+              author_medium_user_id: cleanText(creator.id),
+              publication_name: cleanText(collection.name),
+              publication_id: cleanText(collection.id),
+              publication_slug: cleanText(collection.slug),
+              publication_domain: cleanText(collection.domain),
+              publication_subscriber_count: Number.isFinite(collection.subscriberCount) ? collection.subscriberCount : null,
+              publication_status: publicationStatus,
+              published_at: timestampFromMillis(value.firstPublishedAt),
+              updated_at: timestampFromMillis(value.latestPublishedAt),
+              read_time_minutes: roundReadingTime(value.readingTime),
+              article_tags: tagNames,
+              claps: Number.isFinite(value.clapCount) ? value.clapCount : null,
+              responses: value.postResponses && Number.isFinite(value.postResponses.count) ? value.postResponses.count : null,
+              is_member_only: value.isLocked === true || cleanText(value.visibility).toUpperCase() === "LOCKED",
+              thumbnail_url: previewImage.id ? "https://miro.medium.com/" + cleanText(previewImage.id) : "",
+              thumbnail_alt: cleanText(previewImage.alt)
+            };
+
+            map.set(mediumPostId.toLowerCase(), record);
+
+            if (url) {
+              map.set(url, record);
+            }
+        }
+      } catch (_) {
+        // Ignore malformed embedded state blocks.
+      }
+    }
+
+    return map;
+  }
+
+  function isTinyOrIconLikeImage(image) {
+    const rect = image.getBoundingClientRect();
+    const alt = cleanText(image.alt).toLowerCase();
+    const src = cleanText(image.currentSrc || image.src).toLowerCase();
+
+    if (rect.width < 80 || rect.height < 80) return true;
+    if (rect.width <= 96 && rect.height <= 96) return true;
+    if (/avatar|icon|logo/.test(alt)) return true;
+    if (/avatar|icon|logo/.test(src)) return true;
+
+    return false;
+  }
+
+  function findCardRoot(anchor) {
+    let current = anchor;
+
+    for (let depth = 0; current && depth < 6; depth += 1) {
+      if (
+        current instanceof HTMLElement &&
+        isVisible(current) &&
+        cleanText(current.innerText || current.textContent).length >= 40 &&
+        (current.querySelector("img") || current.querySelector("h1, h2, h3, h4") || current.querySelector("a[href]"))
+      ) {
+        return current;
+      }
+
+      current = current.parentElement;
+    }
+
+    return anchor;
+  }
+
+  function dedupeLines(text) {
+    const lines = cleanText(text)
+      .split(/\\n+/)
+      .map(cleanText)
+      .filter(Boolean);
+
+    return Array.from(new Set(lines));
+  }
+
+  function looksLikeMetadataLine(line) {
+    if (!line) return true;
+    if (/^(follow|following|save|listen|share|sign in|sign up|open in app)$/i.test(line)) return true;
+    if (/^(member-only|member only|member-only story)$/i.test(line)) return true;
+    if (/^[0-9]+\\s*(min read|followers?)$/i.test(line)) return true;
+    if (/^[0-9][0-9,.]*\\s*(claps?|responses?|comments?)$/i.test(line)) return true;
+    return false;
+  }
+
+  function parseCompactInteger(line, labelPattern) {
+    const cleaned = cleanText(line);
+    if (!cleaned) return null;
+
+    const direct = cleaned.match(new RegExp("([0-9][0-9,.]*\\\\s*[kKmM]?)\\\\s*" + labelPattern, "i"));
+    const reverse = cleaned.match(new RegExp(labelPattern + "[^0-9]{0,40}([0-9][0-9,.]*\\\\s*[kKmM]?)", "i"));
+    const raw = direct ? direct[1] : reverse ? reverse[1] : "";
+
+    if (!raw) return null;
+
+    const normalized = raw.replace(/,/g, "").replace(/\\s+/g, "").toUpperCase();
+    const match = normalized.match(/^([0-9]+(?:\\.[0-9]+)?)([KM])?$/);
+    if (!match) return null;
+
+    const multiplier = match[2] === "K" ? 1000 : match[2] === "M" ? 1000000 : 1;
+    return Math.round(Number(match[1]) * multiplier);
+  }
+
+  function hasEngagementControl(root, labelPattern) {
+    const pattern = new RegExp(labelPattern, "i");
+    const candidates = Array.from(root.querySelectorAll("a[href], button, [aria-label], [role='button'], [role='link'], img, svg"));
+
+    return candidates.some((node) => {
+      if (node instanceof HTMLElement && !isVisible(node)) return false;
+      const text = [
+        node.getAttribute && node.getAttribute("aria-label"),
+        node.getAttribute && node.getAttribute("title"),
+        node.getAttribute && node.getAttribute("alt"),
+        node.innerText,
+        node.textContent
+      ].map(cleanText).join(" ");
+      return pattern.test(text);
+    });
+  }
+
+  function hasCardActionFooter(root) {
+    const text = cleanText(root.innerText || root.textContent);
+    if (/I'm not interested in this story|Member-only story/i.test(text)) return true;
+
+    return Array.from(root.querySelectorAll("a[href], button, [aria-label], [role='button'], [role='link'], svg"))
+      .some((node) => {
+        if (node instanceof HTMLElement && !isVisible(node)) return false;
+        const text = [
+          node.getAttribute && node.getAttribute("aria-label"),
+          node.getAttribute && node.getAttribute("title"),
+          node.innerText,
+          node.textContent
+        ].map(cleanText).join(" ");
+        return /bookmark|save|respond|response|comment|clap|recommend|not interested/i.test(text);
+      });
+  }
+
+  function numberNearIconMarkup(root, descriptionPattern) {
+    const markup = root && root.innerHTML ? String(root.innerHTML) : "";
+    if (!markup) return null;
+
+    const pattern = new RegExp("<desc[^>]*>[^<]*" + descriptionPattern + "[^<]*<\\\\/desc>[\\\\s\\\\S]{0,1800}?<span[^>]*>([0-9][0-9,.]*\\\\s*[kKmM]?)<\\\\/span>", "i");
+    const match = markup.match(pattern);
+    return match && match[1] ? parseCompactInteger(match[1], "") : null;
+  }
+
+  function numberNearIconDescription(root, descriptionPattern) {
+    const markupValue = numberNearIconMarkup(root, descriptionPattern);
+    if (markupValue !== null) return markupValue;
+
+    const pattern = new RegExp(descriptionPattern, "i");
+    const descriptions = Array.from(root.querySelectorAll("desc"))
+      .filter((node) => pattern.test(cleanText(node.textContent)));
+
+    for (const description of descriptions) {
+      let current = description.parentElement;
+
+      for (let depth = 0; current && depth < 6; depth += 1) {
+        const spans = Array.from(current.querySelectorAll("span"));
+
+        for (const span of spans) {
+          if (!isVisible(span)) continue;
+          const value = parseCompactInteger(cleanText(span.innerText || span.textContent), "");
+          if (value !== null) return value;
+        }
+
+        current = current.parentElement;
+      }
+    }
+
+    return null;
+  }
+
+  function inferEngagementCount(root, embeddedValue, domValue, controlPattern, iconDescriptionPattern) {
+    if (Number.isFinite(embeddedValue)) return embeddedValue;
+    if (domValue !== null) return domValue;
+    const iconValue = numberNearIconDescription(root, iconDescriptionPattern || controlPattern);
+    if (iconValue !== null) return iconValue;
+    return 0;
+  }
+
+  function detectPublishedLabel(lines) {
+    const datePattern = /\\b(?:just now|today|\\d+\\s*(?:m|min|mins|minute|minutes|h|hr|hrs|hour|hours|day|days|week|weeks|month|months|year|years)\\s+ago|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\.?\\s+\\d{1,2}(?:,\\s*\\d{4})?)\\b/i;
+    for (const line of lines) {
+      const match = cleanText(line).match(datePattern);
+      if (match) return cleanText(match[0]);
+    }
+    return "";
+  }
+
+  function inferPublishedDateFromLabel(label, capturedDate) {
+    const cleaned = cleanText(label).toLowerCase();
+    if (!cleaned) return { date: "", inferred: false };
+
+    if (/^(just now|today|\\d+\\s*(?:m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\\s+ago)$/.test(cleaned)) {
+      return { date: todayDateString(), inferred: true };
+    }
+
+    const monthDayMatch = cleanText(label).match(/^([A-Za-z]{3,9})\\.?\\s+(\\d{1,2})(?:,\\s*(\\d{4}))?$/);
+    if (monthDayMatch) {
+      const monthIndex = monthIndexFromName(monthDayMatch[1]);
+      const day = Number(monthDayMatch[2]);
+
+      if (monthIndex >= 0 && day >= 1 && day <= 31) {
+        if (monthDayMatch[3]) {
+          return { date: dateStringFromParts(Number(monthDayMatch[3]), monthIndex, day), inferred: false };
+        }
+
+        const base = capturedDate instanceof Date && !Number.isNaN(capturedDate.getTime()) ? capturedDate : new Date();
+        let year = base.getFullYear();
+        const candidate = new Date(Date.UTC(year, monthIndex, day));
+        const captureDay = new Date(Date.UTC(base.getFullYear(), base.getMonth(), base.getDate()));
+
+        if (candidate.getTime() > captureDay.getTime() + 24 * 60 * 60 * 1000) {
+          year -= 1;
+        }
+
+        return { date: dateStringFromParts(year, monthIndex, day), inferred: true };
+      }
+    }
+
+    return { date: "", inferred: false };
+  }
+
+  function inferPublishedTimestampFromLabel(label, capturedDate) {
+    const cleaned = cleanText(label).toLowerCase();
+    if (!cleaned || !(capturedDate instanceof Date) || Number.isNaN(capturedDate.getTime())) {
+      return { timestamp: "", precision: "", inferred: false };
+    }
+
+    if (/^(just now|today)$/.test(cleaned)) {
+      return {
+        timestamp: capturedDate.toISOString().replace(/\\.\\d{3}Z$/, "Z"),
+        precision: cleaned === "just now" ? "instant_approx" : "day",
+        inferred: true
+      };
+    }
+
+    const match = cleaned.match(/^(\\d+)\\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\\s+ago$/);
+    if (!match) {
+      return { timestamp: "", precision: "", inferred: false };
+    }
+
+    const amount = Number(match[1]);
+    const unit = match[2];
+    const millis = /^(m|min|mins|minute|minutes)$/.test(unit)
+      ? amount * 60 * 1000
+      : amount * 60 * 60 * 1000;
+    const inferred = new Date(capturedDate.getTime() - millis);
+
+    return {
+      timestamp: inferred.toISOString().replace(/\\.\\d{3}Z$/, "Z"),
+      precision: /^(m|min|mins|minute|minutes)$/.test(unit) ? "minute_approx" : "hour_approx",
+      inferred: true
+    };
+  }
+
+  function detectSection(root) {
+    let current = root;
+
+    for (let depth = 0; current && depth < 4; depth += 1) {
+      let sibling = current.previousElementSibling;
+
+      while (sibling) {
+        if (sibling.matches && sibling.matches("h1, h2, h3, h4, h5, h6")) {
+          return cleanText(sibling.innerText || sibling.textContent);
+        }
+
+        const candidate = cleanText(sibling.innerText || sibling.textContent);
+        if (candidate && candidate.length <= 60 && !looksLikeMetadataLine(candidate)) {
+          return candidate;
+        }
+
+        sibling = sibling.previousElementSibling;
+      }
+
+      current = current.parentElement;
+    }
+
+    return "";
+  }
+
+  function pickThumbnail(root, title) {
+    const images = Array.from(root.querySelectorAll("img")).filter((img) => {
+      if (!isVisible(img)) return false;
+      return !isTinyOrIconLikeImage(img);
+    });
+
+    if (!images.length) return { url: "", alt: "" };
+
+    images.sort((a, b) => {
+      const aRect = a.getBoundingClientRect();
+      const bRect = b.getBoundingClientRect();
+      const aAlt = cleanText(a.alt).toLowerCase();
+      const bAlt = cleanText(b.alt).toLowerCase();
+      const titleLower = cleanText(title).toLowerCase();
+      const aScore =
+        (aAlt && aAlt === titleLower ? 1000000 : 0) +
+        (aRect.width >= 250 ? 100000 : 0) +
+        aRect.width * aRect.height;
+      const bScore =
+        (bAlt && bAlt === titleLower ? 1000000 : 0) +
+        (bRect.width >= 250 ? 100000 : 0) +
+        bRect.width * bRect.height;
+      return bScore - aScore;
+    });
+
+    const image = images[0];
+
+    return {
+      url: cleanText(image.currentSrc || image.src),
+      alt: cleanText(image.alt)
+    };
+  }
+
+  function collectAuthorAndPublication(root, articleUrl, title) {
+    const anchors = Array.from(root.querySelectorAll("a[href]")).filter(isVisible);
+    const articleNormalized = normalizeMediumUrl(articleUrl);
+    let author = { name: "", url: "" };
+    let publication = { name: "", url: "" };
+
+    for (const anchor of anchors) {
+      const href = normalizeMediumUrl(anchor.href);
+      const text = cleanText(anchor.innerText || anchor.textContent);
+      if (!text || href === articleNormalized || text === cleanText(title)) continue;
+
+      if (!author.name && /\\/(@|u\\/)/i.test(href)) {
+        author = { name: text, url: href };
+        continue;
+      }
+
+      if (!publication.name && looksLikeArticleUrl(href) === false && /medium\\.com/i.test(href) && text.length <= 80) {
+        publication = { name: text, url: href };
+      }
+    }
+
+    return { author, publication };
+  }
+
+  function findPrimaryArticleUrlFromPreview(root) {
+    const dataHrefNode = root.matches('[data-href]') ? root : root.querySelector('[data-href]');
+    if (dataHrefNode) {
+      const dataHref = dataHrefNode.getAttribute('data-href');
+      if (looksLikeArticleUrl(dataHref)) return dataHref;
+    }
+
+    const roleLinkNode = Array.from(root.querySelectorAll('[role="link"][data-href], [role="link"]'))
+      .find((node) => {
+        const href = node.getAttribute('data-href') || node.href || "";
+        return looksLikeArticleUrl(href);
+      });
+    if (roleLinkNode) {
+      return roleLinkNode.getAttribute('data-href') || roleLinkNode.href || "";
+    }
+
+    const titleLink = Array.from(root.querySelectorAll('h2 a[href], a[href] h2, a[href]'))
+      .map((node) => node.closest('a[href]') || node)
+      .find((node) => looksLikeArticleUrl(node.href));
+    if (titleLink) {
+      return titleLink.href;
+    }
+
+    return "";
+  }
+
+  function findTopMetaRow(root) {
+    const candidates = Array.from(root.querySelectorAll("div, header, section"))
+      .filter((node) => isVisible(node) && node.querySelector("a[href]"));
+
+    for (const node of candidates) {
+      const text = cleanText(node.innerText || node.textContent);
+      if (!text || text.length > 180) continue;
+      if (node.querySelector("h2, h3")) continue;
+      return node;
+    }
+
+    return root;
+  }
+
+  function collectAuthorAndPublicationFromPreview(root, articleUrl, title) {
+    const metaRoot = findTopMetaRow(root);
+    return collectAuthorAndPublication(metaRoot || root, articleUrl, title);
+  }
+
+  function firstVisibleDateLikeText(root) {
+    const lines = dedupeLines(root.innerText || root.textContent);
+    return detectPublishedLabel(lines);
+  }
+
+  function findEmbeddedPostData(articleUrl, mediumPostId, embeddedPostMap) {
+    const normalizedUrl = normalizeMediumUrl(articleUrl);
+    const normalizedPostId = cleanText(mediumPostId).toLowerCase();
+
+    if (normalizedPostId && embeddedPostMap.has(normalizedPostId)) {
+      return embeddedPostMap.get(normalizedPostId) || {};
+    }
+
+    if (normalizedUrl && embeddedPostMap.has(normalizedUrl)) {
+      return embeddedPostMap.get(normalizedUrl) || {};
+    }
+
+    return {};
+  }
+
+  function choosePublicationStatus(publicationName, embeddedStatus, authorName) {
+    const status = cleanText(embeddedStatus);
+    if (cleanText(publicationName) || status === "publication") return "publication";
+    if (status === "self_published_known") return "self_published_known";
+    if (cleanText(authorName)) return "self_published_assumed";
+    return "unknown";
+  }
+
+  function buildCardRecord(root, articleUrl, jsonLdMap, embeddedPostMap, position, pageVariant, capturedDate) {
+    const normalizedUrl = normalizeMediumUrl(articleUrl);
+    const recommendation = withRecommendationFallback(parseRecommendationSource(articleUrl), pageVariant, position);
+    const ld = jsonLdMap.get(normalizedUrl) || {};
+    const mediumPostId = cleanText(ld.medium_post_id) || extractMediumPostId(normalizedUrl);
+    const embedded = findEmbeddedPostData(normalizedUrl, mediumPostId, embeddedPostMap);
+    const lines = dedupeLines(root.innerText || root.textContent);
+    const title = firstVisibleText(root, ["h1", "h2", "h3", "h4"]) || cleanText(embedded.title) || cleanText(ld.title) || cleanText(lines[0]);
+    const authorAndPublication = collectAuthorAndPublication(root, normalizedUrl, title);
+    const subtitle = lines.find((line) => line !== title && line !== authorAndPublication.author.name && !looksLikeMetadataLine(line) && line.length >= 20) || cleanText(embedded.subtitle) || cleanText(ld.subtitle);
+    const thumbnail = pickThumbnail(root, title);
+    const domClaps = lines.map((line) => parseCompactInteger(line, "(?:claps?|applause|recommendations?)")).find((value) => value !== null);
+    const domResponses = lines.map((line) => parseCompactInteger(line, "(?:responses?|comments?)")).find((value) => value !== null);
+    const claps = inferEngagementCount(root, embedded.claps, domClaps, "(?:clap|applause|recommend)", "clap");
+    const responses = inferEngagementCount(root, embedded.responses, domResponses, "(?:response|comment)", "response");
+    const publishedLabel = detectPublishedLabel(lines) || cleanText(ld.published_label);
+    const inferredPublishedDate = inferPublishedDateFromLabel(publishedLabel, capturedDate);
+    const inferredPublishedTimestamp = inferPublishedTimestampFromLabel(publishedLabel, capturedDate);
+    const authorName = cleanText(authorAndPublication.author.name) || cleanText(embedded.author_name) || cleanText(ld.author_name);
+    const publicationName = cleanText(authorAndPublication.publication.name) || cleanText(embedded.publication_name);
+
+    return {
+      position,
+      section: detectSection(root) || (pageVariant === "tag_recommended" ? "Recommended stories" : ""),
+      article_url: normalizedUrl,
+      medium_post_id: mediumPostId,
+      title,
+      subtitle: cleanText(subtitle),
+      author_name: authorName,
+      author_url: normalizeMediumUrl(authorAndPublication.author.url) || normalizeMediumUrl(ld.author_url),
+      author_username: cleanText(embedded.author_username),
+      author_medium_user_id: cleanText(embedded.author_medium_user_id),
+      publication_name: publicationName,
+      publication_url: normalizeMediumUrl(authorAndPublication.publication.url),
+      publication_id: cleanText(embedded.publication_id),
+      publication_slug: cleanText(embedded.publication_slug),
+      publication_domain: cleanText(embedded.publication_domain),
+      publication_subscriber_count: Number.isFinite(embedded.publication_subscriber_count) ? embedded.publication_subscriber_count : null,
+      publication_status: choosePublicationStatus(publicationName, embedded.publication_status, authorName),
+      published_label: publishedLabel,
+      published_at: cleanText(embedded.published_at) || cleanText(ld.published_label),
+      published_date_inferred: cleanText(embedded.published_at) || cleanText(ld.published_label) ? "" : inferredPublishedDate.date,
+      published_date_inferred_from: inferredPublishedDate.inferred ? publishedLabel : "",
+      published_at_inferred: cleanText(embedded.published_at) || cleanText(ld.published_label) ? "" : inferredPublishedTimestamp.timestamp,
+      published_at_inferred_precision: inferredPublishedTimestamp.precision,
+      updated_at: cleanText(embedded.updated_at),
+      read_time_minutes: Number.isFinite(embedded.read_time_minutes) ? embedded.read_time_minutes : null,
+      article_tags: Array.isArray(embedded.article_tags) ? embedded.article_tags : [],
+      claps: Number.isFinite(claps) ? claps : null,
+      responses: Number.isFinite(responses) ? responses : null,
+      is_member_only: embedded.is_member_only === true || /member[- ]only/i.test(lines.join(" ")) || ld.is_member_only === true,
+      thumbnail_url: cleanText(thumbnail.url) || cleanText(embedded.thumbnail_url) || cleanText(ld.thumbnail_url),
+      thumbnail_alt: cleanText(thumbnail.alt) || cleanText(embedded.thumbnail_alt),
+      ...recommendation
+    };
+  }
+
+  function buildPreviewCardRecord(root, jsonLdMap, embeddedPostMap, position, pageVariant, capturedDate) {
+    const articleUrl = findPrimaryArticleUrlFromPreview(root);
+    if (!articleUrl) return null;
+
+    const normalizedUrl = normalizeMediumUrl(articleUrl);
+    const recommendation = withRecommendationFallback(parseRecommendationSource(articleUrl), pageVariant, position);
+    const ld = jsonLdMap.get(normalizedUrl) || {};
+    const mediumPostId = cleanText(ld.medium_post_id) || extractMediumPostId(normalizedUrl);
+    const embedded = findEmbeddedPostData(normalizedUrl, mediumPostId, embeddedPostMap);
+    const title = firstVisibleText(root, ["h2", "h1", "a[href] h2", "h3"]) || cleanText(embedded.title) || cleanText(ld.title);
+    const subtitle = firstVisibleText(root, ["h3"]) || cleanText(embedded.subtitle) || cleanText(ld.subtitle);
+    const lines = dedupeLines(root.innerText || root.textContent);
+    const authorAndPublication = collectAuthorAndPublicationFromPreview(root, normalizedUrl, title);
+    const thumbnail = pickThumbnail(root, title);
+    const domClaps = lines.map((line) => parseCompactInteger(line, "(?:claps?|applause|recommendations?)")).find((value) => value !== null);
+    const domResponses = lines.map((line) => parseCompactInteger(line, "(?:responses?|comments?)")).find((value) => value !== null);
+    const claps = inferEngagementCount(root, embedded.claps, domClaps, "(?:clap|applause|recommend)", "clap");
+    const responses = inferEngagementCount(root, embedded.responses, domResponses, "(?:response|comment)", "response");
+    const publishedLabel = firstVisibleDateLikeText(root) || cleanText(ld.published_label);
+    const inferredPublishedDate = inferPublishedDateFromLabel(publishedLabel, capturedDate);
+    const inferredPublishedTimestamp = inferPublishedTimestampFromLabel(publishedLabel, capturedDate);
+    const authorName = cleanText(authorAndPublication.author.name) || cleanText(embedded.author_name) || cleanText(ld.author_name);
+    const publicationName = cleanText(authorAndPublication.publication.name) || cleanText(embedded.publication_name);
+
+    return {
+      position,
+      section: detectSection(root) || (pageVariant === "tag_recommended" ? "Recommended stories" : ""),
+      article_url: normalizedUrl,
+      medium_post_id: mediumPostId,
+      title: cleanText(title),
+      subtitle: cleanText(subtitle),
+      author_name: authorName,
+      author_url: normalizeMediumUrl(authorAndPublication.author.url) || normalizeMediumUrl(ld.author_url),
+      author_username: cleanText(embedded.author_username),
+      author_medium_user_id: cleanText(embedded.author_medium_user_id),
+      publication_name: publicationName,
+      publication_url: normalizeMediumUrl(authorAndPublication.publication.url),
+      publication_id: cleanText(embedded.publication_id),
+      publication_slug: cleanText(embedded.publication_slug),
+      publication_domain: cleanText(embedded.publication_domain),
+      publication_subscriber_count: Number.isFinite(embedded.publication_subscriber_count) ? embedded.publication_subscriber_count : null,
+      publication_status: choosePublicationStatus(publicationName, embedded.publication_status, authorName),
+      published_label: publishedLabel,
+      published_at: cleanText(embedded.published_at) || cleanText(ld.published_label),
+      published_date_inferred: cleanText(embedded.published_at) || cleanText(ld.published_label) ? "" : inferredPublishedDate.date,
+      published_date_inferred_from: inferredPublishedDate.inferred ? publishedLabel : "",
+      published_at_inferred: cleanText(embedded.published_at) || cleanText(ld.published_label) ? "" : inferredPublishedTimestamp.timestamp,
+      published_at_inferred_precision: inferredPublishedTimestamp.precision,
+      updated_at: cleanText(embedded.updated_at),
+      read_time_minutes: Number.isFinite(embedded.read_time_minutes) ? embedded.read_time_minutes : null,
+      article_tags: Array.isArray(embedded.article_tags) ? embedded.article_tags : [],
+      claps: Number.isFinite(claps) ? claps : null,
+      responses: Number.isFinite(responses) ? responses : null,
+      is_member_only: embedded.is_member_only === true || /member[- ]only/i.test(lines.join(" ")) || ld.is_member_only === true,
+      thumbnail_url: cleanText(thumbnail.url) || cleanText(embedded.thumbnail_url) || cleanText(ld.thumbnail_url),
+      thumbnail_alt: cleanText(thumbnail.alt) || cleanText(embedded.thumbnail_alt),
+      ...recommendation
+    };
+  }
+
+  function collectVisibleArticleCards(pageVariant, capturedDate) {
+    const jsonLdMap = collectJsonLdMap();
+    const embeddedPostMap = collectApolloPostMap();
+    const cards = [];
+    const seenUrls = new Set();
+
+    const previewRoots = Array.from(document.querySelectorAll('article[data-testid="post-preview"]'))
+      .filter(hasVisibleCardContent);
+
+    if (previewRoots.length > 0) {
+      for (const root of previewRoots) {
+        const card = buildPreviewCardRecord(root, jsonLdMap, embeddedPostMap, cards.length + 1, pageVariant, capturedDate);
+
+        if (!card || !card.article_url || !card.title || seenUrls.has(card.article_url)) {
+          continue;
+        }
+
+        seenUrls.add(card.article_url);
+        cards.push(card);
+      }
+
+      if (cards.length > 0) {
+        return cards;
+      }
+    }
+
+    const anchors = Array.from(document.querySelectorAll("a[href]")).filter((anchor) => isVisible(anchor) && looksLikeArticleUrl(anchor.href));
+
+    for (const anchor of anchors) {
+      const normalizedUrl = normalizeMediumUrl(anchor.href);
+      if (seenUrls.has(normalizedUrl)) continue;
+
+      const root = findCardRoot(anchor);
+      const card = buildCardRecord(root, anchor.href, jsonLdMap, embeddedPostMap, cards.length + 1, pageVariant, capturedDate);
+
+      if (!card.article_url || !card.title) continue;
+
+      seenUrls.add(card.article_url);
+      cards.push(card);
+    }
+
+    return cards;
+  }
+
+  function currentTimestamp() {
+    return new Date().toISOString().replace(/\\.\\d{3}Z$/, "Z");
+  }
+
+  function filenameTimestamp() {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, "0");
+    return [
+      now.getFullYear(),
+      pad(now.getMonth() + 1),
+      pad(now.getDate())
+    ].join("-") + "_" + pad(now.getHours()) + pad(now.getMinutes());
+  }
+
+  function downloadJsonFile(filename, payload) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+
+  const pageInfo = parseTagPageInfo();
+  const tagSlug = pageInfo.tagSlug;
+  const pageVariant = pageInfo.pageVariant;
+
+  if (!tagSlug) {
+    window.alert("Open a Medium tag page first, then click this bookmarklet again.");
+    return;
+  }
+
+  const capturedDate = new Date();
+  const capturedAt = capturedDate.toISOString().replace(/\\.\\d{3}Z$/, "Z");
+  const cards = collectVisibleArticleCards(pageVariant, capturedDate);
+
+  if (!cards.length) {
+    window.alert("No visible Medium article cards were detected on this tag page. Scroll further and try again.");
+    return;
+  }
+
+  const payload = {
+    source_type: sourceType,
+    schema_version: schemaVersion,
+    tag_slug: tagSlug,
+    page_variant: pageVariant,
+    tag_url: normalizeMediumUrl(window.location.href),
+    source_url: normalizeMediumUrl(window.location.href),
+    captured_at: capturedAt,
+    page_title: cleanText(document.title),
+    cards
+  };
+
+  const filename = "medium_tag_" + tagSlug.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase() + "_" + filenameTimestamp() + ".json";
+  downloadJsonFile(filename, payload);
+  window.alert("Exported " + cards.length + " Medium tag-page cards.");
+})();`;
+
+    const bookmarkletCode = "javascript:" + encodeURIComponent(bookmarkletSource);
+    document.getElementById("bookmarkletLink").setAttribute("href", bookmarkletCode);
+    document.getElementById("bookmarkletCode").value = bookmarkletCode;
+  </script>
+</body>
+</html>
