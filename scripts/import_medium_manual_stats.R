@@ -217,6 +217,7 @@ ensure_medium_articles_columns <- function(connection) {
   add_column_if_missing(connection, "medium_articles", "manual_relevance_status", "TEXT")
   add_column_if_missing(connection, "medium_articles", "manual_relevance_checked_at", "TEXT")
   add_column_if_missing(connection, "medium_articles", "manual_relevance_note", "TEXT")
+  add_column_if_missing(connection, "medium_articles", "last_seen_at", "TEXT")
   add_column_if_missing(connection, "medium_articles", "is_own_article", "INTEGER DEFAULT 0")
   add_column_if_missing(connection, "medium_articles", "own_article_source", "TEXT")
   add_column_if_missing(connection, "medium_articles", "own_article_detected_at", "TEXT")
@@ -438,8 +439,9 @@ upsert_medium_article <- function(connection, article, article_url) {
           visible_text_word_count,
           visible_article_text_truncated,
           visible_article_text_max_chars,
-          visible_article_collected_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          visible_article_collected_at,
+          last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ",
       params = list(
         "manual-browser",
@@ -464,6 +466,7 @@ upsert_medium_article <- function(connection, article, article_url) {
         article$visible_text_word_count,
         article$visible_article_text_truncated,
         article$visible_article_text_max_chars,
+        article$observed_at,
         article$observed_at
       )
     )
@@ -563,6 +566,16 @@ upsert_medium_article <- function(connection, article, article_url) {
             )
           THEN ?
           ELSE visible_article_collected_at
+        END,
+        last_seen_at = CASE
+          WHEN ? IS NOT NULL
+            AND (
+              last_seen_at IS NULL
+              OR last_seen_at = ''
+              OR ? > last_seen_at
+            )
+          THEN ?
+          ELSE last_seen_at
         END
       WHERE url = ?
     ",
@@ -593,6 +606,9 @@ upsert_medium_article <- function(connection, article, article_url) {
       article$visible_article_text_max_chars,
       article$observed_at,
       article$visible_article_text,
+      article$observed_at,
+      article$observed_at,
+      article$observed_at,
       article$observed_at,
       article_url
     )

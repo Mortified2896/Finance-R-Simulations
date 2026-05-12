@@ -2,6 +2,11 @@ data/*.sqlite
 data/*.sqlite.backup_*
 data/*.db
 data/raw/
+data/medium_tag_watcher_snapshots/
+data/medium_article_text_snapshots/
+data/medium_tag_playwright_profile/
+data/medium_tag_browser_home/
+data/medium_tag_manual_chrome_profile/
 node_modules/
 debug_samples/
 .DS_Store

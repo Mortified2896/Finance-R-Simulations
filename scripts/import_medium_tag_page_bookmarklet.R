@@ -18,6 +18,7 @@ library(jsonlite)
 source(file.path("scripts", "medium_tag_import_helpers.R"))
 
 database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "medium_articles.sqlite"))
+STATS_OBSERVATION_MIN_GAP_HOURS <- 12
 
 first_non_missing <- function(primary_value, fallback_value) {
   if (!is_missing_text(primary_value)) {
@@ -79,9 +80,8 @@ clean_card <- function(card, fallback_position = NA_integer_) {
   )
 }
 
-deduplicate_cards <- function(cards) {
-  deduplicated <- list()
-  seen_urls <- character()
+clean_cards <- function(cards) {
+  cleaned_cards <- list()
 
   for (index in seq_along(cards)) {
     cleaned <- clean_card(cards[[index]], fallback_position = index)
@@ -90,15 +90,10 @@ deduplicate_cards <- function(cards) {
       next
     }
 
-    if (cleaned$article_url %in% seen_urls) {
-      next
-    }
-
-    seen_urls <- c(seen_urls, cleaned$article_url)
-    deduplicated[[length(deduplicated) + 1]] <- cleaned
+    cleaned_cards[[length(cleaned_cards) + 1]] <- cleaned
   }
 
-  deduplicated
+  cleaned_cards
 }
 
 read_tag_page_payload <- function(input_path) {
@@ -130,7 +125,7 @@ read_tag_page_payload <- function(input_path) {
     },
     captured_at = clean_text(parsed$captured_at),
     page_title = clean_text(parsed$page_title),
-    cards = deduplicate_cards(cards)
+    cards = clean_cards(cards)
   )
 }
 
@@ -280,15 +275,191 @@ insert_observation <- function(connection, snapshot_id, article_id, card, payloa
   )
 }
 
+null_to_key <- function(value) {
+  value <- clean_text(value)
+  if (is.na(value)) "" else value
+}
+
+appearance_dedupe_key <- function(article_id, card, payload) {
+  paste(
+    article_id,
+    null_to_key(payload$source_type),
+    null_to_key(payload$page_variant),
+    null_to_key(payload$tag_slug),
+    null_to_key(payload$tag_url),
+    null_to_key(card$recommendation_surface),
+    null_to_key(card$recommendation_tag_slug),
+    null_to_key(card$position),
+    null_to_key(card$recommendation_position),
+    sep = "\r"
+  )
+}
+
+ensure_medium_article_public_stats_schema <- function(connection) {
+  invisible(dbExecute(connection, "
+    CREATE TABLE IF NOT EXISTS medium_article_public_stats (
+      id INTEGER PRIMARY KEY,
+      article_url TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      observed_date TEXT NOT NULL,
+      claps_count INTEGER,
+      responses_count INTEGER,
+      claps_raw TEXT,
+      responses_raw TEXT,
+      parse_status TEXT NOT NULL,
+      parse_method TEXT,
+      error_message TEXT,
+      UNIQUE(article_url, observed_at)
+    )
+  "))
+
+  invisible(tryCatch(
+    dbExecute(connection, "
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_medium_article_public_stats_article_url_observed_at
+      ON medium_article_public_stats(article_url, observed_at)
+    "),
+    error = function(error) {
+      warning(
+        "Could not create the exact public-stats observation index. The importer will still throttle in code. ",
+        conditionMessage(error),
+        call. = FALSE
+      )
+    }
+  ))
+}
+
+latest_article_observation <- function(connection, article_id) {
+  if (!dbExistsTable(connection, "medium_article_public_stats")) {
+    return(data.frame())
+  }
+
+  dbGetQuery(
+    connection,
+    "
+      SELECT
+        s.*
+      FROM medium_article_public_stats s
+      INNER JOIN medium_articles a
+        ON s.article_url = a.url
+      WHERE a.id = ?
+      ORDER BY s.observed_at DESC, s.id DESC
+      LIMIT 1
+    ",
+    params = list(article_id)
+  )
+}
+
+parse_observed_at <- function(value) {
+  value <- clean_text(value)
+
+  if (is.na(value)) {
+    return(as.POSIXct(NA))
+  }
+
+  parsed <- as.POSIXct(value, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+
+  if (is.na(parsed)) {
+    parsed <- as.POSIXct(value, tz = "UTC")
+  }
+
+  parsed
+}
+
+same_count <- function(left, right) {
+  if (is.na(left) && is.na(right)) {
+    return(TRUE)
+  }
+
+  identical(as.integer(left), as.integer(right))
+}
+
+should_insert_article_observation <- function(
+  conn,
+  article_id,
+  claps,
+  responses,
+  observed_at,
+  min_gap_hours = STATS_OBSERVATION_MIN_GAP_HOURS
+) {
+  latest <- latest_article_observation(conn, article_id)
+
+  if (nrow(latest) == 0) {
+    return(list(insert = TRUE, reason = "first_observation"))
+  }
+
+  claps_changed <- !same_count(claps, latest$claps_count[1])
+  responses_changed <- !same_count(responses, latest$responses_count[1])
+
+  if (isTRUE(claps_changed) || isTRUE(responses_changed)) {
+    return(list(insert = TRUE, reason = "stats_changed"))
+  }
+
+  latest_time <- parse_observed_at(latest$observed_at[1])
+  observed_time <- parse_observed_at(observed_at)
+
+  if (is.na(latest_time) || is.na(observed_time)) {
+    return(list(insert = TRUE, reason = "min_gap_passed"))
+  }
+
+  elapsed_hours <- as.numeric(difftime(observed_time, latest_time, units = "hours"))
+
+  if (!is.na(elapsed_hours) && elapsed_hours >= min_gap_hours) {
+    return(list(insert = TRUE, reason = "min_gap_passed"))
+  }
+
+  list(insert = FALSE, reason = "unchanged_too_recent")
+}
+
+insert_article_stats_observation <- function(connection, article_url, card, observed_at, reason) {
+  observed_date <- substr(observed_at, 1, 10)
+  parse_status <- if (!is.na(card$claps) || !is.na(card$responses)) "ok" else "not_found"
+
+  dbExecute(
+    connection,
+    "
+      INSERT OR IGNORE INTO medium_article_public_stats (
+        article_url,
+        observed_at,
+        observed_date,
+        claps_count,
+        responses_count,
+        claps_raw,
+        responses_raw,
+        parse_status,
+        parse_method,
+        error_message
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ",
+    params = list(
+      article_url,
+      observed_at,
+      observed_date,
+      card$claps,
+      card$responses,
+      if (!is.na(card$claps)) as.character(card$claps) else NA_character_,
+      if (!is.na(card$responses)) as.character(card$responses) else NA_character_,
+      parse_status,
+      paste0("medium_tag_page_", reason),
+      NA_character_
+    )
+  )
+}
+
 print_new_import_summary <- function(summary, payload, source_file_hash, snapshot_id, database_path) {
   message("Imported Medium tag page")
   message("------------------------")
   message("Tag: ", payload$tag_slug)
   message("Page variant: ", payload$page_variant)
-  message("Cards found: ", summary$cards_found)
-  message("New articles: ", summary$new_articles)
-  message("Existing articles reused/updated: ", summary$existing_articles)
-  message("Tag observations saved: ", summary$observations_saved)
+  message("Articles parsed: ", summary$cards_found)
+  message("Articles inserted: ", summary$new_articles)
+  message("Articles reused/updated: ", summary$existing_articles)
+  message("Appearances inserted: ", summary$appearances_inserted)
+  message("Appearances skipped as duplicates: ", summary$appearances_skipped_duplicate)
+  message("Stats observations inserted: ", summary$stats_observations_inserted)
+  message("Stats observations skipped unchanged/too recent: ", summary$stats_skipped_unchanged_too_recent)
+  message("Stats observations inserted because first seen: ", summary$stats_inserted_first_observation)
+  message("Stats observations inserted because claps/responses changed: ", summary$stats_inserted_stats_changed)
+  message("Stats observations inserted because min gap passed: ", summary$stats_inserted_min_gap_passed)
   message("Queued for article import: ", summary$queued_for_import)
   message("Already queued/imported: ", summary$already_queued_or_imported)
   message("Already had full text: ", summary$already_had_full_text)
@@ -352,6 +523,7 @@ on.exit(dbDisconnect(connection), add = TRUE)
 ensure_medium_articles_schema(connection)
 schema_info <- inspect_medium_articles_schema(connection)
 ensure_medium_tag_page_schema(connection, schema_info)
+ensure_medium_article_public_stats_schema(connection)
 
 payload <- read_tag_page_payload(input_path)
 source_file_hash <- compute_source_file_hash(input_path)
@@ -367,7 +539,13 @@ summary <- list(
   cards_found = length(payload$cards),
   new_articles = 0L,
   existing_articles = 0L,
-  observations_saved = 0L,
+  appearances_inserted = 0L,
+  appearances_skipped_duplicate = 0L,
+  stats_observations_inserted = 0L,
+  stats_skipped_unchanged_too_recent = 0L,
+  stats_inserted_first_observation = 0L,
+  stats_inserted_stats_changed = 0L,
+  stats_inserted_min_gap_passed = 0L,
   queued_for_import = 0L,
   already_queued_or_imported = 0L,
   already_had_full_text = 0L,
@@ -386,6 +564,7 @@ dbBegin(connection)
 
 transaction_ok <- FALSE
 snapshot_id <- NA_integer_
+seen_appearance_keys <- character()
 
 tryCatch(
   {
@@ -412,8 +591,48 @@ tryCatch(
         summary$warnings <- c(summary$warnings, full_content_result$warning_message)
       }
 
-      insert_observation(connection, snapshot_id, article_result$article_id, card, payload, imported_at)
-      summary$observations_saved <- summary$observations_saved + 1L
+      appearance_key <- appearance_dedupe_key(article_result$article_id, card, payload)
+
+      if (appearance_key %in% seen_appearance_keys) {
+        summary$appearances_skipped_duplicate <- summary$appearances_skipped_duplicate + 1L
+      } else {
+        seen_appearance_keys <- c(seen_appearance_keys, appearance_key)
+        rows_inserted <- insert_observation(connection, snapshot_id, article_result$article_id, card, payload, imported_at)
+
+        if (rows_inserted > 0) {
+          summary$appearances_inserted <- summary$appearances_inserted + 1L
+        } else {
+          summary$appearances_skipped_duplicate <- summary$appearances_skipped_duplicate + 1L
+        }
+      }
+
+      stats_decision <- should_insert_article_observation(
+        conn = connection,
+        article_id = article_result$article_id,
+        claps = card$claps,
+        responses = card$responses,
+        observed_at = observed_at_for_row
+      )
+
+      if (isTRUE(stats_decision$insert)) {
+        stats_rows_inserted <- insert_article_stats_observation(
+          connection,
+          card$article_url,
+          card,
+          observed_at_for_row,
+          stats_decision$reason
+        )
+
+        if (stats_rows_inserted > 0) {
+          summary$stats_observations_inserted <- summary$stats_observations_inserted + 1L
+          summary[[paste0("stats_inserted_", stats_decision$reason)]] <-
+            summary[[paste0("stats_inserted_", stats_decision$reason)]] + 1L
+        } else {
+          summary$stats_skipped_unchanged_too_recent <- summary$stats_skipped_unchanged_too_recent + 1L
+        }
+      } else if (identical(stats_decision$reason, "unchanged_too_recent")) {
+        summary$stats_skipped_unchanged_too_recent <- summary$stats_skipped_unchanged_too_recent + 1L
+      }
 
       if (!is.na(card$thumbnail_url)) {
         summary$thumbnail_urls_saved <- summary$thumbnail_urls_saved + 1L

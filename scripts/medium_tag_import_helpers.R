@@ -206,6 +206,7 @@ inspect_medium_articles_schema <- function(connection) {
     has_content_text = "content_text" %in% columns,
     has_content_encoded_html = "content_encoded_html" %in% columns,
     has_visible_article_text = "visible_article_text" %in% columns,
+    has_last_seen_at = "last_seen_at" %in% columns,
     full_content_columns = intersect(c("content_text", "content_encoded_html"), columns)
   )
 }
@@ -251,7 +252,8 @@ ensure_medium_articles_schema <- function(connection) {
       publication_status TEXT,
       is_own_article INTEGER DEFAULT 0,
       own_article_source TEXT,
-      own_article_detected_at TEXT
+      own_article_detected_at TEXT,
+      last_seen_at TEXT
     )
   "))
 
@@ -289,6 +291,7 @@ ensure_medium_articles_schema <- function(connection) {
   add_column_if_missing(connection, "medium_articles", "is_own_article", "INTEGER DEFAULT 0", warn_only = TRUE)
   add_column_if_missing(connection, "medium_articles", "own_article_source", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_articles", "own_article_detected_at", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_articles", "last_seen_at", "TEXT", warn_only = TRUE)
 
   create_index_if_possible(connection, "
     CREATE UNIQUE INDEX IF NOT EXISTS idx_medium_articles_url
@@ -299,6 +302,78 @@ ensure_medium_articles_schema <- function(connection) {
     CREATE INDEX IF NOT EXISTS idx_medium_articles_medium_post_id
     ON medium_articles(medium_post_id)
   ", "Could not create medium_articles post id index")
+
+  ensure_medium_article_text_snapshots_schema(connection)
+}
+
+ensure_medium_article_text_snapshots_schema <- function(connection) {
+  invisible(dbExecute(connection, "
+    CREATE TABLE IF NOT EXISTS medium_article_text_snapshots (
+      id INTEGER PRIMARY KEY,
+      article_id INTEGER NOT NULL,
+      article_url_normalized TEXT NOT NULL,
+      collected_at TEXT NOT NULL,
+      source_type TEXT,
+      extraction_method TEXT,
+      text_hash TEXT NOT NULL,
+      visible_text TEXT,
+      word_count INTEGER,
+      text_truncated INTEGER,
+      max_chars INTEGER,
+      text_blocks_json TEXT,
+      article_tags_json TEXT,
+      highlighted_text_json TEXT,
+      images_json TEXT,
+      author_name TEXT,
+      author_url TEXT,
+      publication_name TEXT,
+      publication_url TEXT,
+      published_label TEXT,
+      capture_completeness TEXT,
+      readable_status TEXT,
+      error_message TEXT,
+      FOREIGN KEY(article_id) REFERENCES medium_articles(id),
+      UNIQUE(article_id, text_hash)
+    )
+  "))
+
+  add_column_if_missing(connection, "medium_article_text_snapshots", "article_id", "INTEGER", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "article_url_normalized", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "collected_at", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "source_type", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "extraction_method", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "text_hash", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "visible_text", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "word_count", "INTEGER", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "text_truncated", "INTEGER", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "max_chars", "INTEGER", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "text_blocks_json", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "article_tags_json", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "highlighted_text_json", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "images_json", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "author_name", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "author_url", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "publication_name", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "publication_url", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "published_label", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "capture_completeness", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "readable_status", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "error_message", "TEXT", warn_only = TRUE)
+
+  create_index_if_possible(connection, "
+    CREATE INDEX IF NOT EXISTS idx_medium_article_text_snapshots_article_id
+    ON medium_article_text_snapshots(article_id)
+  ", "Could not create text snapshots article_id index")
+
+  create_index_if_possible(connection, "
+    CREATE INDEX IF NOT EXISTS idx_medium_article_text_snapshots_collected_at
+    ON medium_article_text_snapshots(collected_at)
+  ", "Could not create text snapshots collected_at index")
+
+  create_index_if_possible(connection, "
+    CREATE INDEX IF NOT EXISTS idx_medium_article_text_snapshots_article_url
+    ON medium_article_text_snapshots(article_url_normalized)
+  ", "Could not create text snapshots article URL index")
 }
 
 create_index_if_possible <- function(connection, sql_text, warning_prefix) {
@@ -490,7 +565,7 @@ prepare_medium_article_insert <- function(card, schema_info, observed_at) {
   list(columns = insert_columns, values = insert_values)
 }
 
-update_medium_article_metadata <- function(connection, existing_row, card, schema_info) {
+update_medium_article_metadata <- function(connection, existing_row, card, schema_info, observed_at = NA_character_) {
   row <- existing_row
   updates <- list()
 
@@ -583,6 +658,13 @@ update_medium_article_metadata <- function(connection, existing_row, card, schem
     maybe_update("is_member_only", card$is_member_only)
   }
 
+  if ("last_seen_at" %in% names(row) && !is_missing_text(observed_at)) {
+    existing_seen <- clean_text(row$last_seen_at[1])
+    if (is.na(existing_seen) || clean_text(observed_at) > existing_seen) {
+      maybe_update("last_seen_at", clean_text(observed_at))
+    }
+  }
+
   if (length(updates) == 0) {
     return(FALSE)
   }
@@ -626,7 +708,7 @@ find_or_create_medium_article <- function(connection, card, schema_info, observe
     ))
   }
 
-  was_updated <- update_medium_article_metadata(connection, chosen_match$row, card, schema_info)
+  was_updated <- update_medium_article_metadata(connection, chosen_match$row, card, schema_info, observed_at)
 
   list(
     article_id = chosen_match$row$id[1],
