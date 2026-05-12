@@ -1,0 +1,14 @@
+{
+  "name": "finance-r-simulations-writing-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Small writing helpers for Medium article projects.",
+  "scripts": {
+    "reroll:sp500": "node scripts/writing_api/reroll_sentence.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "openai": "^6.10.0"
+  }
+}

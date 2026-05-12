@@ -1,12 +1,29 @@
-# Writing API Placeholders
+# Writing API Helpers
 
-These scripts are placeholders for later OpenAI API usage:
+This folder contains small writing helpers for article projects.
 
-- `reroll_sentence.mjs`
-- `draft_section.mjs`
-- `critique_draft.mjs`
+## Current status
 
-The API key should go in a local `.env` file:
+- `reroll_sentence.mjs`: implemented for rewriting one selected sentence or paragraph.
+- `draft_section.mjs`: placeholder only.
+- `critique_draft.mjs`: placeholder only.
+
+## Installation
+
+From the repository root, install the minimal Node dependencies:
+
+```sh
+npm install
+```
+
+This installs:
+
+- `openai`
+- `dotenv`
+
+## API key
+
+Create a local `.env` file in the repository root:
 
 ```text
 OPENAI_API_KEY=...
@@ -14,6 +31,27 @@ OPENAI_API_KEY=...
 
 `.env` must not be committed.
 
-Later, these scripts should read from the article project files in `article_projects/sp500-finfluencers/` and save outputs into `article_projects/sp500-finfluencers/api_outputs/`.
+## Reroll a sentence or paragraph
 
-No OpenAI API calls are implemented yet.
+Run from the repository root:
+
+```sh
+node scripts/writing_api/reroll_sentence.mjs "The S&P 500 is not the problem. The problem is treating it as the default."
+```
+
+The helper reads:
+
+- `article_projects/sp500-finfluencers/style_rules.md`
+- `article_projects/sp500-finfluencers/brief.md`
+
+It prints 8 rewrite alternatives to the terminal and saves a Markdown output file to:
+
+```text
+article_projects/sp500-finfluencers/api_outputs/
+```
+
+The output filename uses this format:
+
+```text
+reroll_sentence_YYYYMMDD_HHMMSS.md
+```
