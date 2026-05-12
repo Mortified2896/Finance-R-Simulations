@@ -12,3 +12,4 @@ node_modules/
 debug_samples/
 .DS_Store
 Rplots.pdf
+article_projects/*/api_outputs/*.md
