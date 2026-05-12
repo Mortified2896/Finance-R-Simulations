@@ -8,6 +8,7 @@ data/medium_tag_playwright_profile/
 data/medium_tag_browser_home/
 data/medium_tag_manual_chrome_profile/
 node_modules/
+.env
 debug_samples/
 .DS_Store
 Rplots.pdf
