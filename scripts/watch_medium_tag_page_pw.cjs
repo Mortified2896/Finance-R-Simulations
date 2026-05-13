@@ -187,6 +187,14 @@ function summarizePayload(payload) {
   };
 }
 
+function summarizeSearchTagsPayload(payload) {
+  return {
+    tags: (payload.tags || []).length,
+    posts: (payload.sidebar_posts || []).length,
+    people: (payload.sidebar_people || []).length,
+  };
+}
+
 function formatSummary(prefix, payload, extra = {}) {
   const summary = summarizePayload(payload);
   const parts = [
@@ -379,12 +387,45 @@ async function capturePayload(page, helpers, options) {
   return helpers.parseMediumTagSnapshot(snapshot, page.url(), await page.title());
 }
 
+async function captureSearchTagsPayload(page, helpers) {
+  const payload = await page.evaluate(() => {
+    const state = window.__APOLLO_STATE__ || null;
+    const title = document.title || "";
+    const url = window.location.href;
+    const html = document.documentElement.outerHTML;
+    return { state, title, url, html };
+  });
+
+  if (payload.state) {
+    const parsed = helpers.parseSearchTagsApolloState(payload.state, payload.url, payload.title);
+    const fromHtml = helpers.parseMediumSearchTagsHtml(payload.html, payload.url, payload.title);
+    return (fromHtml.tags || []).length > (parsed.tags || []).length
+      ? { ...parsed, tags: fromHtml.tags }
+      : parsed;
+  }
+
+  return helpers.parseMediumSearchTagsHtml(payload.html, payload.url, payload.title);
+}
+
 function isMediumTagUrl(value) {
   try {
     const parsed = new URL(value);
     return (
       /(^|\.)medium\.com$/i.test(parsed.hostname) &&
       /^\/tag\/[^/]+(?:\/recommended)?\/?$/i.test(parsed.pathname)
+    );
+  } catch (_error) {
+    return false;
+  }
+}
+
+function isMediumSearchTagsUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return (
+      /(^|\.)medium\.com$/i.test(parsed.hostname) &&
+      /^\/search\/tags\/?$/i.test(parsed.pathname) &&
+      Boolean(parsed.searchParams.get("q"))
     );
   } catch (_error) {
     return false;
@@ -445,6 +486,15 @@ function pagesToInspect(browser, context, preferredPage) {
     .filter((candidate) => !candidate.isClosed() && isMediumTagUrl(candidate.url()));
 }
 
+function searchTagsPagesToInspect(browser, context, preferredPage) {
+  return uniquePages([
+    preferredPage,
+    ...contextsToInspect(browser, context)
+    .flatMap((candidateContext) => candidateContext.pages())
+  ])
+    .filter((candidate) => !candidate.isClosed() && isMediumSearchTagsUrl(candidate.url()));
+}
+
 function articlePagesToInspect(browser, context, preferredPage) {
   return uniquePages([
     preferredPage,
@@ -478,7 +528,7 @@ function visiblePageSummary(browser, context, preferredPage) {
     return `Waiting: no supported Medium page in watcher Chrome. Medium tabs seen: ${mediumUrls.slice(0, 3).join(" | ")}`;
   }
 
-  return "Waiting: no Medium tabs visible to watcher Chrome. Open a Medium tag page or article page in the Chrome window started by this watcher.";
+  return "Waiting: no Medium tabs visible to watcher Chrome. Open a Medium tag page, search-tags page, or article page in the Chrome window started by this watcher.";
 }
 
 function pageStateFor(page, pageStates) {
@@ -749,7 +799,7 @@ async function main() {
     console.log(`Browser home: ${options.browserHome}`);
   }
   if (options.waitForMedium) {
-    console.log("Navigate to a Medium /tag/... page, /tag/.../recommended page, or article page when you are ready.");
+    console.log("Navigate to a Medium /tag/... page, /tag/.../recommended page, /search/tags?q=..., or article page when you are ready.");
     console.log("The watcher will stay idle until it sees a supported Medium page.");
   }
   console.log(`Polling every ${options.pollSeconds}s. Scroll the opened browser window after tracking starts.`);
@@ -779,17 +829,74 @@ async function main() {
         continue;
       }
 
+      const searchTagsPages = searchTagsPagesToInspect(browser, context, page);
       const pages = pagesToInspect(browser, context, page);
       const articlePages = articlePagesToInspect(browser, context, page);
 
-      if (pages.length === 0 && articlePages.length === 0) {
+      if (searchTagsPages.length === 0 && pages.length === 0 && articlePages.length === 0) {
         logChangedStatus(loopState, visiblePageSummary(browser, context, page));
         await sleep(options.pollSeconds * 1000);
         continue;
       }
 
-      loopState.lastStatusMessage = "";
       let importedAny = false;
+
+      for (const searchTagsPage of searchTagsPages) {
+        const state = pageStateFor(searchTagsPage, pageStates);
+        const payload = await captureSearchTagsPayload(searchTagsPage, helpers).catch((error) => ({
+          error: compactCaptureError(error),
+          tags: [],
+          sidebar_posts: [],
+          sidebar_people: [],
+        }));
+
+        if (payload.error) {
+          console.log(`Waiting: search-tags capture failed: ${formatCaptureError(payload.error)}`);
+          continue;
+        }
+
+        const signature = helpers.signatureForSearchTagsPayload(payload);
+        const changed = Boolean(signature) && signature !== state.lastSignature;
+
+        if ((payload.tags || []).length === 0 && (payload.sidebar_posts || []).length === 0 && (payload.sidebar_people || []).length === 0) {
+          logChangedStatus(state, `Checked: zero search-tags results on ${searchTagsPage.url()} [${await searchTagsPage.title().catch(() => "")}]`);
+          continue;
+        }
+
+        if (!changed) {
+          const summary = summarizeSearchTagsPayload(payload);
+          logChangedStatus(state, `Checked: search-tags unchanged; tags=${summary.tags} posts=${summary.posts} people=${summary.people}`);
+          continue;
+        }
+
+        state.lastStatusMessage = "";
+        const snapshotPath = helpers.writeSnapshot(payload, options.snapshotDir);
+        state.lastSignature = signature;
+        importedAny = true;
+
+        const summary = summarizeSearchTagsPayload(payload);
+        console.log("Medium search-tags page detected");
+        console.log("--------------------------------");
+        console.log(`Search term: ${payload.search_term}`);
+        console.log(`Tracking context: ${payload.tracking_context || ""}`);
+        console.log(`Snapshot written: tags=${summary.tags} posts=${summary.posts} people=${summary.people} file=${snapshotPath}`);
+
+        if (options.importSnapshots) {
+          const result = helpers.importSearchTagsSnapshot(snapshotPath, workspace);
+          if (result.status === 0) {
+            if (result.stdout) console.log(result.stdout.trim());
+            if (result.stderr) console.log(result.stderr.trim());
+          } else {
+            console.log(`Search-tags import failed with status ${result.status}.`);
+            if (result.stderr) console.log(result.stderr.trim());
+            if (result.stdout) console.log(result.stdout.trim());
+          }
+        }
+
+        if (options.once) {
+          return;
+        }
+      }
 
       for (const page of pages) {
         const state = pageStateFor(page, pageStates);
@@ -813,7 +920,7 @@ async function main() {
         }));
 
         if (payload.error) {
-          logChangedStatus(state, `Waiting: ${formatCaptureError(payload.error)}`);
+          console.log(`Waiting: ${formatCaptureError(payload.error)}`);
           continue;
         }
 
@@ -875,7 +982,7 @@ async function main() {
         }));
 
         if (payload.error) {
-          logChangedStatus(state, `Waiting: article text capture failed: ${formatCaptureError(payload.error)}`);
+          console.log(`Waiting: article text capture failed: ${formatCaptureError(payload.error)}`);
           continue;
         }
 
@@ -910,8 +1017,9 @@ async function main() {
       }
 
       if (!importedAny) {
-        const watchedPages = pages.length + articlePages.length;
+        const watchedPages = searchTagsPages.length + pages.length + articlePages.length;
         const pageSignature = [
+          ...searchTagsPages.map((candidate) => candidate.url()),
           ...pages.map((candidate) => candidate.url()),
           ...articlePages.map((candidate) => candidate.url()),
         ].sort().join("|");

@@ -140,6 +140,11 @@ if (identical(source_type, "medium_tag_page_bookmarklet")) {
   quit(status = 0)
 }
 
+if (identical(source_type, "medium_search_tags_page")) {
+  run_import_script(file.path("scripts", "import_medium_search_tags_snapshot.R"), input_path)
+  quit(status = 0)
+}
+
 if (looks_like_manual_article_json(input_text)) {
   run_import_script(file.path("scripts", "import_medium_manual_stats.R"), input_path)
   quit(status = 0)
@@ -149,6 +154,7 @@ stop(
   "Unknown import file type.\n\n",
   "Supported inputs:\n",
   "- Medium tag-page bookmarklet JSON\n",
+  "- Medium search-tags watcher JSON\n",
   "- Existing Medium article bookmarklet JSON\n",
   "- Saved Medium tag page HTML\n",
   "- Saved Medium /me/stats HTML\n",

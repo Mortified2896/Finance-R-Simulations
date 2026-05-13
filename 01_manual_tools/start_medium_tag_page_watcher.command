@@ -9,7 +9,7 @@ while true; do
   echo "Starting Medium Tag Page Watcher..."
   echo
   echo "A Chrome browser window will open."
-  echo "Log in or navigate manually, then open a Medium /tag/... page, /tag/.../recommended page, or article page."
+  echo "Log in or navigate manually, then open a Medium /tag/... page, /tag/.../recommended page, /search/tags?q=... page, or article page."
   echo "The watcher imports tag cards when new article URLs appear and saves article text on article pages."
   echo "Type p + Enter to pause/resume, or q + Enter to stop this watcher run."
   echo

@@ -899,6 +899,110 @@ ensure_medium_tag_page_schema <- function(connection, schema_info) {
   ", "Could not create article import queue unique index")
 }
 
+ensure_medium_search_tags_schema <- function(connection) {
+  invisible(dbExecute(connection, "
+    CREATE TABLE IF NOT EXISTS medium_candidate_tags (
+      id INTEGER PRIMARY KEY,
+      tag_slug TEXT NOT NULL UNIQUE,
+      display_title TEXT,
+      tag_url TEXT,
+      first_seen_at TEXT,
+      last_seen_at TEXT,
+      first_seen_search_term TEXT,
+      last_seen_search_term TEXT,
+      status TEXT,
+      notes TEXT
+    )
+  "))
+
+  invisible(dbExecute(connection, "
+    CREATE TABLE IF NOT EXISTS medium_tag_discovery_observations (
+      id INTEGER PRIMARY KEY,
+      observed_at TEXT NOT NULL,
+      search_term TEXT NOT NULL,
+      tag_slug TEXT NOT NULL,
+      display_title TEXT,
+      result_rank INTEGER,
+      tracking_context TEXT,
+      source_url TEXT,
+      source_file TEXT,
+      imported_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  "))
+
+  invisible(dbExecute(connection, "
+    CREATE TABLE IF NOT EXISTS medium_search_sidebar_post_observations (
+      id INTEGER PRIMARY KEY,
+      observed_at TEXT NOT NULL,
+      search_term TEXT NOT NULL,
+      source_surface TEXT NOT NULL,
+      article_id INTEGER,
+      article_url_normalized TEXT,
+      medium_post_id TEXT,
+      title TEXT,
+      author_name TEXT,
+      author_url TEXT,
+      author_username TEXT,
+      result_rank INTEGER,
+      tracking_context TEXT,
+      source_url TEXT,
+      source_file TEXT,
+      imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(article_id) REFERENCES medium_articles(id)
+    )
+  "))
+
+  invisible(dbExecute(connection, "
+    CREATE TABLE IF NOT EXISTS medium_search_people_observations (
+      id INTEGER PRIMARY KEY,
+      observed_at TEXT NOT NULL,
+      search_term TEXT NOT NULL,
+      source_surface TEXT NOT NULL,
+      profile_url TEXT,
+      username TEXT,
+      display_name TEXT,
+      bio_snippet TEXT,
+      result_rank INTEGER,
+      tracking_context TEXT,
+      source_url TEXT,
+      source_file TEXT,
+      imported_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  "))
+
+  add_column_if_missing(connection, "medium_candidate_tags", "tag_url", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_candidate_tags", "first_seen_search_term", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_candidate_tags", "last_seen_search_term", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_candidate_tags", "status", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_candidate_tags", "notes", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_tag_discovery_observations", "tracking_context", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_tag_discovery_observations", "source_file", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_search_sidebar_post_observations", "tracking_context", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_search_sidebar_post_observations", "source_file", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_search_people_observations", "tracking_context", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_search_people_observations", "source_file", "TEXT", warn_only = TRUE)
+
+  create_index_if_possible(connection, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_medium_candidate_tags_slug
+    ON medium_candidate_tags(tag_slug)
+  ", "Could not create candidate tag slug unique index")
+
+  create_index_if_possible(connection, "
+    CREATE INDEX IF NOT EXISTS idx_medium_tag_discovery_search_tag_context_observed
+    ON medium_tag_discovery_observations(search_term, tag_slug, tracking_context, observed_at)
+  ", "Could not create tag discovery cooldown index")
+
+  create_index_if_possible(connection, "
+    CREATE INDEX IF NOT EXISTS idx_medium_search_sidebar_posts_article_window
+    ON medium_search_sidebar_post_observations(search_term, source_surface, medium_post_id, article_url_normalized, tracking_context, observed_at)
+  ", "Could not create search sidebar post duplicate-window index")
+
+  create_index_if_possible(connection, "
+    CREATE INDEX IF NOT EXISTS idx_medium_search_people_window
+    ON medium_search_people_observations(search_term, username, profile_url, tracking_context, observed_at)
+  ", "Could not create search people cooldown index")
+}
+
 find_existing_queue_row <- function(connection, normalized_url) {
   if (!dbExistsTable(connection, "medium_article_import_queue")) {
     return(data.frame())

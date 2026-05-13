@@ -3,7 +3,9 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const sourceType = "medium_tag_page_bookmarklet";
+const searchTagsSourceType = "medium_search_tags_page";
 const schemaVersion = 20;
+const searchTagsSchemaVersion = 1;
 const defaultSnapshotDir = path.join("data", "medium_tag_watcher_snapshots");
 const defaultArticleTextSnapshotDir = path.join("data", "medium_article_text_snapshots");
 
@@ -32,9 +34,57 @@ function normalizeMediumUrl(value, baseUrl = "https://medium.com") {
   }
 }
 
+function normalizeSourceUrl(value, baseUrl = "https://medium.com") {
+  const cleaned = cleanText(value);
+
+  if (!cleaned) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(cleaned, baseUrl);
+    parsed.hash = "";
+    return parsed.toString().replace(/\/+$/, "");
+  } catch (_error) {
+    return cleaned.split("#")[0].replace(/\/+$/, "");
+  }
+}
+
+function normalizeTrackingContext(value) {
+  return cleanText(value) || "unknown_context";
+}
+
 function extractMediumPostId(value) {
   const match = normalizeMediumUrl(value).match(/([a-f0-9]{12})(?:\/?$)/i);
   return match ? match[1].toLowerCase() : "";
+}
+
+function titleFromMediumUrl(value) {
+  const normalized = normalizeMediumUrl(value);
+  const match = normalized.match(/\/([^/?#]+)-([a-f0-9]{12})(?:\/)?$/i);
+
+  if (!match) {
+    return "";
+  }
+
+  return cleanText(
+    decodeURIComponent(match[1])
+      .replace(/-/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase())
+  );
+}
+
+function profileUrlForUser(user) {
+  if (!user) {
+    return "";
+  }
+
+  const domain = user.customDomainState?.live?.domain;
+  if (domain) {
+    return normalizeMediumUrl(`https://${domain}`);
+  }
+
+  return user.username ? normalizeMediumUrl(`https://medium.com/@${user.username}`) : "";
 }
 
 function looksLikeArticlePathUrl(value) {
@@ -316,6 +366,270 @@ function parseMediumTagSnapshot(snapshot, pageUrl, pageTitle = "", options = {})
   };
 }
 
+function searchTermFromUrl(pageUrl, fallback = "") {
+  try {
+    const parsed = new URL(pageUrl, "https://medium.com");
+    return cleanText(parsed.searchParams.get("q") || fallback).toLowerCase();
+  } catch (_error) {
+    return cleanText(fallback).toLowerCase();
+  }
+}
+
+function detectMediumSearchPageType(pageUrl) {
+  try {
+    const parsed = new URL(pageUrl, "https://medium.com");
+    if (
+      /(^|\.)medium\.com$/i.test(parsed.hostname) &&
+      /^\/search\/tags\/?$/i.test(parsed.pathname) &&
+      parsed.searchParams.get("q")
+    ) {
+      return "search_tags";
+    }
+  } catch (_error) {
+    return "";
+  }
+
+  return "";
+}
+
+function refId(item) {
+  return item && typeof item === "object" ? item.__ref || "" : "";
+}
+
+function deref(state, item) {
+  const key = refId(item);
+  return key ? state[key] : null;
+}
+
+function findSearchSection(searchObject, prefix, preferredLimit = "") {
+  if (!searchObject || typeof searchObject !== "object") {
+    return null;
+  }
+
+  const entries = Object.entries(searchObject)
+    .filter(([key, value]) => key.startsWith(prefix) && value && Array.isArray(value.items));
+
+  if (entries.length === 0) {
+    return null;
+  }
+
+  const preferred = entries.find(([key]) => preferredLimit && key.includes(`limit:${preferredLimit}`));
+  return (preferred || entries.sort((left, right) => right[1].items.length - left[1].items.length)[0])[1];
+}
+
+function findSearchSections(searchObject, prefix) {
+  if (!searchObject || typeof searchObject !== "object") {
+    return [];
+  }
+
+  return Object.entries(searchObject)
+    .filter(([key, value]) => key.startsWith(prefix) && value && Array.isArray(value.items))
+    .sort(([leftKey], [rightKey]) => {
+      const leftIsMain = /web-main-content/i.test(leftKey) ? 0 : 1;
+      const rightIsMain = /web-main-content/i.test(rightKey) ? 0 : 1;
+      return leftIsMain - rightIsMain || leftKey.localeCompare(rightKey);
+    });
+}
+
+function tagRowsFromSearchSectionItems(state, items, searchTerm, pageUrl, seenTags = new Set(), startRank = 1) {
+  const rows = [];
+
+  for (const item of items || []) {
+    const tag = deref(state, item);
+    const tagSlug = cleanText(tag?.normalizedTagSlug || tag?.id || "").toLowerCase();
+    if (!tagSlug || seenTags.has(tagSlug)) {
+      continue;
+    }
+    seenTags.add(tagSlug);
+    rows.push({
+      search_term: searchTerm,
+      tag_slug: tagSlug,
+      display_title: cleanText(tag?.displayTitle || tagSlug),
+      result_rank: startRank + rows.length,
+      tag_url: normalizeMediumUrl(`/tag/${encodeURIComponent(tagSlug)}`),
+      source_url: normalizeSourceUrl(pageUrl),
+    });
+  }
+
+  return rows;
+}
+
+function parseSearchTagsApolloState(state, pageUrl, pageTitle = "", options = {}) {
+  const capturedDate = options.capturedDate instanceof Date ? options.capturedDate : new Date();
+  const searchTerm = searchTermFromUrl(pageUrl, options.searchTerm || "");
+  const searchObject = Object.values(state || {}).find((value) => value && value.__typename === "Search") || {};
+  const tagSections = findSearchSections(searchObject, `tags-${searchTerm}`);
+  const postSection = findSearchSection(searchObject, `posts-${searchTerm}`, "3");
+  const peopleSection = findSearchSection(searchObject, `people-${searchTerm}`, "3");
+  const mainTagSections = tagSections.filter(([key]) => /web-main-content/i.test(key));
+  const sectionsForTags = mainTagSections.length > 0 ? mainTagSections : tagSections;
+  const seenTagSlugs = new Set();
+  const tags = [];
+
+  for (const [_key, section] of sectionsForTags) {
+    tags.push(...tagRowsFromSearchSectionItems(state, section.items, searchTerm, pageUrl, seenTagSlugs, tags.length + 1));
+  }
+
+  const sidebarPosts = (postSection?.items || [])
+    .map((item, index) => {
+      const post = deref(state, item);
+      if (!post) {
+        return null;
+      }
+      const creator = deref(state, post.creator);
+      const postUrl = normalizeMediumUrl(post.mediumUrl || "");
+      const postId = cleanText(post.id || extractMediumPostId(postUrl)).toLowerCase();
+      if (!postUrl && !postId) {
+        return null;
+      }
+      return {
+        search_term: searchTerm,
+        source_surface: "search_sidebar_posts",
+        result_rank: index + 1,
+        article_url: postUrl,
+        medium_post_id: postId,
+        title: cleanText(post.title || titleFromMediumUrl(postUrl)),
+        author_name: cleanText(creator?.name || ""),
+        author_url: profileUrlForUser(creator),
+        author_username: cleanText(creator?.username || ""),
+        is_member_only: post.isLocked === true,
+        published_at: post.firstPublishedAt ? new Date(Number(post.firstPublishedAt)).toISOString().replace(/\.\d{3}Z$/, "Z") : "",
+        updated_at: post.latestPublishedAt ? new Date(Number(post.latestPublishedAt)).toISOString().replace(/\.\d{3}Z$/, "Z") : "",
+      };
+    })
+    .filter(Boolean);
+
+  const sidebarPeople = (peopleSection?.items || [])
+    .map((item, index) => {
+      const user = deref(state, item);
+      if (!user) {
+        return null;
+      }
+      const profileUrl = profileUrlForUser(user);
+      if (!profileUrl && !user.username) {
+        return null;
+      }
+      return {
+        search_term: searchTerm,
+        source_surface: "search_sidebar_people",
+        result_rank: index + 1,
+        profile_url: profileUrl,
+        username: cleanText(user.username || ""),
+        display_name: cleanText(user.name || ""),
+        bio_snippet: cleanText(user.bio || ""),
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    source_type: searchTagsSourceType,
+    schema_version: searchTagsSchemaVersion,
+    page_type: "search_tags",
+    search_term: searchTerm,
+    source_url: normalizeSourceUrl(pageUrl),
+    captured_at: capturedDate.toISOString().replace(/\.\d{3}Z$/, "Z"),
+    page_title: cleanText(pageTitle),
+    tracking_context: normalizeTrackingContext(options.trackingContext),
+    tags,
+    sidebar_posts: sidebarPosts,
+    sidebar_people: sidebarPeople,
+  };
+}
+
+function extractApolloStateFromHtml(html) {
+  const match = String(html || "").match(/window\.__APOLLO_STATE__\s*=\s*({[\s\S]*?})<\/script>/);
+
+  if (!match) {
+    return null;
+  }
+
+  return JSON.parse(match[1]);
+}
+
+function parseSearchTagsDomFallbackFromHtml(html, pageUrl, pageTitle = "", options = {}) {
+  const capturedDate = options.capturedDate instanceof Date ? options.capturedDate : new Date();
+  const searchTerm = searchTermFromUrl(pageUrl, options.searchTerm || "");
+  const seenTags = new Set();
+  const tags = [];
+  const tagLinkRegex = /<a\b[^>]*href=["']([^"']*\/tag\/([^?"']+)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+
+  while ((match = tagLinkRegex.exec(String(html || ""))) !== null) {
+    const href = normalizeMediumUrl(match[1]);
+    const slug = cleanText(decodeURIComponent(match[2] || "")).toLowerCase();
+    const title = cleanText(match[3].replace(/<[^>]*>/g, " "));
+    if (!slug || !title || seenTags.has(slug)) {
+      continue;
+    }
+    seenTags.add(slug);
+    tags.push({
+      search_term: searchTerm,
+      tag_slug: slug,
+      display_title: title,
+      result_rank: tags.length + 1,
+      tag_url: href,
+      source_url: normalizeSourceUrl(pageUrl),
+    });
+  }
+
+  return {
+    source_type: searchTagsSourceType,
+    schema_version: searchTagsSchemaVersion,
+    page_type: "search_tags",
+    search_term: searchTerm,
+    source_url: normalizeSourceUrl(pageUrl),
+    captured_at: capturedDate.toISOString().replace(/\.\d{3}Z$/, "Z"),
+    page_title: cleanText(pageTitle),
+    tracking_context: normalizeTrackingContext(options.trackingContext),
+    tags,
+    sidebar_posts: [],
+    sidebar_people: [],
+  };
+}
+
+function mergeDomVisibleSearchTags(payload, html, options = {}) {
+  const domPayload = parseSearchTagsDomFallbackFromHtml(html, payload.source_url, payload.page_title, {
+    ...options,
+    capturedDate: payload.captured_at ? new Date(payload.captured_at) : options.capturedDate,
+    searchTerm: payload.search_term,
+    trackingContext: payload.tracking_context,
+  });
+
+  if (domPayload.tags.length <= (payload.tags || []).length) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    tags: domPayload.tags,
+  };
+}
+
+function parseMediumSearchTagsHtml(html, pageUrl = "https://medium.com/search/tags?q=finance", pageTitle = "", options = {}) {
+  const state = extractApolloStateFromHtml(html);
+  if (state) {
+    return mergeDomVisibleSearchTags(
+      parseSearchTagsApolloState(state, pageUrl, pageTitle, options),
+      html,
+      options
+    );
+  }
+
+  return parseSearchTagsDomFallbackFromHtml(html, pageUrl, pageTitle, options);
+}
+
+function signatureForSearchTagsPayload(payload) {
+  if (!payload) {
+    return "";
+  }
+
+  return [
+    ...(payload.tags || []).map((tag) => `tag|${tag.search_term}|${tag.tag_slug}|${tag.result_rank}`),
+    ...(payload.sidebar_posts || []).map((post) => `post|${post.search_term}|${post.medium_post_id}|${post.article_url}|${post.result_rank}`),
+    ...(payload.sidebar_people || []).map((person) => `person|${person.search_term}|${person.username}|${person.profile_url}|${person.result_rank}`),
+  ].join("\n");
+}
+
 function signatureForPayload(payload) {
   if (!payload || !Array.isArray(payload.cards)) {
     return "";
@@ -352,12 +666,18 @@ function timestampForFilename(date = new Date()) {
 
 function writeSnapshot(payload, snapshotDir = defaultSnapshotDir) {
   fs.mkdirSync(snapshotDir, { recursive: true });
-  const filename = [
-    "medium_tag_watch",
-    safeFilenamePart(payload.tag_slug),
-    safeFilenamePart(payload.page_variant),
-    timestampForFilename(),
-  ].join("_") + ".json";
+  const filename = payload.source_type === searchTagsSourceType
+    ? [
+      "medium_search_tags_watch",
+      safeFilenamePart(payload.search_term),
+      timestampForFilename(),
+    ].join("_") + ".json"
+    : [
+      "medium_tag_watch",
+      safeFilenamePart(payload.tag_slug),
+      safeFilenamePart(payload.page_variant),
+      timestampForFilename(),
+    ].join("_") + ".json";
   const outputPath = path.join(snapshotDir, filename);
   fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2));
   return outputPath;
@@ -411,18 +731,42 @@ function importArticleTextSnapshot(snapshotPath, cwd = process.cwd()) {
   };
 }
 
+function importSearchTagsSnapshot(snapshotPath, cwd = process.cwd()) {
+  const result = spawnSync(
+    "Rscript",
+    [path.join("scripts", "import_medium_search_tags_snapshot.R"), snapshotPath],
+    {
+      cwd,
+      encoding: "utf8",
+      stdio: "pipe",
+    }
+  );
+
+  return {
+    status: result.status,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+  };
+}
+
 export {
   cleanText,
   defaultArticleTextSnapshotDir,
   defaultSnapshotDir,
+  detectMediumSearchPageType,
   extractMediumPostId,
   extractReadTimeMinutes,
   importArticleTextSnapshot,
+  importSearchTagsSnapshot,
   importSnapshot,
   inferPublishedFromLabel,
   normalizeMediumUrl,
   parseCompactInteger,
   parseMediumTagSnapshot,
+  parseMediumSearchTagsHtml,
+  parseSearchTagsApolloState,
+  searchTagsSourceType,
+  signatureForSearchTagsPayload,
   signatureForPayload,
   urlSet,
   writeArticleTextSnapshot,
