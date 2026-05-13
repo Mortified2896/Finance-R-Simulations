@@ -68,10 +68,10 @@ while true; do
       echo "Import finished successfully for:"
       echo "$input_path"
     else
-      status=$?
+      importer_status=$?
       failures=$((failures + 1))
       echo
-      echo "Import failed with exit code $status for:"
+      echo "Import failed with exit code $importer_status for:"
       echo "$input_path"
     fi
 

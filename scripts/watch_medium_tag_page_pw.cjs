@@ -113,7 +113,7 @@ function printHelpAndExit() {
 Medium rendered tag-page watcher
 
 Usage:
-  node scripts/watch_medium_tag_page_pw.js [options]
+  node scripts/watch_medium_tag_page_pw.cjs [options]
 
 Options:
   --url <url>                 Medium tag page to open. Default: ${defaultUrl}
