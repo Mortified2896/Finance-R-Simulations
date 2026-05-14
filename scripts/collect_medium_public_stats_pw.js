@@ -4,7 +4,7 @@ const { stdin: input, stdout: output } = require("process");
 const { chromium } = require("playwright");
 const Database = require("better-sqlite3");
 
-const databasePath = path.join("data", "medium_articles.sqlite");
+const databasePath = path.join("data", "db", "medium_articles.sqlite");
 const maxArticles = 10;
 const delaySeconds = 3;
 const headless = false;

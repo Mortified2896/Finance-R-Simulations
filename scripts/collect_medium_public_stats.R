@@ -19,7 +19,7 @@ library(DBI)
 library(RSQLite)
 library(curl)
 
-database_path <- file.path("data", "medium_articles.sqlite")
+database_path <- file.path("data", "db", "medium_articles.sqlite")
 max_articles <- 10
 delay_seconds <- 3
 

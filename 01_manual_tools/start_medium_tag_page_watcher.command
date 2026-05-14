@@ -11,11 +11,18 @@ while true; do
   echo "A Chrome browser window will open."
   echo "Log in or navigate manually, then open a Medium /tag/... page, /tag/.../recommended page, /search/tags?q=... page, or article page."
   echo "The watcher imports tag cards when new article URLs appear and saves article text on article pages."
-  echo "Type p + Enter to pause/resume, or q + Enter to stop this watcher run."
+  echo "Type p + Enter to pause/resume, r + Enter to restart, or q + Enter to stop this watcher run."
   echo
 
   node scripts/watch_medium_tag_page_pw.cjs --channel chrome --wait-for-medium "$@"
   watcher_status=$?
+
+  if [[ "$watcher_status" == "75" ]]; then
+    echo
+    echo "Restart requested. Reopening watcher..."
+    echo
+    continue
+  fi
 
   echo
   echo "Watcher stopped with exit code $watcher_status."

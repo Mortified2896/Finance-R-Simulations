@@ -16,7 +16,7 @@ library(rvest)
 library(DBI)
 library(RSQLite)
 
-database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "medium_articles.sqlite"))
+database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "db", "medium_articles.sqlite"))
 default_stats_dir <- file.path("debug_samples", "Stats Page")
 
 clean_text <- function(x) {

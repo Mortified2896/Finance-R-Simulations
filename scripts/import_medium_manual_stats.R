@@ -15,7 +15,7 @@ library(DBI)
 library(RSQLite)
 library(jsonlite)
 
-database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "medium_articles.sqlite"))
+database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "db", "medium_articles.sqlite"))
 
 clean_text <- function(x) {
   if (length(x) == 0 || is.null(x) || is.na(x)) {

@@ -642,6 +642,7 @@ function signatureForPayload(payload) {
       Number.isFinite(card.claps) ? card.claps : "",
       Number.isFinite(card.responses) ? card.responses : "",
       cleanText(card.published_label || card.published_at || card.published_date_inferred),
+      cleanText(card.thumbnail_url || ""),
     ].join("|"))
     .join("\n");
 }

@@ -17,7 +17,7 @@ library(jsonlite)
 
 source(file.path("scripts", "medium_tag_import_helpers.R"))
 
-database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "medium_articles.sqlite"))
+database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "db", "medium_articles.sqlite"))
 STATS_OBSERVATION_MIN_GAP_HOURS <- 12
 
 first_non_missing <- function(primary_value, fallback_value) {
@@ -72,6 +72,9 @@ clean_card <- function(card, fallback_position = NA_integer_) {
     is_member_only = logical_flag_from_json(card$is_member_only),
     thumbnail_url = clean_text(card$thumbnail_url),
     thumbnail_alt = clean_text(card$thumbnail_alt),
+    thumbnail_source = if (!is_missing_text(card$thumbnail_url)) "tag_card_thumbnail" else NA_character_,
+    thumbnail_confidence = if (!is_missing_text(card$thumbnail_url)) "high" else "missing",
+    thumbnail_status = if (!is_missing_text(card$thumbnail_url)) "found_confirmed_card" else "not_found",
     recommendation_source = clean_text(card$recommendation_source),
     recommendation_surface = clean_text(card$recommendation_surface),
     recommendation_tag_slug = clean_text(card$recommendation_tag_slug),
@@ -220,6 +223,9 @@ insert_observation <- function(connection, snapshot_id, article_id, card, payloa
         is_member_only,
         thumbnail_url,
         thumbnail_alt,
+        thumbnail_source,
+        thumbnail_confidence,
+        thumbnail_status,
         recommendation_source,
         recommendation_surface,
         recommendation_tag_slug,
@@ -227,7 +233,7 @@ insert_observation <- function(connection, snapshot_id, article_id, card, payloa
         recommendation_result_set_size,
         observed_at,
         imported_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ",
     params = list(
       snapshot_id,
@@ -264,6 +270,9 @@ insert_observation <- function(connection, snapshot_id, article_id, card, payloa
       card$is_member_only,
       card$thumbnail_url,
       card$thumbnail_alt,
+      card$thumbnail_source,
+      card$thumbnail_confidence,
+      card$thumbnail_status,
       card$recommendation_source,
       card$recommendation_surface,
       card$recommendation_tag_slug,

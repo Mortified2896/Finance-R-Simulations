@@ -14,7 +14,7 @@ if (length(missing_packages) > 0) {
 library(DBI)
 library(RSQLite)
 
-database_path <- file.path("data", "medium_articles.sqlite")
+database_path <- file.path("data", "db", "medium_articles.sqlite")
 
 message("Medium Public Stats Inspector")
 message("=============================")

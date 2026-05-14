@@ -12,6 +12,7 @@ const defaultSnapshotDir = path.join("data", "medium_tag_watcher_snapshots");
 const defaultArticleTextSnapshotDir = path.join("data", "medium_article_text_snapshots");
 const defaultUserDataDir = path.join("data", "medium_tag_playwright_profile");
 const defaultBrowserHome = path.join("data", "medium_tag_browser_home");
+const restartExitCode = 75;
 
 function parseArgs(argv) {
   const options = {
@@ -162,6 +163,9 @@ function setupKeyboardControls(state) {
     } else if (normalized === "q") {
       console.log("Stopping watcher.");
       process.exit(0);
+    } else if (normalized === "r") {
+      console.log("Restarting watcher.");
+      process.exit(restartExitCode);
     }
   });
 }
@@ -275,6 +279,91 @@ async function visibleArticleUrls(page) {
   return new Set(urls);
 }
 
+async function visibleArticleThumbnails(page) {
+  return page.evaluate(() => {
+    const cleanText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const normalizeArticleUrl = (value) => {
+      const cleaned = cleanText(value);
+      if (!cleaned || /\/m\/signin|bookmark|vote|respond/i.test(cleaned)) {
+        return "";
+      }
+
+      try {
+        const parsed = new URL(cleaned, "https://medium.com");
+        parsed.search = "";
+        parsed.hash = "";
+        return parsed.toString().replace(/\/+$/, "");
+      } catch (_error) {
+        return cleaned.split(/[?#]/)[0].replace(/\/+$/, "");
+      }
+    };
+    const looksLikeArticleUrl = (value) => /[a-f0-9]{12}\/?$/i.test(normalizeArticleUrl(value));
+    const imageUrl = (image) => cleanText(image.currentSrc || image.src || image.getAttribute("src") || "");
+    const imageDimensions = (image) => {
+      const rect = image.getBoundingClientRect();
+      const width = Math.max(Number(image.naturalWidth) || 0, Number(rect.width) || 0);
+      const height = Math.max(Number(image.naturalHeight) || 0, Number(rect.height) || 0);
+      return { width, height, area: width * height };
+    };
+
+    const thumbnails = {};
+
+    for (const article of document.querySelectorAll("article")) {
+      const articleUrl = [...article.querySelectorAll("a[href]")]
+        .map((link) => normalizeArticleUrl(link.href || link.getAttribute("href")))
+        .find((href) => looksLikeArticleUrl(href));
+
+      if (!articleUrl || thumbnails[articleUrl]) {
+        continue;
+      }
+
+      const candidates = [...article.querySelectorAll("img")]
+        .map((image) => {
+          const src = imageUrl(image);
+          const alt = cleanText(image.getAttribute("alt") || "");
+          const dimensions = imageDimensions(image);
+          const nearestLink = image.closest("a[href]");
+          const nearestHref = nearestLink ? normalizeArticleUrl(nearestLink.href || nearestLink.getAttribute("href")) : "";
+          const linkedToArticle = nearestHref === articleUrl || looksLikeArticleUrl(nearestHref);
+          return {
+            src,
+            alt,
+            width: dimensions.width,
+            height: dimensions.height,
+            area: dimensions.area,
+            linkedToArticle,
+          };
+        })
+        .filter((image) => {
+          if (!image.src || /^data:|^blob:/i.test(image.src)) {
+            return false;
+          }
+          if (/A clap icon|A response icon|Medium Logo|avatar|profile picture/i.test(image.alt)) {
+            return false;
+          }
+
+          const looksLikeThumbnailSize = Math.min(image.width, image.height) >= 80 && image.area >= 6400;
+          return image.linkedToArticle || looksLikeThumbnailSize;
+        })
+        .sort((left, right) => {
+          if (left.linkedToArticle !== right.linkedToArticle) {
+            return left.linkedToArticle ? -1 : 1;
+          }
+          return right.area - left.area;
+        });
+
+      if (candidates.length > 0) {
+        thumbnails[articleUrl] = {
+          thumbnail_url: candidates[0].src,
+          thumbnail_alt: candidates[0].alt,
+        };
+      }
+    }
+
+    return thumbnails;
+  });
+}
+
 function setSignature(values) {
   return [...values].sort().join("\n");
 }
@@ -384,7 +473,19 @@ function enrichSnapshotWithUrls(snapshot, links) {
 
 async function capturePayload(page, helpers, options) {
   const snapshot = await getAriaSnapshot(page, options.snapshotTimeoutMs);
-  return helpers.parseMediumTagSnapshot(snapshot, page.url(), await page.title());
+  const payload = helpers.parseMediumTagSnapshot(snapshot, page.url(), await page.title());
+  const thumbnailsByUrl = await visibleArticleThumbnails(page).catch(() => ({}));
+
+  payload.cards = (payload.cards || []).map((card) => {
+    const thumbnail = thumbnailsByUrl[card.article_url] || {};
+    return {
+      ...card,
+      thumbnail_url: thumbnail.thumbnail_url || card.thumbnail_url || "",
+      thumbnail_alt: thumbnail.thumbnail_alt || card.thumbnail_alt || "",
+    };
+  });
+
+  return payload;
 }
 
 async function captureSearchTagsPayload(page, helpers) {
@@ -504,6 +605,15 @@ function articlePagesToInspect(browser, context, preferredPage) {
     .filter((candidate) => !candidate.isClosed() && isMediumArticleUrl(candidate.url()));
 }
 
+function visiblePagesToInspect(browser, context, preferredPage) {
+  return uniquePages([
+    preferredPage,
+    ...contextsToInspect(browser, context)
+    .flatMap((candidateContext) => candidateContext.pages())
+  ])
+    .filter((candidate) => !candidate.isClosed());
+}
+
 function isMediumUrl(value) {
   try {
     const parsed = new URL(value);
@@ -514,12 +624,7 @@ function isMediumUrl(value) {
 }
 
 function visiblePageSummary(browser, context, preferredPage) {
-  const urls = uniquePages([
-    preferredPage,
-    ...contextsToInspect(browser, context)
-    .flatMap((candidateContext) => candidateContext.pages())
-  ])
-    .filter((candidate) => !candidate.isClosed())
+  const urls = visiblePagesToInspect(browser, context, preferredPage)
     .map((candidate) => candidate.url())
     .filter((url) => url && url !== "about:blank");
   const mediumUrls = urls.filter(isMediumUrl);
@@ -529,6 +634,29 @@ function visiblePageSummary(browser, context, preferredPage) {
   }
 
   return "Waiting: no Medium tabs visible to watcher Chrome. Open a Medium tag page, search-tags page, or article page in the Chrome window started by this watcher.";
+}
+
+function supportedMediumPageSummary(browser, context, preferredPage) {
+  const visibleUrls = visiblePagesToInspect(browser, context, preferredPage)
+    .map((candidate) => candidate.url())
+    .filter((url) => url && url !== "about:blank");
+  const supportedUrls = visibleUrls.filter((url) =>
+    isMediumTagUrl(url) || isMediumSearchTagsUrl(url) || isMediumArticleUrl(url)
+  );
+  const unsupportedMediumUrls = visibleUrls
+    .filter((url) => isMediumUrl(url))
+    .filter((url) => !supportedUrls.includes(url));
+
+  const parts = [
+    `supported=${supportedUrls.length}`,
+    `other_medium=${unsupportedMediumUrls.length}`,
+  ];
+
+  if (unsupportedMediumUrls.length > 0) {
+    parts.push(`ignored=${unsupportedMediumUrls.slice(0, 3).join(" | ")}`);
+  }
+
+  return parts.join(" ");
 }
 
 function pageStateFor(page, pageStates) {
@@ -551,6 +679,14 @@ async function captureArticleTextPayload(page, options) {
   const collectedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const extracted = await page.evaluate((maxChars) => {
     const clean = (value) => String(value || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+    const metaContent = (selector) => clean((document.querySelector(selector) || {}).content || "");
+    const cleanImageUrl = (value) => {
+      const cleaned = clean(value);
+      if (!cleaned || /^data:|^blob:/i.test(cleaned)) {
+        return "";
+      }
+      return cleaned;
+    };
     const pageText = clean(document.body ? document.body.innerText : "");
     const hasHighlightStyle = (element) => {
       const style = window.getComputedStyle(element);
@@ -629,6 +765,38 @@ async function captureArticleTextPayload(page, options) {
         };
       })
       .filter((image) => image.src && !/^data:/i.test(image.src));
+    const ogImageUrl = cleanImageUrl(metaContent('meta[property="og:image"]'));
+    const twitterImageUrl = cleanImageUrl(
+      metaContent('meta[name="twitter:image"]') ||
+      metaContent('meta[property="twitter:image"]')
+    );
+    const metaImageUrl = ogImageUrl || twitterImageUrl;
+    const contentImageCandidate = images.find((image) => {
+      const imageSrc = cleanImageUrl(image.src);
+      if (!imageSrc) {
+        return false;
+      }
+      if (/resize:fill:64:64|avatar|profile picture/i.test(`${imageSrc} ${image.alt}`)) {
+        return false;
+      }
+      const width = Number(image.width) || 0;
+      const height = Number(image.height) || 0;
+      return width >= 120 || height >= 120 || clean(image.caption);
+    }) || null;
+    const thumbnailUrl = metaImageUrl || cleanImageUrl(contentImageCandidate ? contentImageCandidate.src : "");
+    const thumbnailAlt = contentImageCandidate && contentImageCandidate.src === thumbnailUrl
+      ? clean(contentImageCandidate.alt || contentImageCandidate.caption)
+      : "";
+    const thumbnailSource = ogImageUrl ? "article_og_image" :
+      twitterImageUrl ? "article_twitter_image" :
+      thumbnailUrl ? "article_content_image_guess" :
+      "";
+    const thumbnailConfidence = ogImageUrl || twitterImageUrl ? "medium" :
+      thumbnailUrl ? "low" :
+      "missing";
+    const thumbnailStatus = ogImageUrl || twitterImageUrl ? "found_article_metadata" :
+      thumbnailUrl ? "found_article_content_guess" :
+      "not_found";
     const readTimeMatch = pageText.match(/(\d+\s+min\s+read)/i);
     const readTime = readTimeMatch ? clean(readTimeMatch[1].toLowerCase()) : "";
     const publishedLabelMatch = pageText.match(/(?:^|[·\n]\s*)(Just now|Today|\d+\s*(?:m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\s+ago|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,\s*\d{4})?)(?:\s*[·\n]|$)/i);
@@ -664,6 +832,11 @@ async function captureArticleTextPayload(page, options) {
       articleTags: [...new Set(articleTags)],
       images,
       highlightedText,
+      thumbnailUrl,
+      thumbnailAlt,
+      thumbnailSource,
+      thumbnailConfidence,
+      thumbnailStatus,
       isMemberOnly: /member-only story/i.test(pageText) || Boolean(document.querySelector('[aria-label*="Member-only story" i]')),
       hasPaywallPrompt: /(get unlimited access|become a medium member|start reading with medium|unlock this story|read member-only stories|membership gives you access)/i.test(pageText),
       hasSignInPrompt: /(sign in|sign up|create account)/i.test(pageText),
@@ -729,6 +902,11 @@ async function captureArticleTextPayload(page, options) {
     text_blocks: extracted.textBlocks || [],
     article_tags: extracted.articleTags || [],
     images: extracted.images || [],
+    thumbnail_url: extracted.thumbnailUrl || "",
+    thumbnail_alt: extracted.thumbnailAlt || "",
+    thumbnail_source: extracted.thumbnailSource || "",
+    thumbnail_confidence: extracted.thumbnailConfidence || "missing",
+    thumbnail_status: extracted.thumbnailStatus || "not_found",
     collected_at: collectedAt,
     extraction_method: "playwright_article_inner_text",
     text_hash: hash,
@@ -803,7 +981,7 @@ async function main() {
     console.log("The watcher will stay idle until it sees a supported Medium page.");
   }
   console.log(`Polling every ${options.pollSeconds}s. Scroll the opened browser window after tracking starts.`);
-  console.log("Type p + Enter to pause/resume, or q + Enter to quit.");
+  console.log("Type p + Enter to pause/resume, r + Enter to restart, or q + Enter to quit.");
   console.log("");
 
   try {
@@ -1023,7 +1201,8 @@ async function main() {
           ...pages.map((candidate) => candidate.url()),
           ...articlePages.map((candidate) => candidate.url()),
         ].sort().join("|");
-        logChangedStatus(loopState, `Checked ${watchedPages} Medium page${watchedPages === 1 ? "" : "s"}; no new imports. ${pageSignature}`);
+        const supportedSummary = supportedMediumPageSummary(browser, context, page);
+        logChangedStatus(loopState, `Checked ${watchedPages} supported Medium page${watchedPages === 1 ? "" : "s"}; no new imports. ${supportedSummary}. ${pageSignature}`);
       }
 
       await sleep(options.pollSeconds * 1000);

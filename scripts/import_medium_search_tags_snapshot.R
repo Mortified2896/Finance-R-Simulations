@@ -17,7 +17,7 @@ library(jsonlite)
 
 source(file.path("scripts", "medium_tag_import_helpers.R"))
 
-database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "medium_articles.sqlite"))
+database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "db", "medium_articles.sqlite"))
 TAG_DISCOVERY_COOLDOWN_DAYS <- 180
 SIDEBAR_POST_MIN_GAP_HOURS <- 12
 PEOPLE_COOLDOWN_DAYS <- 180

@@ -203,6 +203,9 @@ inspect_medium_articles_schema <- function(connection) {
     has_publication_status = "publication_status" %in% columns,
     has_image_url = "image_url" %in% columns,
     has_image_url_manual = "image_url_manual" %in% columns,
+    has_image_url_source = "image_url_source" %in% columns,
+    has_image_url_confidence = "image_url_confidence" %in% columns,
+    has_image_url_status = "image_url_status" %in% columns,
     has_content_text = "content_text" %in% columns,
     has_content_encoded_html = "content_encoded_html" %in% columns,
     has_visible_article_text = "visible_article_text" %in% columns,
@@ -241,6 +244,9 @@ ensure_medium_articles_schema <- function(connection) {
       publication_followers_raw TEXT,
       medium_post_id TEXT,
       image_url_manual TEXT,
+      image_url_source TEXT,
+      image_url_confidence TEXT,
+      image_url_status TEXT,
       visible_article_text TEXT,
       visible_text_word_count INTEGER,
       visible_article_text_truncated INTEGER,
@@ -279,6 +285,9 @@ ensure_medium_articles_schema <- function(connection) {
   add_column_if_missing(connection, "medium_articles", "publication_followers_raw", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_articles", "medium_post_id", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_articles", "image_url_manual", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_articles", "image_url_source", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_articles", "image_url_confidence", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_articles", "image_url_status", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_articles", "visible_article_text", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_articles", "visible_text_word_count", "INTEGER", warn_only = TRUE)
   add_column_if_missing(connection, "medium_articles", "visible_article_text_truncated", "INTEGER", warn_only = TRUE)
@@ -324,6 +333,11 @@ ensure_medium_article_text_snapshots_schema <- function(connection) {
       article_tags_json TEXT,
       highlighted_text_json TEXT,
       images_json TEXT,
+      thumbnail_url TEXT,
+      thumbnail_alt TEXT,
+      thumbnail_source TEXT,
+      thumbnail_confidence TEXT,
+      thumbnail_status TEXT,
       author_name TEXT,
       author_url TEXT,
       publication_name TEXT,
@@ -351,6 +365,11 @@ ensure_medium_article_text_snapshots_schema <- function(connection) {
   add_column_if_missing(connection, "medium_article_text_snapshots", "article_tags_json", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_article_text_snapshots", "highlighted_text_json", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_article_text_snapshots", "images_json", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "thumbnail_url", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "thumbnail_alt", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "thumbnail_source", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "thumbnail_confidence", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_article_text_snapshots", "thumbnail_status", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_article_text_snapshots", "author_name", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_article_text_snapshots", "author_url", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_article_text_snapshots", "publication_name", "TEXT", warn_only = TRUE)
@@ -548,6 +567,9 @@ prepare_medium_article_insert <- function(card, schema_info, observed_at) {
     categories = clean_text(card$article_tags_json),
     image_url = clean_text(card$thumbnail_url),
     image_url_manual = clean_text(card$thumbnail_url),
+    image_url_source = if (!is_missing_text(card$thumbnail_url)) "tag_card_thumbnail" else NA_character_,
+    image_url_confidence = if (!is_missing_text(card$thumbnail_url)) "high" else NA_character_,
+    image_url_status = if (!is_missing_text(card$thumbnail_url)) "found_confirmed_card" else NA_character_,
     is_member_only = card$is_member_only
   )
 
@@ -651,6 +673,18 @@ update_medium_article_metadata <- function(connection, existing_row, card, schem
   for (image_column in c("image_url_manual", "image_url")) {
     if (image_column %in% names(row)) {
       maybe_update(image_column, prefer_fill_missing(row[[image_column]][1], card$thumbnail_url))
+    }
+  }
+
+  if (!is_missing_text(card$thumbnail_url)) {
+    if ("image_url_source" %in% names(row)) {
+      maybe_update("image_url_source", prefer_fill_missing(row$image_url_source[1], "tag_card_thumbnail"))
+    }
+    if ("image_url_confidence" %in% names(row)) {
+      maybe_update("image_url_confidence", prefer_fill_missing(row$image_url_confidence[1], "high"))
+    }
+    if ("image_url_status" %in% names(row)) {
+      maybe_update("image_url_status", prefer_fill_missing(row$image_url_status[1], "found_confirmed_card"))
     }
   }
 
@@ -796,6 +830,9 @@ ensure_medium_tag_page_schema <- function(connection, schema_info) {
       is_member_only INTEGER,
       thumbnail_url TEXT,
       thumbnail_alt TEXT,
+      thumbnail_source TEXT,
+      thumbnail_confidence TEXT,
+      thumbnail_status TEXT,
       recommendation_source TEXT,
       recommendation_surface TEXT,
       recommendation_tag_slug TEXT,
@@ -846,6 +883,9 @@ ensure_medium_tag_page_schema <- function(connection, schema_info) {
   add_column_if_missing(connection, "medium_tag_page_observations", "updated_at", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_tag_page_observations", "read_time_minutes", "REAL", warn_only = TRUE)
   add_column_if_missing(connection, "medium_tag_page_observations", "article_tags_json", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_tag_page_observations", "thumbnail_source", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_tag_page_observations", "thumbnail_confidence", "TEXT", warn_only = TRUE)
+  add_column_if_missing(connection, "medium_tag_page_observations", "thumbnail_status", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_tag_page_observations", "recommendation_source", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_tag_page_observations", "recommendation_surface", "TEXT", warn_only = TRUE)
   add_column_if_missing(connection, "medium_tag_page_observations", "recommendation_tag_slug", "TEXT", warn_only = TRUE)

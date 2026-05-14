@@ -13,7 +13,7 @@ if (length(missing_packages) > 0) {
 library(DBI)
 library(RSQLite)
 
-database_path <- file.path("data", "medium_articles.sqlite")
+database_path <- file.path("data", "db", "medium_articles.sqlite")
 output_dir <- file.path("data", "analysis")
 output_path <- file.path(output_dir, "medium_title_prediction_dataset.csv")
 
@@ -123,12 +123,46 @@ coalesce_value <- function(primary, fallback) {
   primary
 }
 
+warn_missing_columns <- function(table_name, available_columns, expected_columns) {
+  missing_columns <- setdiff(expected_columns, available_columns)
+  if (length(missing_columns) > 0) {
+    warning(
+      table_name,
+      " is missing expected column(s): ",
+      paste(missing_columns, collapse = ", "),
+      "; related output fields will be NA.",
+      call. = FALSE
+    )
+  }
+}
+
+latest_non_empty_value <- function(group, value_column, order_column = "observed_datetime") {
+  if (!(value_column %in% names(group))) {
+    return(NA_character_)
+  }
+
+  value <- clean_text_vector(group[[value_column]])
+  valid_index <- which(!is.na(value))
+  if (length(valid_index) == 0) {
+    return(NA_character_)
+  }
+
+  if (order_column %in% names(group)) {
+    order_value <- group[[order_column]][valid_index]
+    ordered_valid_index <- valid_index[order(order_value, decreasing = TRUE, na.last = TRUE)]
+    return(value[ordered_valid_index[1]])
+  }
+
+  value[valid_index[length(valid_index)]]
+}
+
 if (!table_exists("medium_articles")) {
   stop("The required table medium_articles does not exist in ", database_path, call. = FALSE)
 }
 
 articles <- read_table_or_empty("medium_articles")
 article_columns <- names(articles)
+warn_missing_columns("medium_articles", article_columns, c("image_url", "image_url_manual", "image_url_source", "image_url_confidence", "image_url_status"))
 
 if (!("id" %in% article_columns)) {
   articles$id <- seq_len(nrow(articles))
@@ -145,6 +179,11 @@ dataset <- data.frame(
   description = first_present_column(articles, c("snippet", "description_html")),
   author = first_present_column(articles, c("author")),
   publication = first_present_column(articles, c("publication")),
+  image_url = first_present_column(articles, c("image_url")),
+  image_url_manual = first_present_column(articles, c("image_url_manual")),
+  image_url_source = first_present_column(articles, c("image_url_source")),
+  image_url_confidence = first_present_column(articles, c("image_url_confidence")),
+  image_url_status = first_present_column(articles, c("image_url_status")),
   stringsAsFactors = FALSE
 )
 
@@ -173,6 +212,23 @@ if (table_exists("medium_tag_page_observations")) {
     }
     if (!("tag_slug" %in% tag_columns)) {
       tag_observations$tag_slug <- NA_character_
+    }
+    if (!("thumbnail_url" %in% tag_columns)) {
+      tag_observations$thumbnail_url <- NA_character_
+      warning("medium_tag_page_observations.thumbnail_url is missing; latest_tag_thumbnail_url will be NA.", call. = FALSE)
+    }
+    if (!("thumbnail_alt" %in% tag_columns)) {
+      tag_observations$thumbnail_alt <- NA_character_
+      warning("medium_tag_page_observations.thumbnail_alt is missing; latest_tag_thumbnail_alt will be NA.", call. = FALSE)
+    }
+    if (!("thumbnail_source" %in% tag_columns)) {
+      tag_observations$thumbnail_source <- NA_character_
+    }
+    if (!("thumbnail_confidence" %in% tag_columns)) {
+      tag_observations$thumbnail_confidence <- NA_character_
+    }
+    if (!("thumbnail_status" %in% tag_columns)) {
+      tag_observations$thumbnail_status <- NA_character_
     }
 
     if (table_exists("medium_tag_page_snapshots") && "snapshot_id" %in% tag_columns) {
@@ -203,6 +259,11 @@ if (table_exists("medium_tag_page_observations")) {
     tag_groups <- split(tag_observations, split_key, drop = TRUE)
     tag_summary <- do.call(rbind, lapply(names(tag_groups), function(key) {
       group <- tag_groups[[key]]
+      latest_thumbnail_url <- latest_non_empty_value(group, "thumbnail_url")
+      latest_thumbnail_alt <- latest_non_empty_value(group, "thumbnail_alt")
+      latest_thumbnail_source <- latest_non_empty_value(group, "thumbnail_source")
+      latest_thumbnail_confidence <- latest_non_empty_value(group, "thumbnail_confidence")
+      latest_thumbnail_status <- latest_non_empty_value(group, "thumbnail_status")
       data.frame(
         article_id = suppressWarnings(as.integer(key)),
         article_url_normalized = if ("article_url_normalized" %in% names(group)) collapse_unique(group$article_url_normalized) else NA_character_,
@@ -215,6 +276,11 @@ if (table_exists("medium_tag_page_observations")) {
         observed_page_variants = collapse_unique(group$page_variant),
         tag_observation_claps_max = if ("claps" %in% names(group) && !all(is.na(group$claps))) max(suppressWarnings(as.numeric(group$claps)), na.rm = TRUE) else NA_real_,
         tag_observation_responses_max = if ("responses" %in% names(group) && !all(is.na(group$responses))) max(suppressWarnings(as.numeric(group$responses)), na.rm = TRUE) else NA_real_,
+        latest_tag_thumbnail_url = latest_thumbnail_url,
+        latest_tag_thumbnail_alt = latest_thumbnail_alt,
+        latest_tag_thumbnail_source = latest_thumbnail_source,
+        latest_tag_thumbnail_confidence = latest_thumbnail_confidence,
+        latest_tag_thumbnail_status = latest_thumbnail_status,
         stringsAsFactors = FALSE
       )
     }))
@@ -237,6 +303,11 @@ if (nrow(tag_summary) > 0) {
   dataset$observed_page_variants <- NA_character_
   dataset$tag_observation_claps_max <- NA_real_
   dataset$tag_observation_responses_max <- NA_real_
+  dataset$latest_tag_thumbnail_url <- NA_character_
+  dataset$latest_tag_thumbnail_alt <- NA_character_
+  dataset$latest_tag_thumbnail_source <- NA_character_
+  dataset$latest_tag_thumbnail_confidence <- NA_character_
+  dataset$latest_tag_thumbnail_status <- NA_character_
 }
 
 if (table_exists("medium_article_import_queue")) {
@@ -398,6 +469,41 @@ dataset$article_age_days_at_latest_stats <- as.numeric(latest_stats_date - datas
 dataset$article_age_days_at_latest_observation[dataset$article_age_days_at_latest_observation < 0] <- NA_real_
 dataset$article_age_days_at_latest_stats[dataset$article_age_days_at_latest_stats < 0] <- NA_real_
 
+dataset$image_url <- clean_text_vector(dataset$image_url)
+dataset$image_url_manual <- clean_text_vector(dataset$image_url_manual)
+dataset$image_url_source <- clean_text_vector(dataset$image_url_source)
+dataset$image_url_confidence <- clean_text_vector(dataset$image_url_confidence)
+dataset$image_url_status <- clean_text_vector(dataset$image_url_status)
+dataset$latest_tag_thumbnail_url <- clean_text_vector(dataset$latest_tag_thumbnail_url)
+dataset$latest_tag_thumbnail_alt <- clean_text_vector(dataset$latest_tag_thumbnail_alt)
+dataset$latest_tag_thumbnail_source <- clean_text_vector(dataset$latest_tag_thumbnail_source)
+dataset$latest_tag_thumbnail_confidence <- clean_text_vector(dataset$latest_tag_thumbnail_confidence)
+dataset$latest_tag_thumbnail_status <- clean_text_vector(dataset$latest_tag_thumbnail_status)
+
+dataset$primary_image_url_for_download <- dataset$image_url_manual
+dataset$primary_image_url_source <- ifelse(!is.na(dataset$primary_image_url_for_download), "image_url_manual", "missing")
+dataset$primary_image_url_provenance <- ifelse(!is.na(dataset$primary_image_url_for_download), dataset$image_url_source, NA_character_)
+dataset$primary_image_url_confidence <- ifelse(!is.na(dataset$primary_image_url_for_download), dataset$image_url_confidence, NA_character_)
+dataset$primary_image_url_status <- ifelse(!is.na(dataset$primary_image_url_for_download), dataset$image_url_status, "missing")
+
+use_image_url <- is.na(dataset$primary_image_url_for_download) & !is.na(dataset$image_url)
+dataset$primary_image_url_for_download[use_image_url] <- dataset$image_url[use_image_url]
+dataset$primary_image_url_source[use_image_url] <- "image_url"
+dataset$primary_image_url_provenance[use_image_url] <- dataset$image_url_source[use_image_url]
+dataset$primary_image_url_confidence[use_image_url] <- dataset$image_url_confidence[use_image_url]
+dataset$primary_image_url_status[use_image_url] <- dataset$image_url_status[use_image_url]
+
+use_tag_thumbnail <- is.na(dataset$primary_image_url_for_download) & !is.na(dataset$latest_tag_thumbnail_url)
+dataset$primary_image_url_for_download[use_tag_thumbnail] <- dataset$latest_tag_thumbnail_url[use_tag_thumbnail]
+dataset$primary_image_url_source[use_tag_thumbnail] <- "tag_thumbnail_url"
+dataset$primary_image_url_provenance[use_tag_thumbnail] <- dataset$latest_tag_thumbnail_source[use_tag_thumbnail]
+dataset$primary_image_url_confidence[use_tag_thumbnail] <- dataset$latest_tag_thumbnail_confidence[use_tag_thumbnail]
+dataset$primary_image_url_status[use_tag_thumbnail] <- dataset$latest_tag_thumbnail_status[use_tag_thumbnail]
+
+dataset$primary_image_url_provenance[is.na(dataset$primary_image_url_provenance) & !is.na(dataset$primary_image_url_for_download)] <- "unknown"
+dataset$primary_image_url_confidence[is.na(dataset$primary_image_url_confidence) & !is.na(dataset$primary_image_url_for_download)] <- "unknown"
+dataset$primary_image_url_status[is.na(dataset$primary_image_url_status) & !is.na(dataset$primary_image_url_for_download)] <- "found_unknown"
+
 summary_lines <- c(
   "Data quality summary",
   "====================",
@@ -429,6 +535,21 @@ output_columns <- c(
   "description",
   "author",
   "publication",
+  "image_url",
+  "image_url_manual",
+  "image_url_source",
+  "image_url_confidence",
+  "image_url_status",
+  "latest_tag_thumbnail_url",
+  "latest_tag_thumbnail_alt",
+  "latest_tag_thumbnail_source",
+  "latest_tag_thumbnail_confidence",
+  "latest_tag_thumbnail_status",
+  "primary_image_url_for_download",
+  "primary_image_url_source",
+  "primary_image_url_provenance",
+  "primary_image_url_confidence",
+  "primary_image_url_status",
   "first_observed_at",
   "latest_observed_at",
   "times_seen",

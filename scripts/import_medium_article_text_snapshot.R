@@ -17,7 +17,7 @@ library(jsonlite)
 
 source(file.path("scripts", "medium_tag_import_helpers.R"))
 
-database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "medium_articles.sqlite"))
+database_path <- Sys.getenv("MEDIUM_DB_PATH", file.path("data", "db", "medium_articles.sqlite"))
 
 args <- commandArgs(trailingOnly = TRUE)
 
@@ -61,6 +61,22 @@ images_json <- if (is.null(payload$images) || length(payload$images) == 0) {
 } else {
   clean_text(jsonlite::toJSON(payload$images, auto_unbox = TRUE, null = "null"))
 }
+thumbnail_url <- clean_text(payload$thumbnail_url)
+thumbnail_source <- clean_text(payload$thumbnail_source)
+thumbnail_alt <- clean_text(payload$thumbnail_alt)
+thumbnail_confidence <- clean_text(payload$thumbnail_confidence)
+thumbnail_status <- clean_text(payload$thumbnail_status)
+
+if (is.na(thumbnail_confidence)) {
+  thumbnail_confidence <- if (!is_missing_text(thumbnail_url)) "low" else "missing"
+}
+if (is.na(thumbnail_status)) {
+  thumbnail_status <- if (!is_missing_text(thumbnail_url)) "found_article_unknown" else "not_found"
+}
+
+article_image_source <- if (!is_missing_text(thumbnail_url)) thumbnail_source else NA_character_
+article_image_confidence <- if (!is_missing_text(thumbnail_url)) thumbnail_confidence else NA_character_
+article_image_status <- if (!is_missing_text(thumbnail_url)) thumbnail_status else NA_character_
 
 if (is.na(normalized_url)) {
   stop("Article text snapshot is missing article_url.", call. = FALSE)
@@ -105,8 +121,13 @@ if (nrow(article_row) == 0) {
         visible_article_text_truncated,
         visible_article_text_max_chars,
         visible_article_collected_at,
+        image_url,
+        image_url_manual,
+        image_url_source,
+        image_url_confidence,
+        image_url_status,
         last_seen_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ",
     params = list(
       "medium-article-text",
@@ -126,6 +147,11 @@ if (nrow(article_row) == 0) {
       logical_flag_from_json(payload$text_truncated),
       integer_from_json(payload$max_chars),
       collected_at,
+      thumbnail_url,
+      thumbnail_url,
+      article_image_source,
+      article_image_confidence,
+      article_image_status,
       collected_at
     )
   )
@@ -176,6 +202,11 @@ if (nrow(article_row) == 0) {
           THEN ?
           ELSE visible_article_collected_at
         END,
+        image_url = COALESCE(NULLIF(image_url, ''), ?),
+        image_url_manual = COALESCE(NULLIF(image_url_manual, ''), ?),
+        image_url_source = COALESCE(NULLIF(image_url_source, ''), ?),
+        image_url_confidence = COALESCE(NULLIF(image_url_confidence, ''), ?),
+        image_url_status = COALESCE(NULLIF(image_url_status, ''), ?),
         last_seen_at = CASE
           WHEN ? IS NOT NULL
             AND (
@@ -207,6 +238,11 @@ if (nrow(article_row) == 0) {
       collected_at,
       visible_text,
       collected_at,
+      thumbnail_url,
+      thumbnail_url,
+      article_image_source,
+      article_image_confidence,
+      article_image_status,
       collected_at,
       collected_at,
       collected_at,
@@ -234,6 +270,11 @@ rows_inserted <- dbExecute(
       article_tags_json,
       highlighted_text_json,
       images_json,
+      thumbnail_url,
+      thumbnail_alt,
+      thumbnail_source,
+      thumbnail_confidence,
+      thumbnail_status,
       author_name,
       author_url,
       publication_name,
@@ -242,7 +283,7 @@ rows_inserted <- dbExecute(
       capture_completeness,
       readable_status,
       error_message
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ",
   params = list(
     article_id,
@@ -259,6 +300,11 @@ rows_inserted <- dbExecute(
     article_tags_json,
     clean_text(jsonlite::toJSON(payload$highlighted_text, auto_unbox = TRUE, null = "null")),
     images_json,
+    thumbnail_url,
+    thumbnail_alt,
+    thumbnail_source,
+    thumbnail_confidence,
+    thumbnail_status,
     clean_text(payload$author_name),
     normalize_medium_url(scalar_from_json(payload$author_url)),
     clean_text(payload$publication_name),
@@ -285,6 +331,10 @@ message("Text blocks: ", if (is.null(payload$text_blocks)) 0L else length(payloa
 message("Article tags: ", if (is.null(payload$article_tags)) 0L else length(payload$article_tags))
 message("Highlighted passages: ", if (is.null(payload$highlighted_text)) 0L else length(payload$highlighted_text))
 message("Images: ", if (is.null(payload$images)) 0L else length(payload$images))
+message("Thumbnail URL: ", if (!is_missing_text(thumbnail_url)) thumbnail_url else "(blank)")
+message("Thumbnail source: ", if (!is_missing_text(thumbnail_source)) thumbnail_source else "(blank)")
+message("Thumbnail confidence: ", if (!is_missing_text(thumbnail_confidence)) thumbnail_confidence else "(blank)")
+message("Thumbnail status: ", if (!is_missing_text(thumbnail_status)) thumbnail_status else "(blank)")
 message("Capture completeness: ", if (!is_missing_text(payload$capture_completeness)) clean_text(payload$capture_completeness) else "(blank)")
 message("Readable status: ", if (!is_missing_text(payload$readable_status)) clean_text(payload$readable_status) else "(blank)")
 message("text_hash: ", text_hash)

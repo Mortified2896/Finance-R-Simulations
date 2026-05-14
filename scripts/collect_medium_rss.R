@@ -28,7 +28,7 @@ tags_to_collect <- c(
   "financial-independence"
 )
 
-database_path <- file.path("data", "medium_articles.sqlite")
+database_path <- file.path("data", "db", "medium_articles.sqlite")
 
 article_columns <- c(
   "id",
