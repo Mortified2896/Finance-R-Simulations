@@ -45,6 +45,13 @@ table_or_view_exists <- function(connection, name) {
   dbExistsTable(connection, name)
 }
 
+table_columns <- function(connection, table_name) {
+  dbGetQuery(
+    connection,
+    paste0("PRAGMA table_info(", dbQuoteIdentifier(connection, table_name), ")")
+  )$name
+}
+
 args <- parse_args(commandArgs(trailingOnly = TRUE))
 database_path <- args$db
 
@@ -122,12 +129,21 @@ print_metric("thumbnail_url coverage", coverage("thumbnail_url", "NULLIF(TRIM(th
 
 cat("\nAPI score counts\n")
 cat("----------------\n")
-api_counts <- dbGetQuery(connection, "
-  SELECT prompt_version, model, COUNT(*) AS n
+api_score_scope_expr <- if ("score_scope" %in% table_columns(connection, "medium_title_api_scores")) {
+  "COALESCE(NULLIF(TRIM(score_scope), ''), 'title_subtitle')"
+} else {
+  "'legacy_title_subtitle'"
+}
+api_counts <- dbGetQuery(connection, paste0("
+  SELECT
+    prompt_version,
+    model,
+    ", api_score_scope_expr, " AS score_scope,
+    COUNT(*) AS n
   FROM medium_title_api_scores
-  GROUP BY prompt_version, model
-  ORDER BY n DESC, prompt_version, model
-")
+  GROUP BY prompt_version, model, score_scope
+  ORDER BY n DESC, prompt_version, model, score_scope
+"))
 if (nrow(api_counts) == 0) {
   cat("No API scores yet.\n")
 } else {
@@ -196,6 +212,6 @@ if (canonical_dataset < raw_observed) {
   ))
 }
 
-cat("Leakage reminder: API scoring input must only include title and subtitle.\n")
+cat("Leakage reminder: API scoring input must only include title for title_only scope, or title and subtitle for title_subtitle scope.\n")
 cat("V2.1 excludes click_potential because competitor clicks/views/reads are unavailable.\n")
 cat("\nValidation complete.\n")

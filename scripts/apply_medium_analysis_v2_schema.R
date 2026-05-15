@@ -117,6 +117,7 @@ invisible(dbWithTransaction(connection, {
       medium_post_id TEXT,
       prompt_version TEXT NOT NULL,
       model TEXT NOT NULL,
+      score_scope TEXT NOT NULL DEFAULT 'title_subtitle',
       scored_at TEXT NOT NULL,
       title_hash TEXT NOT NULL,
       subtitle_hash TEXT,
@@ -139,17 +140,6 @@ invisible(dbWithTransaction(connection, {
       short_reason TEXT,
       error TEXT
     )
-  ")
-
-  db_execute(connection, "
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_medium_title_api_scores_cache
-      ON medium_title_api_scores (
-        canonical_article_key,
-        title_hash,
-        subtitle_hash,
-        prompt_version,
-        model
-      )
   ")
 
   db_execute(connection, "
@@ -220,7 +210,22 @@ invisible(dbWithTransaction(connection, {
   ensure_column(connection, "medium_title_api_scores", "medium_clap_potential", "INTEGER")
   ensure_column(connection, "medium_title_api_scores", "medium_comment_potential", "INTEGER")
   ensure_column(connection, "medium_title_api_scores", "overall_article_potential", "INTEGER")
+  ensure_column(connection, "medium_title_api_scores", "score_scope", "TEXT NOT NULL DEFAULT 'title_subtitle'")
   ensure_column(connection, "medium_title_human_ratings", "general_rating", "INTEGER")
+
+  db_execute(connection, "DROP INDEX IF EXISTS idx_medium_title_api_scores_cache")
+
+  db_execute(connection, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_medium_title_api_scores_cache
+      ON medium_title_api_scores (
+        canonical_article_key,
+        title_hash,
+        subtitle_hash,
+        prompt_version,
+        model,
+        score_scope
+      )
+  ")
 
   db_execute(connection, "DROP VIEW IF EXISTS v_medium_title_prediction_dataset_v2")
   db_execute(connection, "DROP VIEW IF EXISTS v_medium_canonical_articles")

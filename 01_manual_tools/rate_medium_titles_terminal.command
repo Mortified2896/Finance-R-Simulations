@@ -9,6 +9,13 @@ echo "Starting Medium Title Human Rating..."
 echo
 
 Rscript scripts/rate_medium_titles_terminal.R --rater johannes --limit 100 --rating-version v2_general
+status=$?
 
 echo
-echo "Rating workflow closed. You can close this Terminal window."
+if [ "$status" -eq 0 ]; then
+  echo "Rating workflow closed. You can close this Terminal window."
+else
+  echo "Rating workflow failed with exit code $status."
+  echo "Press Return to close this Terminal window."
+  read -r
+fi
