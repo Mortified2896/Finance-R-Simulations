@@ -295,65 +295,77 @@ def insert_score(
     error: str | None = None,
 ) -> None:
     row = item["row"]
+    columns = [
+        "canonical_article_key",
+        "article_id",
+        "medium_post_id",
+        "prompt_version",
+        "model",
+        "scored_at",
+        "title_hash",
+        "subtitle_hash",
+        "input_title",
+        "input_subtitle",
+        "raw_json",
+        "clarity",
+        "curiosity",
+        "specificity",
+        "beginner_appeal",
+        "credibility",
+        "emotional_pull",
+        "promise_strength",
+        "click_potential",
+        "medium_clap_potential",
+        "medium_comment_potential",
+        "overall_article_potential",
+        "trust_risk",
+        "predicted_success_bucket",
+        "short_reason",
+        "error",
+    ]
+    values = (
+        row["canonical_article_key"],
+        row["article_id"],
+        row["medium_post_id"],
+        args.prompt_version,
+        args.model,
+        utc_now(),
+        item["title_hash"],
+        item["subtitle_hash"],
+        item["title"],
+        item["subtitle"],
+        json.dumps(raw_json, ensure_ascii=False, sort_keys=True),
+        parsed.get("clarity"),
+        parsed.get("curiosity"),
+        parsed.get("specificity"),
+        parsed.get("beginner_appeal"),
+        parsed.get("credibility"),
+        parsed.get("emotional_pull"),
+        parsed.get("promise_strength"),
+        None,
+        parsed.get("medium_clap_potential"),
+        parsed.get("medium_comment_potential"),
+        parsed.get("overall_article_potential"),
+        parsed.get("trust_risk"),
+        parsed.get("predicted_success_bucket"),
+        parsed.get("short_reason"),
+        error,
+    )
+    if len(columns) != len(values):
+        raise RuntimeError(
+            "medium_title_api_scores insert mismatch: "
+            f"{len(columns)} columns for {len(values)} values"
+        )
+
+    column_sql = ",\n          ".join(columns)
+    placeholder_sql = ", ".join("?" for _ in columns)
     connection.execute(
-        """
+        f"""
         INSERT OR REPLACE INTO medium_title_api_scores (
-          canonical_article_key,
-          article_id,
-          medium_post_id,
-          prompt_version,
-          model,
-          scored_at,
-          title_hash,
-          subtitle_hash,
-          input_title,
-          input_subtitle,
-          raw_json,
-          clarity,
-          curiosity,
-          specificity,
-          beginner_appeal,
-          credibility,
-          emotional_pull,
-          promise_strength,
-          click_potential,
-          medium_clap_potential,
-          medium_comment_potential,
-          overall_article_potential,
-          trust_risk,
-          predicted_success_bucket,
-          short_reason,
-          error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          {column_sql}
+        ) VALUES ({placeholder_sql})
         """,
-        (
-            row["canonical_article_key"],
-            row["article_id"],
-            row["medium_post_id"],
-            args.prompt_version,
-            args.model,
-            utc_now(),
-            item["title_hash"],
-            item["subtitle_hash"],
-            item["title"],
-            item["subtitle"],
-            json.dumps(raw_json, ensure_ascii=False, sort_keys=True),
-            parsed.get("clarity"),
-            parsed.get("curiosity"),
-            parsed.get("specificity"),
-            parsed.get("beginner_appeal"),
-            parsed.get("credibility"),
-            parsed.get("emotional_pull"),
-            parsed.get("promise_strength"),
-            None,
-            parsed.get("medium_clap_potential"),
-            parsed.get("medium_comment_potential"),
-            parsed.get("overall_article_potential"),
-            parsed.get("trust_risk"),
-            parsed.get("predicted_success_bucket"),
-            parsed.get("short_reason"),
-            error,
-        ),
+        values,
     )
     connection.commit()
 
