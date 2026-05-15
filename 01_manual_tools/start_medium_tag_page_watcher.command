@@ -5,38 +5,20 @@
 
 cd "$(dirname "$0")/.." || exit 1
 
-while true; do
-  echo "Starting Medium Tag Page Watcher..."
-  echo
-  echo "A Chrome browser window will open."
-  echo "Log in or navigate manually, then open a Medium /tag/... page, /tag/.../recommended page, /search/tags?q=... page, or article page."
-  echo "The watcher imports tag cards when new article URLs appear and saves article text on article pages."
-  echo "Type p + Enter to pause/resume, r + Enter to restart, or q + Enter to stop this watcher run."
-  echo
+echo "Starting Medium Tag Page Watcher..."
+echo
+echo "A Chrome browser window will open."
+echo "Log in or navigate manually, then open a Medium /tag/... page, /tag/.../recommended page, publication page, /search/tags?q=... page, or article page."
+echo "The watcher imports cards when new article URLs appear and saves article text on article pages."
+echo "Type p + Enter to pause/resume, or q + Enter to stop this watcher run."
+echo "Restart is disabled in this launcher because restarting would close the Chrome window it owns."
+echo "Use start_medium_tag_page_watcher_attached_chrome.command when you need watcher-only restarts."
+echo
 
-  node scripts/watch_medium_tag_page_pw.cjs --channel chrome --wait-for-medium "$@"
-  watcher_status=$?
+node scripts/watch_medium_tag_page_pw.cjs --channel chrome --wait-for-medium "$@"
+watcher_status=$?
 
-  if [[ "$watcher_status" == "75" ]]; then
-    echo
-    echo "Restart requested. Reopening watcher..."
-    echo
-    continue
-  fi
-
-  echo
-  echo "Watcher stopped with exit code $watcher_status."
-  if [[ -t 0 ]]; then
-    read -k 1 "restart_key?Press r to restart, or any other key to close this Terminal window: "
-  else
-    echo "Press r to restart, or any other key to close this Terminal window: "
-    read -r restart_key
-  fi
-  echo
-  echo
-
-  if [[ "$restart_key" != "r" && "$restart_key" != "R" ]]; then
-    echo "Watcher closed. You can close this Terminal window."
-    exit "$watcher_status"
-  fi
-done
+echo
+echo "Watcher stopped with exit code $watcher_status."
+echo "Watcher closed. You can close this Terminal window."
+exit "$watcher_status"

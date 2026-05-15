@@ -164,6 +164,10 @@ function setupKeyboardControls(state) {
       console.log("Stopping watcher.");
       process.exit(0);
     } else if (normalized === "r") {
+      if (!state.allowRestart) {
+        console.log("Restart is disabled in this launcher because this watcher owns the Chrome window. Use the attached-Chrome launcher to restart only the Terminal watcher without closing Chrome.");
+        return;
+      }
       console.log("Restarting watcher.");
       process.exit(restartExitCode);
     }
@@ -1000,11 +1004,15 @@ async function main() {
     console.log("The watcher will stay idle until it sees a supported Medium page.");
   }
   console.log(`Polling every ${options.pollSeconds}s. Scroll the opened browser window after tracking starts.`);
-  console.log("Type p + Enter to pause/resume, r + Enter to restart, or q + Enter to quit.");
+  if (options.connectCdp) {
+    console.log("Type p + Enter to pause/resume, r + Enter to restart the watcher only, or q + Enter to quit.");
+  } else {
+    console.log("Type p + Enter to pause/resume, or q + Enter to quit. Restart is disabled here because this process owns Chrome.");
+  }
   console.log("");
 
   try {
-    const keyboardState = { paused: false };
+    const keyboardState = { paused: false, allowRestart: Boolean(options.connectCdp) };
     setupKeyboardControls(keyboardState);
     const opened = await openBrowser(options);
     browser = opened.browser;
@@ -1230,7 +1238,11 @@ async function main() {
     if (ownsContext && context) {
       await context.close();
     } else if (browser) {
-      await browser.close();
+      if (typeof browser.disconnect === "function") {
+        browser.disconnect();
+      } else {
+        await browser.close();
+      }
     }
   }
 }

@@ -39,7 +39,7 @@ while true; do
   echo "Starting Medium Tag Page Watcher with attached Chrome..."
   echo
   echo "A Chrome window will open. Log in or navigate manually."
-  echo "When you open a Medium /tag/... page, /tag/.../recommended page, /search/tags?q=... page, or article page, tracking starts."
+  echo "When you open a Medium /tag/... page, /tag/.../recommended page, publication page, /search/tags?q=... page, or article page, tracking starts."
   echo "Type p + Enter to pause/resume, r + Enter to restart the watcher, or q + Enter to stop."
   echo
 
