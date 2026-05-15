@@ -114,7 +114,7 @@ function parseCompactInteger(value) {
   return Math.round(Number(match[1]) * multiplier);
 }
 
-function parseRecommendation(rawUrl, fallbackPosition, fallbackTagSlug) {
+function parseRecommendation(rawUrl, fallbackPosition, fallbackTagSlug, fallbackSurface = "tag_recommended_stories_page") {
   let source = "";
 
   try {
@@ -127,10 +127,50 @@ function parseRecommendation(rawUrl, fallbackPosition, fallbackTagSlug) {
 
   return {
     recommendation_source: source,
-    recommendation_surface: match ? cleanText(match[1]) : "tag_recommended_stories_page",
+    recommendation_surface: match ? cleanText(match[1]) : fallbackSurface,
     recommendation_tag_slug: match ? cleanText(match[2]) : fallbackTagSlug,
     recommendation_position: match ? Number(match[3]) : fallbackPosition - 1,
     recommendation_result_set_size: match ? Number(match[4]) : null,
+  };
+}
+
+function pageContextFromUrl(pageUrl) {
+  let parsedPageUrl;
+
+  try {
+    parsedPageUrl = new URL(pageUrl, "https://medium.com");
+  } catch (_error) {
+    return {
+      tag_slug: "",
+      page_variant: "unknown",
+      section: "",
+    };
+  }
+
+  const tagMatch = parsedPageUrl.pathname.match(/^\/tag\/([^/]+)(?:\/([^/]+))?\/?$/i);
+  if (tagMatch) {
+    return {
+      tag_slug: decodeURIComponent(tagMatch[1]),
+      page_variant: tagMatch[2] === "recommended" ? "tag_recommended" : "tag_landing",
+      section: tagMatch[2] === "recommended" ? "Recommended stories" : "",
+    };
+  }
+
+  const publicationMatch = parsedPageUrl.pathname.match(/^\/([^/@][^/]*)(?:\/(latest|archive))?\/?$/i);
+  if (publicationMatch && !/^(about|business|creators|explore|jobs|membership|new-story|p|plans|policy|search|tag)$/i.test(publicationMatch[1])) {
+    const publicationSlug = decodeURIComponent(publicationMatch[1]);
+    const subpage = cleanText(publicationMatch[2] || "").toLowerCase();
+    return {
+      tag_slug: publicationSlug,
+      page_variant: subpage ? `publication_${subpage}` : "publication_landing",
+      section: "Publication stories",
+    };
+  }
+
+  return {
+    tag_slug: "",
+    page_variant: "unknown",
+    section: "",
   };
 }
 
@@ -273,12 +313,25 @@ function extractReadTimeMinutes(block) {
   return null;
 }
 
+function publicationNameFromPageTitle(pageTitle, fallbackSlug) {
+  const title = cleanText(pageTitle)
+    .replace(/\s+[-–|]\s+Medium\s*$/i, "")
+    .replace(/^Medium\s+[-–|]\s+/i, "");
+
+  if (title && !/^Medium$/i.test(title)) {
+    return title;
+  }
+
+  return cleanText(fallbackSlug)
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function parseMediumTagSnapshot(snapshot, pageUrl, pageTitle = "", options = {}) {
   const capturedDate = options.capturedDate instanceof Date ? options.capturedDate : new Date();
-  const parsedPageUrl = new URL(pageUrl, "https://medium.com");
-  const tagMatch = parsedPageUrl.pathname.match(/^\/tag\/([^/]+)(?:\/([^/]+))?/i);
-  const tagSlug = tagMatch ? decodeURIComponent(tagMatch[1]) : "";
-  const pageVariant = tagMatch && tagMatch[2] === "recommended" ? "tag_recommended" : "tag_landing";
+  const pageContext = pageContextFromUrl(pageUrl);
+  const tagSlug = pageContext.tag_slug;
+  const pageVariant = pageContext.page_variant;
   const blocks = String(snapshot || "").split(/\n- article:\n/).slice(1);
   const seenUrls = new Set();
   const cards = [];
@@ -313,11 +366,21 @@ function parseMediumTagSnapshot(snapshot, pageUrl, pageTitle = "", options = {})
     const inferred = inferPublishedFromLabel(publishedLabel, capturedDate);
     const readTimeMinutes = extractReadTimeMinutes(block);
     const authorPublication = extractAuthorAndPublication(block, title, subtitle);
-    const recommendation = parseRecommendation(rawUrl, cards.length + 1, tagSlug);
+    if (/^publication_/i.test(pageVariant) && !authorPublication.publication_name) {
+      authorPublication.publication_name = publicationNameFromPageTitle(pageTitle, tagSlug);
+      authorPublication.publication_url = normalizeMediumUrl(pageUrl);
+      authorPublication.publication_status = "publication";
+    }
+    const recommendation = parseRecommendation(
+      rawUrl,
+      cards.length + 1,
+      tagSlug,
+      /^publication_/i.test(pageVariant) ? "publication_page" : "tag_recommended_stories_page"
+    );
 
     cards.push({
       position: cards.length + 1,
-      section: pageVariant === "tag_recommended" ? "Recommended stories" : "",
+      section: pageContext.section,
       article_url: articleUrl,
       medium_post_id: extractMediumPostId(articleUrl),
       title,

@@ -52,7 +52,7 @@ looks_like_stats_html <- function(input_text) {
 
 looks_like_tag_page_html <- function(input_text) {
   grepl("data-testid=[\"']post-preview[\"']", input_text, ignore.case = TRUE) &&
-    grepl("tag_recommended_stories_page|/tag/", input_text, ignore.case = TRUE)
+    grepl("tag_recommended_stories_page|/tag/|medium\\.com/[^/\"']+/(latest|archive)|rel=[\"']canonical[\"'][^>]+href=[\"']https://medium\\.com/[^/\"']+", input_text, ignore.case = TRUE)
 }
 
 detect_json_source_type <- function(input_text) {
@@ -125,7 +125,7 @@ if (identical(file_extension, "html") || identical(file_extension, "htm")) {
     stop(
       "This saved HTML file is not a recognized Medium import source.\n\n",
       "Supported HTML inputs:\n",
-      "- Saved Medium tag page HTML\n",
+      "- Saved Medium tag/publication page HTML\n",
       "- Saved Medium /me/stats HTML",
       call. = FALSE
     )
@@ -156,7 +156,7 @@ stop(
   "- Medium tag-page bookmarklet JSON\n",
   "- Medium search-tags watcher JSON\n",
   "- Existing Medium article bookmarklet JSON\n",
-  "- Saved Medium tag page HTML\n",
+  "- Saved Medium tag/publication page HTML\n",
   "- Saved Medium /me/stats HTML\n",
   call. = FALSE
 )

@@ -119,7 +119,7 @@ Usage:
 Options:
   --url <url>                 Medium tag page to open. Default: ${defaultUrl}
   --start-url <url>           Browser start page. Default follows --url.
-  --wait-for-medium           Let you navigate manually; capture Medium tag and article pages.
+  --wait-for-medium           Let you navigate manually; capture Medium tag, publication, search-tags, and article pages.
   --poll-seconds <seconds>    Check interval. Default: 5
   --min-new-urls <count>      Import when at least this many new article URLs appear. Default: 1
   --snapshot-dir <path>       Where JSON snapshots are written. Default: ${defaultSnapshotDir}
@@ -242,6 +242,10 @@ function payloadTitleSummary(payload) {
 
   const last = cards[cards.length - 1];
   return `${cards.length} articles; last="${compactTitle(last.title || last.article_url || "")}"`;
+}
+
+function payloadContextLabel(payload) {
+  return /^publication_/i.test(payload.page_variant || "") ? "Publication" : "Tag";
 }
 
 function cleanLinkName(value) {
@@ -520,6 +524,21 @@ function isMediumTagUrl(value) {
   }
 }
 
+function isMediumPublicationUrl(value) {
+  try {
+    const parsed = new URL(value);
+    const reservedTopLevelPaths = /^(about|business|creators|explore|jobs|membership|new-story|p|plans|policy|search|tag)$/i;
+    const match = parsed.pathname.match(/^\/([^/@][^/]*)(?:\/(latest|archive))?\/?$/i);
+    return (
+      /(^|\.)medium\.com$/i.test(parsed.hostname) &&
+      Boolean(match) &&
+      !reservedTopLevelPaths.test(match[1])
+    );
+  } catch (_error) {
+    return false;
+  }
+}
+
 function isMediumSearchTagsUrl(value) {
   try {
     const parsed = new URL(value);
@@ -584,7 +603,7 @@ function pagesToInspect(browser, context, preferredPage) {
     ...contextsToInspect(browser, context)
     .flatMap((candidateContext) => candidateContext.pages())
   ])
-    .filter((candidate) => !candidate.isClosed() && isMediumTagUrl(candidate.url()));
+    .filter((candidate) => !candidate.isClosed() && (isMediumTagUrl(candidate.url()) || isMediumPublicationUrl(candidate.url())));
 }
 
 function searchTagsPagesToInspect(browser, context, preferredPage) {
@@ -633,7 +652,7 @@ function visiblePageSummary(browser, context, preferredPage) {
     return `Waiting: no supported Medium page in watcher Chrome. Medium tabs seen: ${mediumUrls.slice(0, 3).join(" | ")}`;
   }
 
-  return "Waiting: no Medium tabs visible to watcher Chrome. Open a Medium tag page, search-tags page, or article page in the Chrome window started by this watcher.";
+  return "Waiting: no Medium tabs visible to watcher Chrome. Open a Medium tag page, publication page, search-tags page, or article page in the Chrome window started by this watcher.";
 }
 
 function supportedMediumPageSummary(browser, context, preferredPage) {
@@ -641,7 +660,7 @@ function supportedMediumPageSummary(browser, context, preferredPage) {
     .map((candidate) => candidate.url())
     .filter((url) => url && url !== "about:blank");
   const supportedUrls = visibleUrls.filter((url) =>
-    isMediumTagUrl(url) || isMediumSearchTagsUrl(url) || isMediumArticleUrl(url)
+    isMediumTagUrl(url) || isMediumPublicationUrl(url) || isMediumSearchTagsUrl(url) || isMediumArticleUrl(url)
   );
   const unsupportedMediumUrls = visibleUrls
     .filter((url) => isMediumUrl(url))
@@ -977,7 +996,7 @@ async function main() {
     console.log(`Browser home: ${options.browserHome}`);
   }
   if (options.waitForMedium) {
-    console.log("Navigate to a Medium /tag/... page, /tag/.../recommended page, /search/tags?q=..., or article page when you are ready.");
+    console.log("Navigate to a Medium /tag/... page, /tag/.../recommended page, publication page, /search/tags?q=..., or article page when you are ready.");
     console.log("The watcher will stay idle until it sees a supported Medium page.");
   }
   console.log(`Polling every ${options.pollSeconds}s. Scroll the opened browser window after tracking starts.`);
@@ -1135,7 +1154,7 @@ async function main() {
           newUrls: newUrls.length,
           file: snapshotPath,
         }));
-        console.log(`Tag import article: ${payloadTitleSummary(payload)}`);
+        console.log(`${payloadContextLabel(payload)} import article: ${payloadTitleSummary(payload)}`);
 
         if (options.importSnapshots) {
           const result = helpers.importSnapshot(snapshotPath, workspace);

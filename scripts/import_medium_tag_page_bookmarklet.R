@@ -455,9 +455,10 @@ insert_article_stats_observation <- function(connection, article_url, card, obse
 }
 
 print_new_import_summary <- function(summary, payload, source_file_hash, snapshot_id, database_path) {
-  message("Imported Medium tag page")
-  message("------------------------")
-  message("Tag: ", payload$tag_slug)
+  context_label <- if (!is_missing_text(payload$page_variant) && grepl("^publication_", payload$page_variant, ignore.case = TRUE)) "Publication" else "Tag"
+  message("Imported Medium card page")
+  message("-------------------------")
+  message(context_label, ": ", payload$tag_slug)
   message("Page variant: ", payload$page_variant)
   message("Articles parsed: ", summary$cards_found)
   message("Articles inserted: ", summary$new_articles)
@@ -492,7 +493,8 @@ print_duplicate_summary <- function(snapshot_row, source_file_hash, database_pat
     message("snapshot_id: ", snapshot_row$id[1])
   }
   if ("tag_slug" %in% names(snapshot_row)) {
-    message("Tag: ", snapshot_row$tag_slug[1])
+    context_label <- if ("page_variant" %in% names(snapshot_row) && !is_missing_text(snapshot_row$page_variant[1]) && grepl("^publication_", snapshot_row$page_variant[1], ignore.case = TRUE)) "Publication" else "Tag"
+    message(context_label, ": ", snapshot_row$tag_slug[1])
   }
   if ("page_variant" %in% names(snapshot_row) && !is_missing_text(snapshot_row$page_variant[1])) {
     message("Page variant: ", snapshot_row$page_variant[1])
@@ -654,7 +656,8 @@ tryCatch(
         medium_post_id = card$medium_post_id,
         tag_slug = payload$tag_slug,
         observed_at = observed_at_for_row,
-        has_full_content = isTRUE(full_content_result$has_full_content)
+        has_full_content = isTRUE(full_content_result$has_full_content),
+        page_variant = payload$page_variant
       )
 
       if (identical(queue_result, "queued")) {

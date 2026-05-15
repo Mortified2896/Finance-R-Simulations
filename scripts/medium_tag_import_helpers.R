@@ -37,6 +37,18 @@ infer_page_variant_from_url <- function(tag_url) {
     return("tag_landing")
   }
 
+  if (grepl("^https?://([^/]+\\.)?medium\\.com/[^/@][^/]*/(latest|archive)$", normalized_url, ignore.case = TRUE)) {
+    subpage <- sub("^.*/([^/]+)$", "\\1", normalized_url)
+    return(paste0("publication_", tolower(subpage)))
+  }
+
+  if (grepl("^https?://([^/]+\\.)?medium\\.com/[^/@][^/]*$", normalized_url, ignore.case = TRUE)) {
+    slug <- sub("^https?://([^/]+\\.)?medium\\.com/([^/]+)$", "\\2", normalized_url, ignore.case = TRUE)
+    if (!grepl("^(about|business|creators|explore|jobs|membership|new-story|p|plans|policy|search|tag)$", slug, ignore.case = TRUE)) {
+      return("publication_landing")
+    }
+  }
+
   "unknown"
 }
 
@@ -1060,12 +1072,21 @@ find_existing_queue_row <- function(connection, normalized_url) {
   )
 }
 
-insert_or_update_queue_row <- function(connection, article_id, normalized_url, medium_post_id, tag_slug, observed_at, has_full_content) {
+source_context_for_payload <- function(tag_slug, page_variant) {
+  if (!is_missing_text(page_variant) && grepl("^publication_", page_variant, ignore.case = TRUE)) {
+    return(paste0("publication:", tag_slug))
+  }
+
+  paste0("tag:", tag_slug)
+}
+
+insert_or_update_queue_row <- function(connection, article_id, normalized_url, medium_post_id, tag_slug, observed_at, has_full_content, page_variant = NA_character_) {
   queue_columns <- table_columns(connection, "medium_article_import_queue")
   existing_row <- find_existing_queue_row(connection, normalized_url)
   has_article_id_column <- "article_id" %in% queue_columns
   safe_article_id <- if (has_article_id_column) article_id else NA_integer_
   existing_status <- if (nrow(existing_row) > 0 && "status" %in% names(existing_row)) clean_text(existing_row$status[1]) else NA_character_
+  source_context <- source_context_for_payload(tag_slug, page_variant)
 
   if (isTRUE(has_full_content)) {
     if (nrow(existing_row) == 0) {
@@ -1126,7 +1147,7 @@ insert_or_update_queue_row <- function(connection, article_id, normalized_url, m
       if ("first_seen_at" %in% queue_columns) list(observed_at) else NULL,
       if ("last_seen_at" %in% queue_columns) list(observed_at) else NULL,
       if ("source_type" %in% queue_columns) list("medium_tag_page_bookmarklet") else NULL,
-      if ("source_context" %in% queue_columns) list(paste0("tag:", tag_slug)) else NULL,
+      if ("source_context" %in% queue_columns) list(source_context) else NULL,
       if ("tag_slug" %in% queue_columns) list(tag_slug) else NULL,
       if ("status" %in% queue_columns) list("pending") else NULL,
       if ("priority" %in% queue_columns) list(0L) else NULL,
@@ -1192,7 +1213,7 @@ insert_or_update_queue_row <- function(connection, article_id, normalized_url, m
     if (has_article_id_column) list(safe_article_id) else NULL,
     if ("medium_post_id" %in% queue_columns) list(medium_post_id) else NULL,
     if ("last_seen_at" %in% queue_columns) list(observed_at) else NULL,
-    if ("source_context" %in% queue_columns) list(paste0("tag:", tag_slug)) else NULL,
+    if ("source_context" %in% queue_columns) list(source_context) else NULL,
     if ("tag_slug" %in% queue_columns) list(tag_slug) else NULL,
     list(existing_row$id[1])
   )

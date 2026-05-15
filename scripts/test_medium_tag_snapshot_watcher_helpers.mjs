@@ -118,4 +118,39 @@ assert.strictEqual(payload.cards[1].claps, 2500);
 assert.strictEqual(payload.cards[1].responses, 57);
 assert.strictEqual(payload.cards[1].published_at_inferred, "2026-05-10T06:00:00Z");
 
+const publicationPayload = parseMediumTagSnapshot(
+  `
+- article:
+  - link "Publication Article":
+    - tooltip "Author Name":
+      - link "Author Name":
+        - /url: /@author
+    - link "Publication Article Subtitle for the card":
+      - /url: /better-marketing/publication-article-abc123def456
+      - heading "Publication Article" [level=2]
+      - heading "Subtitle for the card" [level=3]
+    - generic: May 9
+    - link "A clap icon 12 A response icon 1":
+      - /url: /better-marketing/publication-article-abc123def456
+      - tooltip "A clap icon 12":
+        - img "A clap icon"
+        - generic: "12"
+      - tooltip "A response icon 1":
+        - img "A response icon"
+        - generic: "1"
+`,
+  "https://medium.com/better-marketing/latest",
+  "Better Marketing",
+  { capturedDate: new Date("2026-05-10T12:00:00Z") }
+);
+
+assert.strictEqual(publicationPayload.tag_slug, "better-marketing");
+assert.strictEqual(publicationPayload.page_variant, "publication_latest");
+assert.strictEqual(publicationPayload.cards.length, 1);
+assert.strictEqual(publicationPayload.cards[0].section, "Publication stories");
+assert.strictEqual(publicationPayload.cards[0].publication_name, "Better Marketing");
+assert.strictEqual(publicationPayload.cards[0].publication_status, "publication");
+assert.strictEqual(publicationPayload.cards[0].recommendation_surface, "publication_page");
+assert.strictEqual(publicationPayload.cards[0].article_url, "https://medium.com/better-marketing/publication-article-abc123def456");
+
 console.log("Medium tag snapshot watcher helper tests passed.");

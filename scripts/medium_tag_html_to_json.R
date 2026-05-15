@@ -136,6 +136,14 @@ parse_tag_page_info <- function(html, input_path) {
 
     if (length(path_parts) >= 2) {
       tag_slug <- utils::URLdecode(path_parts[2])
+    } else {
+      publication_match <- regexec("medium\\.com/([^/?#@]+)(?:/(?:latest|archive))?/?(?:[?#].*)?$", tag_url, perl = TRUE, ignore.case = TRUE)
+      publication_parts <- regmatches(tag_url, publication_match)[[1]]
+
+      if (length(publication_parts) >= 2 &&
+          !grepl("^(about|business|creators|explore|jobs|membership|new-story|p|plans|policy|search|tag)$", publication_parts[2], ignore.case = TRUE)) {
+        tag_slug <- utils::URLdecode(publication_parts[2])
+      }
     }
   }
 
@@ -152,7 +160,7 @@ parse_tag_page_info <- function(html, input_path) {
     tag_slug = clean_text(tag_slug),
     page_variant = infer_page_variant_from_url(tag_url),
     tag_url = normalize_medium_url(tag_url),
-    page_title = first_non_missing_local(title, paste("Medium tag page", input_path))
+    page_title = first_non_missing_local(title, paste("Medium page", input_path))
   )
 }
 
