@@ -18,3 +18,4 @@ article_projects/*/api_outputs/*.md
 # Local downloaded Medium images
 data/analysis/medium_images/downloaded/
 data/analysis/medium_body_images/downloaded/
+data/analysis/medium_images/medium_image_download_queue.csv
