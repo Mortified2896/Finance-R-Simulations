@@ -14,7 +14,7 @@ library(DBI)
 library(RSQLite)
 
 database_path <- file.path("data", "db", "medium_articles.sqlite")
-output_dir <- file.path("data", "analysis")
+output_dir <- file.path("data", "analysis", "medium_analysis_v1")
 output_path <- file.path(output_dir, "medium_title_prediction_dataset.csv")
 
 message("Medium Title Prediction Dataset Builder")

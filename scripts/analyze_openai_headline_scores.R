@@ -1,6 +1,6 @@
-input_path <- file.path("data", "analysis", "medium_title_prediction_dataset.csv")
-audit_path <- file.path("data", "analysis", "subtitle_analysis", "subtitle_quality_audit.csv")
-output_dir <- file.path("data", "analysis", "openai_headline_scoring")
+input_path <- file.path("data", "analysis", "medium_analysis_v1", "medium_title_prediction_dataset.csv")
+audit_path <- file.path("data", "analysis", "medium_analysis_v1", "subtitle_analysis", "subtitle_quality_audit.csv")
+output_dir <- file.path("data", "analysis", "medium_analysis_v1", "openai_headline_scoring")
 score_file_candidates <- c(
   headline_v2 = file.path(output_dir, "openai_headline_scores_v2.csv"),
   headline_v1 = file.path(output_dir, "openai_headline_scores.csv")

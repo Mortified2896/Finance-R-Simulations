@@ -6,7 +6,7 @@ This is intentionally an experiment script, not a production pipeline:
 - defaults to a small sample instead of all rows
 - reads OPENAI_API_KEY from the environment
 - sends only title/subtitle/rubric text to the model
-- writes isolated CSV and JSONL outputs under data/analysis/openai_headline_scoring
+- writes isolated CSV and JSONL outputs under data/analysis/medium_analysis_v1/openai_headline_scoring
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Any
 
 
-INPUT_PATH = Path("data/analysis/medium_title_prediction_dataset.csv")
-OUTPUT_DIR = Path("data/analysis/openai_headline_scoring")
+INPUT_PATH = Path("data/analysis/medium_analysis_v1/medium_title_prediction_dataset.csv")
+OUTPUT_DIR = Path("data/analysis/medium_analysis_v1/openai_headline_scoring")
 CSV_OUTPUT = OUTPUT_DIR / "openai_headline_scores_v2.csv"
 JSONL_OUTPUT = OUTPUT_DIR / "openai_headline_scores_raw_v2.jsonl"
 RUBRIC_VERSION = "headline_v2"

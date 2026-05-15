@@ -1,21 +1,73 @@
-input_path <- file.path("data", "analysis", "medium_analysis_v1", "medium_title_prediction_dataset.csv")
-output_dir <- file.path("data", "analysis", "medium_analysis_v1", "title_baseline")
+required_packages <- c("DBI", "RSQLite")
 
-message("Medium Title Text Baseline Analysis")
-message("===================================")
-
-if (!file.exists(input_path)) {
+missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_packages) > 0) {
   stop(
-    "Could not find analysis dataset at: ",
-    input_path,
-    "\nRun this first:\nRscript scripts/build_medium_title_prediction_dataset.R",
+    "Some required R packages are missing.\n\n",
+    "Please install them by running this command in R:\n\n",
+    'install.packages(c("DBI", "RSQLite"))',
+    call. = FALSE
+  )
+}
+
+library(DBI)
+library(RSQLite)
+
+database_path <- file.path("data", "db", "medium_articles.sqlite")
+output_dir <- file.path("data", "analysis", "medium_analysis_v2", "title_baseline")
+
+message("Medium Title Text Baseline Analysis V2")
+message("======================================")
+
+if (!file.exists(database_path)) {
+  stop(
+    "Could not find database at: ",
+    database_path,
     call. = FALSE
   )
 }
 
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
-articles <- read.csv(input_path, stringsAsFactors = FALSE, check.names = FALSE)
+connection <- dbConnect(SQLite(), database_path, flags = SQLITE_RO)
+on.exit(dbDisconnect(connection), add = TRUE)
+
+if (!dbExistsTable(connection, "v_medium_title_prediction_dataset_v2")) {
+  stop("Missing view v_medium_title_prediction_dataset_v2. Run scripts/apply_medium_analysis_v2_schema.R first.", call. = FALSE)
+}
+
+articles <- dbGetQuery(connection, "
+  SELECT
+    canonical_article_key AS article_id,
+    article_id AS source_article_id,
+    medium_post_id,
+    url,
+    title,
+    subtitle,
+    author,
+    publication_name AS publication,
+    tags_seen AS observed_tag_slugs,
+    source_tag,
+    times_seen,
+    best_page_position AS best_rank,
+    best_page_position AS average_rank,
+    age_days_at_observation AS article_age_days_at_latest_observation,
+    age_days_at_observation AS article_age_days_at_latest_stats,
+    claps,
+    responses,
+    claps AS latest_claps,
+    responses AS latest_responses,
+    log_claps,
+    log_responses,
+    success_score,
+    top_20_percent AS high_performer_top20,
+    top_10_percent AS high_performer_top10,
+    top_5_percent AS high_performer_top5,
+    top_20_percent,
+    top_10_percent,
+    top_5_percent
+  FROM v_medium_title_prediction_dataset_v2
+")
 
 clean_text_vector <- function(x) {
   y <- as.character(x)
@@ -296,6 +348,9 @@ message("Using ", nrow(usable), " rows with title and success_score.")
 quality_lines <- c(
   "Title baseline data quality summary",
   "===================================",
+  "Source: v_medium_title_prediction_dataset_v2",
+  paste("V2 view rows loaded:", nrow(articles)),
+  "No OpenAI/API scoring and no SQLite DB writes were performed.",
   paste("Rows in dataset:", nrow(articles)),
   paste("Rows with title:", sum(!is.na(articles$title))),
   paste("Rows with success_score:", sum(!is.na(articles$success_score))),

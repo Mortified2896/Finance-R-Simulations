@@ -1,5 +1,5 @@
-input_path <- file.path("data", "analysis", "medium_title_prediction_dataset.csv")
-output_dir <- file.path("data", "analysis", "subtitle_analysis")
+input_path <- file.path("data", "analysis", "medium_analysis_v1", "medium_title_prediction_dataset.csv")
+output_dir <- file.path("data", "analysis", "medium_analysis_v1", "subtitle_analysis")
 
 message("Medium Subtitle/Deck Quality Audit")
 message("==================================")

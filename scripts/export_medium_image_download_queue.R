@@ -1,4 +1,4 @@
-input_path <- file.path("data", "analysis", "medium_title_prediction_dataset.csv")
+input_path <- file.path("data", "analysis", "medium_analysis_v1", "medium_title_prediction_dataset.csv")
 output_dir <- file.path("data", "analysis", "medium_images")
 output_path <- file.path(output_dir, "medium_image_download_queue.csv")
 download_dir <- file.path(output_dir, "downloaded")

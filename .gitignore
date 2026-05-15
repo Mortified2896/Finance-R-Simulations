@@ -1,21 +1,46 @@
+# Local-only runtime and secrets
+.local_gitignored/
+.env
+*.log
+.DS_Store
+Rplots.pdf
+
+# Dependencies and local fixtures
+node_modules/
+debug_samples/
+
+# Local databases and backups
 data/*.sqlite
 data/*.sqlite.backup_*
 data/*.db
+data/db/*.sqlite
+data/db/*.sqlite-*
+data/db/*.db
+data/db/BackupFolder/
+
+# Browser/runtime profiles and raw capture snapshots
 data/raw/
 data/medium_tag_watcher_snapshots/
 data/medium_article_text_snapshots/
 data/medium_tag_playwright_profile/
 data/medium_tag_browser_home/
 data/medium_tag_manual_chrome_profile/
-data/analysis/medium_title_prediction_dataset.csv
-node_modules/
-.env
-debug_samples/
-.DS_Store
-Rplots.pdf
-article_projects/*/api_outputs/*.md
+data/medium_article_clap_capture_profile/
 
-# Local downloaded Medium images
-data/analysis/medium_images/downloaded/
-data/analysis/medium_body_images/downloaded/
-data/analysis/medium_images/medium_image_download_queue.csv
+# Generated Medium analysis datasets and outputs
+data/analysis/medium_title_prediction_dataset.csv
+data/analysis/medium_analysis_v1/
+data/analysis/medium_analysis_v2/
+data/analysis/title_baseline/
+data/analysis/title_followup/
+data/analysis/title_target_sensitivity/
+data/analysis/subtitle_analysis/
+data/analysis/openai_headline_scoring/
+data/analysis/openai_headline_scoring_backup_before_resume/
+
+# Generated queues, API outputs, and downloaded media
+data/analysis/**/*_queue.csv
+data/analysis/**/downloaded/
+data/analysis/**/*.jsonl
+data/analysis/**/api_outputs/
+article_projects/*/api_outputs/*.md

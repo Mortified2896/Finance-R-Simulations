@@ -1,5 +1,5 @@
-input_path <- file.path("data", "analysis", "medium_title_prediction_dataset.csv")
-output_dir <- file.path("data", "analysis", "title_target_sensitivity")
+input_path <- file.path("data", "analysis", "medium_analysis_v1", "medium_title_prediction_dataset.csv")
+output_dir <- file.path("data", "analysis", "medium_analysis_v1", "title_target_sensitivity")
 
 message("Medium Title Target Sensitivity Analysis")
 message("========================================")
