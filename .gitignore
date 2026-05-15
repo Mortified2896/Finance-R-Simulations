@@ -7,9 +7,14 @@ data/medium_article_text_snapshots/
 data/medium_tag_playwright_profile/
 data/medium_tag_browser_home/
 data/medium_tag_manual_chrome_profile/
+data/analysis/medium_title_prediction_dataset.csv
 node_modules/
 .env
 debug_samples/
 .DS_Store
 Rplots.pdf
 article_projects/*/api_outputs/*.md
+
+# Local downloaded Medium images
+data/analysis/medium_images/downloaded/
+data/analysis/medium_body_images/downloaded/
