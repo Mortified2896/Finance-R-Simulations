@@ -1,4 +1,4 @@
-const fs = require("fs");
+import fs from "node:fs";
 
 const html = fs.readFileSync("01_manual_tools/import/medium_tag_page_bookmarklet.html", "utf8");
 const start = "const bookmarkletSource = `";
