@@ -534,7 +534,7 @@ ui <- fluidPage(
       }
       .top-actions { color: var(--muted); display: flex; gap: 22px; align-items: center; font-size: 15px; }
       .app-shell { display: grid; grid-template-columns: 250px minmax(560px, 1fr) 300px; min-height: calc(100vh - 50px); }
-      .sidebar, .guide { border-right: 1px solid var(--line); padding: 22px 20px; }
+      .sidebar, .guide { border-right: 1px solid var(--line); padding: 22px 20px; position: relative; }
       .guide { border-right: 0; border-left: 1px solid var(--line); }
       .nav-item {
         height: 42px; display: flex; align-items: center; gap: 14px; padding: 0 18px;
@@ -542,14 +542,17 @@ ui <- fluidPage(
       }
       .nav-item.active { background: var(--green-soft); font-weight: 650; }
       .daily-goal {
-        border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; margin-top: 28vh;
+        border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px;
         max-width: 250px;
+        position: absolute;
+        left: 20px;
+        right: 20px;
       }
       .daily-goal strong { display: block; margin-bottom: 8px; }
       .daily-goal .num { color: var(--green); font-weight: 700; }
       .progress-track { height: 7px; background: #e9e9e9; border-radius: 99px; overflow: hidden; margin: 12px 0 8px; }
       .progress-fill { height: 100%; background: var(--green); border-radius: 99px; width: 0%; }
-      .main { padding: 18px 30px; max-width: 920px; width: 100%; margin: 0 auto; }
+      .main { padding: 22px 30px 18px; max-width: 920px; width: 100%; margin: 0 auto; }
       h1 { margin: 0; font-size: 26px; line-height: 1.05; font-weight: 750; letter-spacing: 0; }
       .progress-line { margin-top: 5px; color: var(--muted); font-size: 16px; }
       .progress-line .current { color: var(--green); font-weight: 750; }
@@ -606,12 +609,18 @@ ui <- fluidPage(
       .btn-default:hover { border-color: #bdbdbd; background: #fafafa; }
       .shortcut-copy { color: var(--muted); font-size: 13px; }
       .guide-section { border-bottom: 1px solid var(--line); padding: 10px 0 16px; }
+      .guide-section:first-child { padding-top: 0; }
       .guide-section:last-child { border-bottom: 0; }
       .guide h3 { font-size: 16px; margin: 0 0 10px; font-weight: 750; }
       .guide p, .guide li { color: #333; line-height: 1.34; font-size: 13px; }
       .guide ul { padding-left: 18px; margin: 0; }
       .guide li { margin-bottom: 5px; }
-      .guide .tip { background: var(--green-soft); border-radius: 8px; padding: 14px; margin-top: 14px; }
+      .guide .tip {
+        background: var(--green-soft); border-radius: 8px; padding: 14px;
+        position: absolute;
+        left: 20px;
+        right: 20px;
+      }
       .done-state {
         border: 1px solid var(--line); border-radius: 8px; padding: 42px; margin-top: 28px; text-align: center;
       }
@@ -645,6 +654,32 @@ ui <- fluidPage(
           Shiny.setInputValue('score_key', {score: Number(score), nonce: Date.now()}, {priority: 'event'});
         }, 140);
       }
+
+      function alignSideCardsToRatingPanel() {
+        const ratingPanel = document.querySelector('.rating-panel');
+        const sidebar = document.querySelector('.sidebar');
+        const guide = document.querySelector('.guide');
+        const dailyGoal = document.querySelector('.daily-goal');
+        const tip = document.querySelector('.guide .tip');
+        if (!ratingPanel || !sidebar || !guide || !dailyGoal || !tip) return;
+
+        const ratingBottom = ratingPanel.getBoundingClientRect().bottom;
+        const sidebarTop = sidebar.getBoundingClientRect().top;
+        const guideTop = guide.getBoundingClientRect().top;
+        const dailyTop = Math.max(22, ratingBottom - sidebarTop - dailyGoal.offsetHeight);
+        const tipTop = Math.max(22, ratingBottom - guideTop - tip.offsetHeight);
+
+        dailyGoal.style.top = dailyTop + 'px';
+        tip.style.top = tipTop + 'px';
+      }
+
+      window.addEventListener('resize', function() {
+        window.requestAnimationFrame(alignSideCardsToRatingPanel);
+      });
+      document.addEventListener('DOMContentLoaded', function() {
+        window.setTimeout(alignSideCardsToRatingPanel, 250);
+      });
+      window.setInterval(alignSideCardsToRatingPanel, 300);
 
       document.addEventListener('click', function(event) {
         const button = event.target && event.target.closest ? event.target.closest('.rating-buttons .btn') : null;
@@ -692,14 +727,23 @@ ui <- fluidPage(
           if (note) note.focus();
         }
       });
-      Shiny.addCustomMessageHandler('clearRatingFocus', function(_) {
+      function handleClearRatingFocus(_) {
         document.querySelectorAll('.rating-buttons .btn').forEach(function(oneButton) {
           oneButton.classList.remove('rating-confirm');
         });
         if (document.activeElement && document.activeElement.blur) {
           document.activeElement.blur();
         }
-      });
+        window.setTimeout(alignSideCardsToRatingPanel, 80);
+        window.setTimeout(alignSideCardsToRatingPanel, 260);
+      }
+      if (window.Shiny && Shiny.addCustomMessageHandler) {
+        Shiny.addCustomMessageHandler('clearRatingFocus', handleClearRatingFocus);
+      } else {
+        document.addEventListener('shiny:connected', function() {
+          Shiny.addCustomMessageHandler('clearRatingFocus', handleClearRatingFocus);
+        }, { once: true });
+      }
     "))
   ),
   div(
