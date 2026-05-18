@@ -4,7 +4,7 @@
 # and attach the Medium tag-page watcher to it. This avoids Playwright launching
 # a visibly controlled test browser.
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 
 PORT="${MEDIUM_WATCHER_DEBUG_PORT:-9222}"
 PROFILE_DIR="$PWD/data/medium_tag_manual_chrome_profile"

@@ -3,7 +3,7 @@
 # Double-click this file to open a visible Playwright browser that watches a
 # Medium tag page and imports changed rendered cards into the local SQLite DB.
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 
 echo "Starting Medium Tag Page Watcher..."
 echo

@@ -207,11 +207,57 @@ invisible(dbWithTransaction(connection, {
       ON medium_article_image_assets(medium_post_id, image_url)
   ")
 
+  db_execute(connection, "
+    CREATE TABLE IF NOT EXISTS medium_thumbnail_api_scores (
+      id INTEGER PRIMARY KEY,
+      canonical_article_key TEXT NOT NULL,
+      article_id INTEGER,
+      medium_post_id TEXT,
+      prompt_version TEXT NOT NULL,
+      model TEXT NOT NULL,
+      score_scope TEXT NOT NULL,
+      scored_at TEXT NOT NULL,
+      title_hash TEXT,
+      subtitle_hash TEXT,
+      image_url TEXT,
+      local_image_path TEXT,
+      image_hash TEXT,
+      image_input_mode TEXT,
+      raw_json TEXT NOT NULL,
+      visual_clarity INTEGER,
+      visual_hook INTEGER,
+      visual_relevance INTEGER,
+      visual_distinctiveness INTEGER,
+      professional_credibility INTEGER,
+      emotional_pull_visual INTEGER,
+      finance_topic_fit INTEGER,
+      generic_stock_photo_risk INTEGER,
+      ai_or_low_quality_risk INTEGER,
+      text_readability INTEGER,
+      overall_thumbnail_potential INTEGER,
+      predicted_success_bucket TEXT,
+      short_reason TEXT,
+      error TEXT
+    )
+  ")
+
+  db_execute(connection, "
+    CREATE INDEX IF NOT EXISTS idx_medium_thumbnail_api_scores_prompt_model_scope
+      ON medium_thumbnail_api_scores(prompt_version, model, score_scope)
+  ")
+
   ensure_column(connection, "medium_title_api_scores", "medium_clap_potential", "INTEGER")
   ensure_column(connection, "medium_title_api_scores", "medium_comment_potential", "INTEGER")
   ensure_column(connection, "medium_title_api_scores", "overall_article_potential", "INTEGER")
   ensure_column(connection, "medium_title_api_scores", "score_scope", "TEXT NOT NULL DEFAULT 'title_subtitle'")
   ensure_column(connection, "medium_title_human_ratings", "general_rating", "INTEGER")
+
+  ensure_column(connection, "medium_thumbnail_api_scores", "title_hash", "TEXT")
+  ensure_column(connection, "medium_thumbnail_api_scores", "subtitle_hash", "TEXT")
+  ensure_column(connection, "medium_thumbnail_api_scores", "image_url", "TEXT")
+  ensure_column(connection, "medium_thumbnail_api_scores", "local_image_path", "TEXT")
+  ensure_column(connection, "medium_thumbnail_api_scores", "image_hash", "TEXT")
+  ensure_column(connection, "medium_thumbnail_api_scores", "image_input_mode", "TEXT")
 
   db_execute(connection, "DROP INDEX IF EXISTS idx_medium_title_api_scores_cache")
 
@@ -224,6 +270,22 @@ invisible(dbWithTransaction(connection, {
         prompt_version,
         model,
         score_scope
+      )
+  ")
+
+  db_execute(connection, "DROP INDEX IF EXISTS idx_medium_thumbnail_api_scores_cache")
+
+  db_execute(connection, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_medium_thumbnail_api_scores_cache
+      ON medium_thumbnail_api_scores (
+        canonical_article_key,
+        prompt_version,
+        model,
+        score_scope,
+        COALESCE(image_hash, ''),
+        COALESCE(image_url, ''),
+        COALESCE(title_hash, ''),
+        COALESCE(subtitle_hash, '')
       )
   ")
 
@@ -427,4 +489,5 @@ message("- v_medium_title_prediction_dataset_v2")
 message("- medium_title_api_scores")
 message("- medium_title_human_ratings")
 message("- medium_article_image_assets")
+message("- medium_thumbnail_api_scores")
 message("Schema setup complete.")

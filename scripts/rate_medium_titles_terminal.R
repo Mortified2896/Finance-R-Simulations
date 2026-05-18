@@ -18,7 +18,7 @@ parse_args <- function(args) {
     db = file.path("data", "db", "medium_articles.sqlite"),
     rater = Sys.getenv("USER", unset = "default"),
     limit = 100L,
-    rating_version = "v2_general",
+    rating_version = "v2_general_title_only",
     general_rating = NA_integer_,
     note = NA_character_
   )
@@ -194,9 +194,9 @@ insert_rating <- function(connection, row, args, general_rating, note, skipped) 
       args$rating_version,
       rated_at,
       row$title,
-      row$subtitle,
+      NA_character_,
       simple_text_hash(row$title),
-      simple_text_hash(row$subtitle),
+      simple_text_hash(NA_character_),
       general_rating,
       NA_integer_,
       NA_integer_,
@@ -215,14 +215,12 @@ cat("=========================\n")
 cat("DB path: ", args$db, "\n", sep = "")
 cat("Rater: ", args$rater, "\n", sep = "")
 cat("Rating version: ", args$rating_version, "\n\n", sep = "")
+cat("Loading rating queue...\n")
+flush.console()
 
 stdin_is_tty <- tryCatch(isatty(stdin()), error = function(e) FALSE)
-dev_tty_available <- tryCatch({
-  input <- suppressWarnings(file("/dev/tty", open = "r"))
-  close(input)
-  TRUE
-}, error = function(e) FALSE)
-if (is.na(args$general_rating) && !(interactive() || stdin_is_tty || dev_tty_available) && args$limit > 0) {
+launcher_terminal <- identical(Sys.getenv("MEDIUM_TITLE_RATING_TERMINAL", unset = ""), "1")
+if (is.na(args$general_rating) && !(interactive() || stdin_is_tty || launcher_terminal) && args$limit > 0) {
   stop(
     "This rating workflow needs an interactive Terminal. ",
     "Use --limit 0 for smoke tests, or run it from a Terminal/.command launcher.",
@@ -291,8 +289,9 @@ if (nrow(rows) == 0) {
   quit(status = 0)
 }
 
+clear_terminal()
 cat("Controls: s = skip, q = save and quit, b = undo previous rating from this session.\n")
-cat("Only title and subtitle are shown.\n\n")
+cat("Only the title is shown.\n\n")
 cat("Unrated articles with thumbnails: ", unrated_thumbnail_count, "\n", sep = "")
 cat("Already rated by you for this version: ", already_rated_total, "\n", sep = "")
 if (already_skipped_total > 0L) {
@@ -322,9 +321,7 @@ while (i <= nrow(rows)) {
   cat("\n----------------------------------------\n")
   cat("[", i, "/", nrow(rows), "]\n", sep = "")
   cat("Thumbnail: ", if (isTRUE(as.integer(row$has_thumbnail) == 1L)) "yes" else "no", "\n", sep = "")
-  cat("Title: ", clean_text(row$title), "\n", sep = "")
-  subtitle <- clean_text(row$subtitle)
-  cat("Subtitle: ", if (nzchar(subtitle)) subtitle else "(none)", "\n\n", sep = "")
+  cat("Title: ", clean_text(row$title), "\n\n", sep = "")
 
   general_rating <- if (!is.na(args$general_rating)) {
     args$general_rating

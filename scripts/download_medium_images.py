@@ -24,7 +24,7 @@ from urllib.request import Request, urlopen
 DEFAULT_INPUT = Path("data/analysis/medium_images/medium_image_download_queue.csv")
 DEFAULT_OUTPUT_DIR = Path("data/analysis/medium_images/downloaded")
 DEFAULT_URL_COLUMN = "primary_image_url_for_download"
-ROBOTS_REFERENCE = Path("01_manual_tools/medium_robots_reference.md")
+ROBOTS_REFERENCE = Path("01_manual_tools/reference/medium_robots_reference.md")
 DEFAULT_LIMIT = 25
 DEFAULT_SLEEP_MIN = 5.0
 DEFAULT_SLEEP_MAX = 10.0

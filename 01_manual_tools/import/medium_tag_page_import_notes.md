@@ -1,7 +1,7 @@
 # Medium Tag-Page Import Notes
 
 ## Install and use the bookmarklet
-- Open [medium_tag_page_bookmarklet.html](/Users/Jo/GitHub/Finance%20R%20Simulations/01_manual_tools/medium_tag_page_bookmarklet.html) in your browser.
+- Open [medium_tag_page_bookmarklet.html](/Users/Jo/GitHub/Finance%20R%20Simulations/01_manual_tools/import/medium_tag_page_bookmarklet.html) in your browser.
 - Drag the `Medium Tag Page JSON` bookmarklet to the bookmarks bar.
 - Open a supported Medium tag page such as:
 - `https://medium.com/tag/finance`
@@ -11,7 +11,7 @@
 - It downloads a JSON file and shows an alert like `Exported 57 Medium tag-page cards.`
 
 ## Import the downloaded JSON
-- Run [start_medium_own_stats_importer.command](/Users/Jo/GitHub/Finance%20R%20Simulations/01_manual_tools/start_medium_own_stats_importer.command).
+- Run [start_medium_own_stats_importer.command](/Users/Jo/GitHub/Finance%20R%20Simulations/01_manual_tools/import/start_medium_own_stats_importer.command).
 - Drop the downloaded JSON file path into Terminal.
 - The shared router detects `source_type = "medium_tag_page_bookmarklet"` and runs [import_medium_tag_page_bookmarklet.R](/Users/Jo/GitHub/Finance%20R%20Simulations/scripts/import_medium_tag_page_bookmarklet.R).
 

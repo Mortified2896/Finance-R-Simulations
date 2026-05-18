@@ -76,7 +76,7 @@
     <li>Wait until the stats table is visible.</li>
     <li>Click the <code>Save Medium Stats Page</code> bookmarklet.</li>
     <li>Save the downloaded file anywhere convenient, or into <code>debug_samples/Stats Page/</code>.</li>
-    <li>Run <code>01_manual_tools/start_medium_own_stats_importer.command</code>.</li>
+    <li>Run <code>01_manual_tools/import/start_medium_own_stats_importer.command</code>.</li>
     <li>Drag/drop or paste the saved HTML file path into Terminal, then press Enter.</li>
     <li>The importer will add own articles to <code>medium_articles</code> and private snapshots to <code>medium_own_story_stats</code>.</li>
   </ol>
@@ -85,7 +85,7 @@
   <p>
     The bookmarklet only saves the current Medium stats page HTML.
     The actual database import happens later in Terminal through
-    <code>01_manual_tools/start_medium_own_stats_importer.command</code>,
+    <code>01_manual_tools/import/start_medium_own_stats_importer.command</code>,
     which then runs <code>scripts/import_medium_own_stats_from_html.R</code>.
   </p>
 

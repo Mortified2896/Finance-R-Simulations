@@ -58,6 +58,7 @@ Tables:
 - `medium_title_api_scores`: cached structured API scores keyed by canonical article, title/subtitle hashes, prompt version, model, and `score_scope`.
 - `medium_title_human_ratings`: blind human ratings entered from Terminal.
 - `medium_article_image_assets`: schema readiness for Thumbnail V3 image assets. Full image scoring is intentionally out of scope for this pass.
+- `medium_thumbnail_api_scores`: cached structured thumbnail/image API scores keyed by canonical article, prompt version, model, `score_scope`, image hash or URL, and any title/subtitle hashes used by the selected scope.
 
 ## Validation
 
@@ -153,6 +154,69 @@ Sample files:
 
 - `--save-sample-file PATH` writes the selected cohort before scoring. The CSV includes article identity, title/subtitle, thumbnail URL availability, sample mode, and selection timestamp. It intentionally excludes claps, responses, success scores, ranks, dates, and other outcome fields.
 - `--sample-file PATH` reuses an exact cohort. It matches by `canonical_article_key` first, with `article_id` and `medium_post_id` fallbacks, then still respects cache, `--limit`, prompt version, model, and score scope.
+
+## API Thumbnail Scoring
+
+The fixed first image cohort is:
+
+- `data/analysis/title_api_score_samples/thumbnail_100_v1.csv`
+
+It contains 100 thumbnail-available articles and should be reused across title and image scopes so comparisons are made on the same canonical articles. Full text is not required.
+
+Thumbnail scopes are separate from title/subtitle scopes:
+
+- `thumbnail_only`: sends only the image. This tests the image alone.
+- `title_thumbnail`: sends title plus image.
+- `title_subtitle_thumbnail`: sends title, subtitle, and image. This tests the fuller Medium feed package.
+
+Images are API inputs and may cost more because image inputs count as tokens. Prefer existing local files as Base64 data URLs when available, otherwise use remote `thumbnail_url`. Never print Base64 image payloads; dry runs must show only a placeholder such as `data:image/jpeg;base64,<hidden>`.
+
+Audit local thumbnail availability without changing the DB:
+
+```sh
+Rscript scripts/audit_medium_thumbnail_assets_v1.R
+```
+
+Dry run thumbnail-only scoring:
+
+```sh
+python3 scripts/score_medium_thumbnails_api_v1.py \
+  --dry-run \
+  --limit 3 \
+  --prompt-version thumbnail_v1 \
+  --scope thumbnail_only \
+  --sample-file data/analysis/title_api_score_samples/thumbnail_100_v1.csv
+```
+
+If the dry run is clean and `OPENAI_API_KEY` is already loaded, a one-row smoke test is enough to prove DB insert behavior:
+
+```sh
+python3 scripts/score_medium_thumbnails_api_v1.py \
+  --limit 1 \
+  --prompt-version thumbnail_v1 \
+  --scope thumbnail_only \
+  --sample-file data/analysis/title_api_score_samples/thumbnail_100_v1.csv
+```
+
+Do not run the full 100-image job automatically.
+
+Evaluate existing thumbnail scores:
+
+```sh
+Rscript scripts/analyze_medium_thumbnail_api_scores_v1.R \
+  --prompt-version thumbnail_v1 \
+  --scope thumbnail_only \
+  --sample-file data/analysis/title_api_score_samples/thumbnail_100_v1.csv \
+  --output-mode all
+```
+
+Thumbnail evaluation outputs use the same durable folder pattern:
+
+- `data/analysis/thumbnail_api_scores_v1/latest/`
+- `data/analysis/thumbnail_api_scores_v1/by_method/<method_key>/`
+- `data/analysis/thumbnail_api_scores_v1/runs/<timestamp_method_key>/`
+
+The thumbnail scoring workflow has the same leakage rule as title scoring. It must not send claps, responses, success scores, ranks, page positions, publication performance, dates, observations, times seen, labels, or other outcome/distribution fields.
 
 Recommended next pilot:
 
@@ -261,18 +325,18 @@ API scoring is only useful if it adds signal beyond the drafting-time text basel
 ## Human Ratings
 
 ```sh
-Rscript scripts/rate_medium_titles_terminal.R --rater johannes --limit 100 --rating-version v2_general
+Rscript scripts/rate_medium_titles_terminal.R --rater johannes --limit 100 --rating-version v2_general_title_only
 ```
 
-The Terminal workflow randomly selects unrated articles for that rater/version. It shows only:
+The Terminal workflow prioritizes unrated articles with thumbnails for that rater/version. The current human pass is title-only and should be stored under `rating_version = v2_general_title_only`. It shows only:
 
 - title
-- subtitle
 
 It asks for:
 
 - general rating, 1-5
-- optional note
+
+For title-only ratings, `shown_subtitle` is stored as `NULL` and `subtitle_hash` is the blank-input hash, so these rows do not get mixed with future title+subtitle human ratings.
 
 Controls:
 
@@ -284,12 +348,12 @@ Old ratings are not overwritten.
 
 ## Convenience Launchers
 
-Double-clickable helpers live in `01_manual_tools`:
+Double-clickable helpers live in `01_manual_tools/analysis`:
 
-- `validate_medium_analysis_v2.command`
-- `run_medium_title_api_scoring_v2_test.command`
-- `analyze_medium_title_api_scores_v2.command`
-- `rate_medium_titles_terminal.command`
+- `analysis/validate_medium_analysis_v2.command`
+- `analysis/run_medium_title_api_scoring_v2_test.command`
+- `analysis/analyze_medium_title_api_scores_v2.command`
+- `analysis/rate_medium_titles_terminal.command`
 
 ## Later Comparison
 

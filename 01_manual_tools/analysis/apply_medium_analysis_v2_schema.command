@@ -3,7 +3,7 @@
 # Double-click this file on macOS to install/update the Medium Analysis V2 schema.
 # The setup script creates a timestamped DB backup before applying changes.
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 
 echo "Applying Medium Analysis V2 schema..."
 echo

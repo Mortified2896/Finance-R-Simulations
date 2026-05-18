@@ -3,7 +3,7 @@
 # Double-click this file on macOS to rebuild Medium image download queues and
 # download missing thumbnail/body images.
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 
 pause_before_close() {
   echo

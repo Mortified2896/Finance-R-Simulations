@@ -3,7 +3,7 @@
 # Double-click this file on macOS to inspect a safe API scoring V2 dry run.
 # It does not call the API or write score rows.
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 
 echo "Medium Title API Scoring V2 dry run..."
 echo

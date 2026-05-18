@@ -2,7 +2,7 @@
 
 # Double-click this file on macOS to run the Medium API score V2 evaluation.
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 
 echo "Running Medium API score V2 evaluation..."
 echo

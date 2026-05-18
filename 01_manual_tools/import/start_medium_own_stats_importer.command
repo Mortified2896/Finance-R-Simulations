@@ -4,7 +4,7 @@
 # or saved /me/stats HTML files through the shared file-drop router.
 # It switches from this helper folder back to the project root first.
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 
 echo "Starting Medium File Importer..."
 echo

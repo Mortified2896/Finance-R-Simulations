@@ -1,6 +1,6 @@
 const fs = require("fs");
 
-const html = fs.readFileSync("01_manual_tools/medium_tag_page_bookmarklet.html", "utf8");
+const html = fs.readFileSync("01_manual_tools/import/medium_tag_page_bookmarklet.html", "utf8");
 const start = "const bookmarkletSource = `";
 const end = "`;\n\n    const bookmarkletCode";
 const startIndex = html.indexOf(start);

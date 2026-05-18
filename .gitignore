@@ -36,6 +36,7 @@ data/analysis/title_followup/
 data/analysis/title_target_sensitivity/
 data/analysis/subtitle_analysis/
 data/analysis/title_api_scores_v2/
+data/analysis/thumbnail_api_scores_v1/
 data/analysis/title_api_score_samples/
 data/analysis/openai_headline_scoring/
 data/analysis/openai_headline_scoring_backup_before_resume/
