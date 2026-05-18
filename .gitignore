@@ -8,6 +8,9 @@ Rplots.pdf
 # Dependencies and local fixtures
 node_modules/
 debug_samples/
+debug_samples/Medium HomePage/
+debug_samples/Medium HomePage_files/
+design_refs/medium_homepage/
 
 # Local databases and backups
 data/*.sqlite
