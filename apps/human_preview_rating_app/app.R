@@ -556,29 +556,47 @@ ui <- fluidPage(
       h1 { margin: 0; font-size: 26px; line-height: 1.05; font-weight: 750; letter-spacing: 0; }
       .progress-line { margin-top: 5px; color: var(--muted); font-size: 16px; }
       .progress-line .current { color: var(--green); font-weight: 750; }
-      .tabs { display: flex; gap: 38px; border-bottom: 1px solid var(--line); margin-top: 14px; }
+      .tabs { display: flex; gap: 38px; border-bottom: 1px solid var(--line); margin-top: 14px; max-width: 760px; box-sizing: border-box; }
       .tab { padding-bottom: 8px; color: var(--muted); font-size: 15px; }
       .tab.active { color: var(--ink); font-weight: 650; border-bottom: 2px solid var(--ink); }
-      .article-card, .rating-panel {
-        border: 1px solid var(--line); border-radius: 8px; background: #fff; margin-top: 12px;
-      }
       .article-card {
-        display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 24px;
-        padding: 18px 24px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 170px;
+        gap: 32px;
+        align-items: center;
+        box-sizing: border-box;
+        width: 100%;
+        max-width: 760px;
+        margin-top: 0;
+        padding: 28px 0 30px;
+        border-bottom: 1px solid #f2f2f2;
+        background: #fff;
       }
       .article-title {
-        font-family: Georgia, 'Times New Roman', serif;
-        font-size: 24px; line-height: 1.08; font-weight: 700; letter-spacing: 0; margin: 0 0 10px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        font-size: 26px; line-height: 1.15; font-weight: 760; letter-spacing: 0; margin: 0 0 8px;
       }
-      .article-subtitle { font-size: 15px; line-height: 1.28; color: var(--muted); margin: 0; }
+      .article-subtitle { font-size: 18px; line-height: 1.35; color: var(--muted); margin: 0; }
       .thumbnail-wrap { display: flex; justify-content: flex-end; align-items: center; }
+      .thumbnail-wrap .shiny-image-output {
+        width: 170px !important;
+        height: 113px !important;
+      }
       .thumbnail-wrap img {
-        width: 220px; height: 138px; object-fit: cover; border-radius: 8px; display: block;
+        width: 170px; height: 113px; object-fit: cover; border-radius: 1px; display: block;
       }
       .thumbnail-placeholder {
-        width: 220px; height: 138px; border-radius: 8px; background: #f2f2f2; border: 1px solid var(--line);
+        width: 170px; height: 113px; border-radius: 1px; background: #f2f2f2; border: 1px solid var(--line);
       }
-      .rating-panel { padding: 14px 20px; }
+      .rating-panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-sizing: border-box;
+        background: #fff;
+        margin-top: 12px;
+        max-width: 760px;
+        padding: 14px 20px;
+      }
       .prompt { font-size: 15px; line-height: 1.22; font-weight: 680; margin-bottom: 10px; }
       .note-row label { color: var(--muted); font-weight: 500; margin-bottom: 4px; font-size: 13px; }
       textarea.form-control {
@@ -634,9 +652,11 @@ ui <- fluidPage(
         .app-shell { display: block; }
         .sidebar { display: none; }
         .main { padding: 28px 18px; }
-        .article-card { grid-template-columns: 1fr; gap: 20px; }
+        .article-card { grid-template-columns: 1fr; gap: 18px; padding: 24px 0 26px; }
         .thumbnail-wrap { justify-content: flex-start; }
-        .thumbnail-wrap img, .thumbnail-placeholder { width: 100%; height: auto; aspect-ratio: 1.58; }
+        .thumbnail-wrap .shiny-image-output,
+        .thumbnail-wrap img,
+        .thumbnail-placeholder { width: 100% !important; height: auto !important; aspect-ratio: 1.5; }
         .rating-buttons { gap: 8px; }
         .rating-buttons .btn { height: 52px; font-size: 21px; }
       }
@@ -886,7 +906,7 @@ server <- function(input, output, session) {
     thumbnail_path <- item$local_thumbnail_path[[1]]
     has_thumbnail <- !is.na(thumbnail_path) && file.exists(thumbnail_path)
     thumbnail_ui <- if (has_thumbnail) {
-      imageOutput("thumbnail", width = "292px", height = "184px")
+      imageOutput("thumbnail", width = "170px", height = "113px")
     } else {
       div(class = "thumbnail-placeholder")
     }
@@ -907,7 +927,7 @@ server <- function(input, output, session) {
     req(!is.null(item))
     path <- item$local_thumbnail_path[[1]]
     req(!is.na(path), file.exists(path))
-    list(src = normalizePath(path, mustWork = TRUE), alt = "", width = 292, height = 184)
+    list(src = normalizePath(path, mustWork = TRUE), alt = "", width = 170, height = 113)
   }, deleteFile = FALSE)
 
   handle_score <- function(score) {
