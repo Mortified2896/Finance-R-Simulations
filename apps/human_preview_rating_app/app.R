@@ -13,9 +13,58 @@ library(shiny)
 library(DBI)
 library(RSQLite)
 
-interface_version <- "human_preview_rating_app_v1"
-rating_mode <- "feed_preview_1_5"
-rating_prompt <- "Based only on the title, subtitle, and thumbnail, how likely is this article to perform well on Medium?"
+requested_rating_mode <- Sys.getenv("HUMAN_RATING_MODE", unset = "feed_preview_1_5")
+is_dimension_mode <- requested_rating_mode %in% c("dimensions_v1", "human_preview_dimensions_v1")
+interface_version <- if (is_dimension_mode) {
+  "human_preview_rating_app_v3_dimensions_v1"
+} else {
+  "human_preview_rating_app_v2_unrated_thumbnails"
+}
+rating_mode <- if (is_dimension_mode) "human_preview_dimensions_v1" else "feed_preview_1_5"
+rating_prompt <- if (is_dimension_mode) {
+  "Score only the active dimension for this pass."
+} else {
+  "Based only on the title, subtitle, and thumbnail, how likely is this article to perform well on Medium?"
+}
+dimension_fields <- c(
+  "ai_low_effort_flag",
+  "visual_hook",
+  "title_hook_strength",
+  "emotional_pull_preview",
+  "personal_click_appeal"
+)
+dimension_numeric_fields <- setdiff(dimension_fields, "ai_low_effort_flag")
+dimension_labels <- c(
+  ai_low_effort_flag = "AI / low-effort flag",
+  visual_hook = "Visual hook",
+  title_hook_strength = "Title hook strength",
+  emotional_pull_preview = "Emotional pull",
+  personal_click_appeal = "Personal click appeal"
+)
+dimension_questions <- c(
+  ai_low_effort_flag = "Does the thumbnail look AI-generated, generic, sloppy, or low-effort?",
+  visual_hook = "Does the thumbnail catch attention visually?",
+  title_hook_strength = "How strong is the title as a hook?",
+  emotional_pull_preview = "Does the full preview create curiosity, concern, aspiration, tension, or emotion?",
+  personal_click_appeal = "Would I personally want to click/read this based on the preview?"
+)
+dimension_focus <- c(
+  ai_low_effort_flag = "thumbnail only",
+  visual_hook = "thumbnail only",
+  title_hook_strength = "title, with subtitle only as context if needed",
+  emotional_pull_preview = "full preview: title, subtitle, and thumbnail",
+  personal_click_appeal = "full preview: title, subtitle, and thumbnail"
+)
+dimension_scale <- list(
+  ai_low_effort_flag = c(yes = "yes", unsure = "unsure", no = "no"),
+  visual_hook = c(`1` = "visually boring", `2` = "weak", `3` = "okay", `4` = "strong", `5` = "very strong"),
+  title_hook_strength = c(`1` = "weak/generic", `2` = "below average", `3` = "okay", `4` = "strong", `5` = "excellent"),
+  emotional_pull_preview = c(`1` = "emotionally flat", `2` = "weak", `3` = "moderate", `4` = "strong", `5` = "very strong"),
+  personal_click_appeal = c(`1` = "definitely no", `2` = "probably no", `3` = "maybe / unclear", `4` = "probably yes", `5` = "definitely yes")
+)
+target_n_env <- Sys.getenv("HUMAN_RATING_TARGET_N", unset = "")
+default_target_n <- suppressWarnings(as.integer(target_n_env))
+if (!nzchar(target_n_env) || is.na(default_target_n) || default_target_n < 1L) default_target_n <- Inf
 
 clean_text <- function(x) {
   y <- as.character(x)
@@ -60,6 +109,13 @@ thumbnail_queue_path <- file.path(
   "medium_images",
   "medium_image_download_queue.csv"
 )
+dimension_cohort_path <- file.path(
+  project_root,
+  "data",
+  "analysis",
+  "title_api_score_samples",
+  "human_rated_thumbnail_all_v1.csv"
+)
 
 split_keys <- function(x) {
   value <- clean_text(x)
@@ -88,6 +144,18 @@ normalize_image_url <- function(url) {
 
 connect_db <- function() {
   dbConnect(SQLite(), db_path)
+}
+
+db_add_column_if_missing <- function(con, table, column, definition) {
+  columns <- dbGetQuery(con, sprintf("PRAGMA table_info(%s)", dbQuoteIdentifier(con, table)))
+  if (!(column %in% columns$name)) {
+    dbExecute(con, sprintf(
+      "ALTER TABLE %s ADD COLUMN %s %s",
+      dbQuoteIdentifier(con, table),
+      dbQuoteIdentifier(con, column),
+      definition
+    ))
+  }
 }
 
 ensure_rating_schema <- function(con) {
@@ -138,6 +206,77 @@ ensure_rating_schema <- function(con) {
   ")
 
   dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS human_preview_dimension_rating_queue (
+      rating_session_id TEXT,
+      queue_position INTEGER,
+      article_id INTEGER,
+      medium_post_id TEXT,
+      canonical_article_key TEXT,
+      status TEXT DEFAULT 'pending',
+      shown_at TEXT,
+      completed_at TEXT,
+      PRIMARY KEY (rating_session_id, queue_position)
+    )
+  ")
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS human_preview_dimension_ratings (
+      id INTEGER PRIMARY KEY,
+      rating_session_id TEXT,
+      queue_position INTEGER,
+      article_id INTEGER,
+      medium_post_id TEXT,
+      canonical_article_key TEXT,
+      interface_version TEXT,
+      rating_mode TEXT,
+      shown_title TEXT,
+      shown_subtitle TEXT,
+      shown_thumbnail_path TEXT,
+      personal_click_appeal INTEGER,
+      title_hook_strength INTEGER,
+      visual_hook INTEGER,
+      emotional_pull_preview INTEGER,
+      ai_low_effort_flag TEXT,
+      human_dimension_note TEXT,
+      skipped INTEGER DEFAULT 0,
+      shown_at TEXT,
+      rated_at TEXT,
+      seconds_spent REAL
+    )
+  ")
+
+  dimension_rating_columns <- c(
+    rating_session_id = "TEXT",
+    queue_position = "INTEGER",
+    interface_version = "TEXT",
+    skipped = "INTEGER DEFAULT 0",
+    shown_at = "TEXT",
+    rated_at = "TEXT",
+    seconds_spent = "REAL",
+    created_at = "TEXT",
+    updated_at = "TEXT"
+  )
+  for (column_name in names(dimension_rating_columns)) {
+    db_add_column_if_missing(con, "human_preview_dimension_ratings", column_name, dimension_rating_columns[[column_name]])
+  }
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS human_preview_dimension_pass_queue (
+      rating_mode TEXT,
+      active_dimension TEXT,
+      queue_position INTEGER,
+      article_id INTEGER,
+      medium_post_id TEXT,
+      canonical_article_key TEXT,
+      status TEXT DEFAULT 'pending',
+      shown_at TEXT,
+      completed_at TEXT,
+      seconds_spent REAL,
+      PRIMARY KEY (rating_mode, active_dimension, queue_position)
+    )
+  ")
+
+  dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_human_preview_queue_status
     ON human_preview_rating_queue (rating_session_id, status, queue_position)
   ")
@@ -146,6 +285,39 @@ ensure_rating_schema <- function(con) {
     CREATE INDEX IF NOT EXISTS idx_human_preview_ratings_session
     ON human_preview_ratings (rating_session_id, rated_at, id)
   ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_human_preview_dimension_queue_status
+    ON human_preview_dimension_rating_queue (rating_session_id, status, queue_position)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_human_preview_dimension_ratings_mode
+    ON human_preview_dimension_ratings (rating_mode, rated_at, id)
+  ")
+
+  try(dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_human_preview_dimension_ratings_canonical_unique
+    ON human_preview_dimension_ratings (rating_mode, canonical_article_key)
+    WHERE canonical_article_key IS NOT NULL
+  "), silent = TRUE)
+
+  try(dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_human_preview_dimension_ratings_article_unique
+    ON human_preview_dimension_ratings (rating_mode, article_id)
+    WHERE canonical_article_key IS NULL AND article_id IS NOT NULL
+  "), silent = TRUE)
+
+  try(dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_human_preview_dimension_ratings_post_unique
+    ON human_preview_dimension_ratings (rating_mode, medium_post_id)
+    WHERE canonical_article_key IS NULL AND article_id IS NULL AND medium_post_id IS NOT NULL
+  "), silent = TRUE)
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_human_preview_dimension_pass_queue_status
+    ON human_preview_dimension_pass_queue (rating_mode, active_dimension, status, queue_position)
+  ")
 }
 
 read_thumbnail_queue <- function() {
@@ -153,7 +325,7 @@ read_thumbnail_queue <- function() {
   queue <- read.csv(thumbnail_queue_path, stringsAsFactors = FALSE, check.names = FALSE)
   required <- c("local_image_path", "article_ids", "medium_post_ids")
   for (column in setdiff(required, names(queue))) queue[[column]] <- NA_character_
-  for (column in c("normalized_image_url", "primary_image_url_for_download")) {
+  for (column in c("normalized_image_url", "primary_image_url_for_download", "image_file_stem")) {
     if (!(column %in% names(queue))) queue[[column]] <- NA_character_
   }
   queue$local_image_path <- clean_text(queue$local_image_path)
@@ -161,7 +333,13 @@ read_thumbnail_queue <- function() {
     if (is.na(path)) return(NA_character_)
     if (grepl("^/", path)) path else file.path(project_root, path)
   }, character(1), USE.NAMES = FALSE)
-  queue$local_exists <- !is.na(queue$local_image_path_abs) & file.exists(queue$local_image_path_abs)
+  queue$local_path_stem <- tools::file_path_sans_ext(basename(queue$local_image_path_abs))
+  queue$local_path_matches_stem <- is.na(clean_text(queue$image_file_stem)) |
+    (!is.na(queue$local_path_stem) & startsWith(queue$local_path_stem, clean_text(queue$image_file_stem)))
+  queue$local_path_matches_stem[is.na(queue$local_path_matches_stem)] <- FALSE
+  queue$local_exists <- !is.na(queue$local_image_path_abs) &
+    file.exists(queue$local_image_path_abs) &
+    queue$local_path_matches_stem
   queue
 }
 
@@ -240,7 +418,68 @@ lookup_local_thumbnail <- function(article_id, medium_post_id, thumbnail_url, lo
   NA_character_
 }
 
-load_candidates <- function(con, target_n) {
+get_rated_keys <- function(con) {
+  if (!dbExistsTable(con, "human_preview_ratings")) {
+    return(list(article_ids = character(), post_ids = character()))
+  }
+
+  rated <- dbGetQuery(con, "
+    SELECT DISTINCT article_id, medium_post_id
+    FROM human_preview_ratings
+  ")
+
+  article_ids <- clean_text(rated$article_id)
+  post_ids <- clean_text(rated$medium_post_id)
+  list(
+    article_ids = unique(article_ids[!is.na(article_ids)]),
+    post_ids = unique(post_ids[!is.na(post_ids)])
+  )
+}
+
+mark_duplicate_pending_queue_items <- function(con) {
+  rated_keys <- get_rated_keys(con)
+  if (length(rated_keys$article_ids) == 0 && length(rated_keys$post_ids) == 0) return(0L)
+
+  pending <- dbGetQuery(con, "
+    SELECT rating_session_id, queue_position, article_id, medium_post_id
+    FROM human_preview_rating_queue
+    WHERE status = 'pending'
+  ")
+  if (nrow(pending) == 0) return(0L)
+
+  article_keys <- clean_text(pending$article_id)
+  post_keys <- clean_text(pending$medium_post_id)
+  duplicate <- (!is.na(article_keys) & article_keys %in% rated_keys$article_ids) |
+    (!is.na(post_keys) & post_keys %in% rated_keys$post_ids)
+  duplicate[is.na(duplicate)] <- FALSE
+  duplicate_rows <- pending[duplicate, , drop = FALSE]
+  if (nrow(duplicate_rows) == 0) return(0L)
+
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_len(nrow(duplicate_rows))) {
+      dbExecute(
+        con,
+        "UPDATE human_preview_rating_queue
+         SET status = 'ignored_duplicate', completed_at = ?
+         WHERE rating_session_id = ? AND queue_position = ? AND status = 'pending'",
+        params = list(
+          now_utc(),
+          duplicate_rows$rating_session_id[[i]],
+          duplicate_rows$queue_position[[i]]
+        )
+      )
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  nrow(duplicate_rows)
+}
+
+load_candidates <- function(con, exclude_rated = TRUE) {
   objects <- dbGetQuery(con, "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
   if (!("v_medium_title_prediction_dataset_v2" %in% objects$name)) {
     stop("Missing v_medium_title_prediction_dataset_v2. Run the Medium Analysis V2 schema setup first.", call. = FALSE)
@@ -266,22 +505,182 @@ load_candidates <- function(con, target_n) {
     lookup_local_thumbnail(rows$article_id[[i]], rows$medium_post_id[[i]], rows$thumbnail_url[[i]], lookup)
   }, character(1))
   rows$has_local_thumbnail <- !is.na(rows$local_thumbnail_path) & file.exists(rows$local_thumbnail_path)
+  rows <- rows[rows$has_local_thumbnail, , drop = FALSE]
 
-  local_rows <- rows[rows$has_local_thumbnail, , drop = FALSE]
-  fallback_rows <- rows[!rows$has_local_thumbnail, , drop = FALSE]
-  if (nrow(local_rows) >= target_n) local_rows else rbind(local_rows, fallback_rows)
+  rated_keys <- get_rated_keys(con)
+  article_keys <- clean_text(rows$article_id)
+  post_keys <- clean_text(rows$medium_post_id)
+  rows$already_rated <- (!is.na(article_keys) & article_keys %in% rated_keys$article_ids) |
+    (!is.na(post_keys) & post_keys %in% rated_keys$post_ids)
+  rows$already_rated[is.na(rows$already_rated)] <- FALSE
+
+  if (isTRUE(exclude_rated)) {
+    rows <- rows[!rows$already_rated, , drop = FALSE]
+  }
+
+  rows
 }
 
-create_new_session <- function(con, target_n = 100) {
+candidate_counts <- function(con) {
+  candidates <- load_candidates(con, exclude_rated = FALSE)
+  data.frame(
+    total_thumbnail_candidates = nrow(candidates),
+    already_rated = sum(candidates$already_rated, na.rm = TRUE),
+    remaining_unrated = sum(!candidates$already_rated, na.rm = TRUE)
+  )
+}
+
+get_dimension_rated_keys <- function(con) {
+  if (!dbExistsTable(con, "human_preview_dimension_ratings")) {
+    return(list(canonical = character(), article_ids = character(), post_ids = character()))
+  }
+
+  rated <- dbGetQuery(con, "
+    SELECT DISTINCT canonical_article_key, article_id, medium_post_id
+    FROM human_preview_dimension_ratings
+    WHERE rating_mode = ?
+  ", params = list(rating_mode))
+
+  canonical <- clean_text(rated$canonical_article_key)
+  article_ids <- clean_text(rated$article_id)
+  post_ids <- clean_text(rated$medium_post_id)
+  list(
+    canonical = unique(canonical[!is.na(canonical)]),
+    article_ids = unique(article_ids[!is.na(article_ids)]),
+    post_ids = unique(post_ids[!is.na(post_ids)])
+  )
+}
+
+read_dimension_cohort <- function() {
+  if (!file.exists(dimension_cohort_path)) return(data.frame())
+  cohort <- read.csv(dimension_cohort_path, stringsAsFactors = FALSE, check.names = FALSE)
+  for (column in c("canonical_article_key", "article_id", "medium_post_id")) {
+    if (!(column %in% names(cohort))) cohort[[column]] <- NA_character_
+  }
+  cohort$canonical_article_key <- clean_text(cohort$canonical_article_key)
+  cohort$article_id <- clean_text(cohort$article_id)
+  cohort$medium_post_id <- clean_text(cohort$medium_post_id)
+  cohort
+}
+
+load_dimension_candidates <- function(con, exclude_rated = TRUE) {
+  objects <- dbGetQuery(con, "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
+  if (!("v_medium_title_prediction_dataset_v2" %in% objects$name)) {
+    stop("Missing v_medium_title_prediction_dataset_v2. Run the Medium Analysis V2 schema setup first.", call. = FALSE)
+  }
+
+  rows <- dbGetQuery(con, "
+    SELECT
+      canonical_article_key,
+      article_id,
+      medium_post_id,
+      url,
+      title,
+      subtitle,
+      thumbnail_url
+    FROM v_medium_title_prediction_dataset_v2
+    WHERE NULLIF(TRIM(title), '') IS NOT NULL
+  ")
+  rows$canonical_article_key <- clean_text(rows$canonical_article_key)
+  rows$article_id_text <- clean_text(rows$article_id)
+  rows$medium_post_id <- clean_text(rows$medium_post_id)
+  rows$title <- clean_text(rows$title)
+  rows$subtitle <- clean_text(rows$subtitle)
+
+  cohort <- read_dimension_cohort()
+  cohort_source <- if (nrow(cohort) > 0) "all_cohort_csv" else "human_preview_ratings_fallback"
+  total_cohort_rows <- nrow(cohort)
+
+  if (nrow(cohort) > 0) {
+    keep <- (!is.na(rows$canonical_article_key) & rows$canonical_article_key %in% cohort$canonical_article_key) |
+      (!is.na(rows$article_id_text) & rows$article_id_text %in% cohort$article_id) |
+      (!is.na(rows$medium_post_id) & rows$medium_post_id %in% cohort$medium_post_id)
+    keep[is.na(keep)] <- FALSE
+    rows <- rows[keep, , drop = FALSE]
+  } else {
+    if (!dbExistsTable(con, "human_preview_ratings")) {
+      rows <- rows[FALSE, , drop = FALSE]
+    } else {
+      fallback <- dbGetQuery(con, "
+        SELECT DISTINCT article_id, medium_post_id
+        FROM human_preview_ratings
+      ")
+      fallback_article_ids <- clean_text(fallback$article_id)
+      fallback_post_ids <- clean_text(fallback$medium_post_id)
+      total_cohort_rows <- nrow(fallback)
+      keep <- (!is.na(rows$article_id_text) & rows$article_id_text %in% fallback_article_ids) |
+        (!is.na(rows$medium_post_id) & rows$medium_post_id %in% fallback_post_ids)
+      keep[is.na(keep)] <- FALSE
+      rows <- rows[keep, , drop = FALSE]
+    }
+  }
+
+  lookup <- build_thumbnail_lookup()
+  rows$local_thumbnail_path <- vapply(seq_len(nrow(rows)), function(i) {
+    lookup_local_thumbnail(rows$article_id[[i]], rows$medium_post_id[[i]], rows$thumbnail_url[[i]], lookup)
+  }, character(1))
+  rows$has_local_thumbnail <- !is.na(rows$local_thumbnail_path) & file.exists(rows$local_thumbnail_path)
+  rows <- rows[rows$has_local_thumbnail, , drop = FALSE]
+
+  rated_keys <- get_dimension_rated_keys(con)
+  rows$already_dimension_rated <- (!is.na(rows$canonical_article_key) & rows$canonical_article_key %in% rated_keys$canonical) |
+    (!is.na(rows$article_id_text) & rows$article_id_text %in% rated_keys$article_ids) |
+    (!is.na(rows$medium_post_id) & rows$medium_post_id %in% rated_keys$post_ids)
+  rows$already_dimension_rated[is.na(rows$already_dimension_rated)] <- FALSE
+  rows$cohort_source <- cohort_source
+  rows$total_cohort_rows <- total_cohort_rows
+
+  if (isTRUE(exclude_rated)) {
+    rows <- rows[!rows$already_dimension_rated, , drop = FALSE]
+  }
+
+  rows
+}
+
+dimension_candidate_counts <- function(con) {
+  candidates <- load_dimension_candidates(con, exclude_rated = FALSE)
+  total_cohort_rows <- if (nrow(candidates) > 0) candidates$total_cohort_rows[[1]] else nrow(read_dimension_cohort())
+  if (total_cohort_rows == 0 && dbExistsTable(con, "human_preview_ratings")) {
+    total_cohort_rows <- dbGetQuery(con, "SELECT COUNT(DISTINCT COALESCE(CAST(article_id AS TEXT), medium_post_id)) AS n FROM human_preview_ratings")$n[[1]]
+  }
+  status <- if (dbExistsTable(con, "human_preview_dimension_pass_queue")) {
+    dbGetQuery(con, "
+      SELECT
+        active_dimension,
+        COUNT(*) AS total,
+        SUM(CASE WHEN status IN ('rated', 'skipped') THEN 1 ELSE 0 END) AS completed,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending
+      FROM human_preview_dimension_pass_queue
+      WHERE rating_mode = ?
+      GROUP BY active_dimension
+    ", params = list(rating_mode))
+  } else {
+    data.frame(active_dimension = character(), total = integer(), completed = integer(), pending = integer())
+  }
+  completed_dimensions <- sum(vapply(dimension_fields, function(field) {
+    row <- status[status$active_dimension == field, , drop = FALSE]
+    nrow(row) > 0 && !is.na(row$pending[[1]]) && row$pending[[1]] == 0 && row$total[[1]] > 0
+  }, logical(1)))
+  data.frame(
+    total_cohort_rows = total_cohort_rows,
+    usable_local_thumbnails = nrow(candidates),
+    completed_dimensions = completed_dimensions,
+    total_dimensions = length(dimension_fields),
+    cohort_source = if (nrow(candidates) > 0) candidates$cohort_source[[1]] else if (file.exists(dimension_cohort_path)) "all_cohort_csv" else "human_preview_ratings_fallback"
+  )
+}
+
+create_new_session <- function(con, target_n = Inf) {
   seed <- sample.int(.Machine$integer.max, 1)
   session_id <- paste0("preview_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", seed)
-  candidates <- load_candidates(con, target_n)
-  if (nrow(candidates) == 0) stop("No candidate articles with titles were found.", call. = FALSE)
+  candidates <- load_candidates(con, exclude_rated = TRUE)
+  if (nrow(candidates) == 0) stop("No unrated candidate articles with local thumbnails were found.", call. = FALSE)
 
   set.seed(seed)
-  local_first <- candidates[order(!candidates$has_local_thumbnail), , drop = FALSE]
-  shuffled <- local_first[sample.int(nrow(local_first)), , drop = FALSE]
-  selected <- head(shuffled, target_n)
+  shuffled <- candidates[sample.int(nrow(candidates)), , drop = FALSE]
+  selected_n <- min(target_n, nrow(shuffled))
+  selected_n <- as.integer(selected_n)
+  selected <- head(shuffled, selected_n)
 
   dbBegin(con)
   tryCatch({
@@ -290,7 +689,7 @@ create_new_session <- function(con, target_n = 100) {
       "INSERT INTO human_rating_sessions
        (rating_session_id, created_at, interface_version, rating_mode, queue_seed, target_n, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?)",
-      params = list(session_id, now_utc(), interface_version, rating_mode, seed, target_n, NA_character_)
+      params = list(session_id, now_utc(), interface_version, rating_mode, seed, selected_n, "Mode: unrated thumbnails only")
     )
 
     for (i in seq_len(nrow(selected))) {
@@ -316,7 +715,9 @@ create_new_session <- function(con, target_n = 100) {
   session_id
 }
 
-resume_or_create_session <- function(con, target_n = 100) {
+resume_or_create_session <- function(con, target_n = Inf) {
+  mark_duplicate_pending_queue_items(con)
+
   existing <- dbGetQuery(con, "
     SELECT s.rating_session_id
     FROM human_rating_sessions s
@@ -408,7 +809,8 @@ queue_counts <- function(con, session_id) {
     SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN status IN ('rated', 'skipped') THEN 1 ELSE 0 END) AS completed,
-      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending
+      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN status = 'ignored_duplicate' THEN 1 ELSE 0 END) AS ignored_duplicate
     FROM human_preview_rating_queue
     WHERE rating_session_id = ?
   ", params = list(session_id))
@@ -500,6 +902,372 @@ undo_previous_rating <- function(con, session_id) {
   TRUE
 }
 
+dimension_has_value <- function(con, article_id, medium_post_id, canonical_article_key, active_dimension) {
+  if (!(active_dimension %in% dimension_fields)) return(FALSE)
+  rows <- dbGetQuery(
+    con,
+    sprintf("
+      SELECT %s AS value
+      FROM human_preview_dimension_ratings
+      WHERE rating_mode = ?
+        AND (
+          (canonical_article_key IS NOT NULL AND canonical_article_key = ?)
+          OR (canonical_article_key IS NULL AND article_id IS NOT NULL AND article_id = ?)
+          OR (canonical_article_key IS NULL AND article_id IS NULL AND medium_post_id IS NOT NULL AND medium_post_id = ?)
+        )
+      ORDER BY updated_at DESC, rated_at DESC, id DESC
+      LIMIT 1
+    ", dbQuoteIdentifier(con, active_dimension)),
+    params = list(rating_mode, canonical_article_key, article_id, medium_post_id)
+  )
+  nrow(rows) > 0 && !is.na(rows$value[[1]]) && nzchar(as.character(rows$value[[1]]))
+}
+
+ensure_dimension_pass_queue <- function(con, active_dimension, target_n = Inf) {
+  if (!(active_dimension %in% dimension_fields)) stop("Unknown dimension: ", active_dimension, call. = FALSE)
+  existing <- dbGetQuery(con, "
+    SELECT COUNT(*) AS n
+    FROM human_preview_dimension_pass_queue
+    WHERE rating_mode = ? AND active_dimension = ?
+  ", params = list(rating_mode, active_dimension))
+  if (existing$n[[1]] > 0) return(invisible(FALSE))
+
+  candidates <- load_dimension_candidates(con, exclude_rated = FALSE)
+  if (nrow(candidates) == 0) stop("No dimension-rating candidate articles with local thumbnails were found.", call. = FALSE)
+
+  seed <- sum(utf8ToInt(active_dimension)) + 1009L
+  set.seed(seed)
+  shuffled <- candidates[sample.int(nrow(candidates)), , drop = FALSE]
+  selected_n <- min(target_n, nrow(shuffled))
+  selected <- head(shuffled, as.integer(selected_n))
+
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_len(nrow(selected))) {
+      completed <- dimension_has_value(
+        con,
+        selected$article_id[[i]],
+        selected$medium_post_id[[i]],
+        selected$canonical_article_key[[i]],
+        active_dimension
+      )
+      dbExecute(
+        con,
+        "INSERT OR IGNORE INTO human_preview_dimension_pass_queue
+         (rating_mode, active_dimension, queue_position, article_id, medium_post_id,
+          canonical_article_key, status, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        params = list(
+          rating_mode,
+          active_dimension,
+          i,
+          selected$article_id[[i]],
+          selected$medium_post_id[[i]],
+          selected$canonical_article_key[[i]],
+          if (completed) "rated" else "pending",
+          if (completed) now_utc() else NA_character_
+        )
+      )
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  invisible(TRUE)
+}
+
+ensure_dimension_pass_queues <- function(con, target_n = Inf) {
+  for (field in dimension_fields) ensure_dimension_pass_queue(con, field, target_n = target_n)
+  invisible(TRUE)
+}
+
+dimension_queue_counts <- function(con, active_dimension) {
+  ensure_dimension_pass_queue(con, active_dimension, target_n = default_target_n)
+  dbGetQuery(con, "
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN status IN ('rated', 'skipped') THEN 1 ELSE 0 END) AS completed,
+      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped
+    FROM human_preview_dimension_pass_queue
+    WHERE rating_mode = ? AND active_dimension = ?
+  ", params = list(rating_mode, active_dimension))
+}
+
+dimension_pass_status <- function(con) {
+  ensure_dimension_pass_queues(con, target_n = default_target_n)
+  counts <- do.call(rbind, lapply(dimension_fields, function(field) {
+    c <- dimension_queue_counts(con, field)
+    data.frame(
+      active_dimension = field,
+      total = ifelse(is.na(c$total[[1]]), 0L, c$total[[1]]),
+      completed = ifelse(is.na(c$completed[[1]]), 0L, c$completed[[1]]),
+      pending = ifelse(is.na(c$pending[[1]]), 0L, c$pending[[1]]),
+      skipped = ifelse(is.na(c$skipped[[1]]), 0L, c$skipped[[1]])
+    )
+  }))
+  counts$dimension_index <- match(counts$active_dimension, dimension_fields)
+  counts
+}
+
+first_incomplete_dimension <- function(con) {
+  status <- dimension_pass_status(con)
+  incomplete <- status[status$pending > 0, , drop = FALSE]
+  if (nrow(incomplete) == 0) return(NA_character_)
+  incomplete$active_dimension[[which.min(incomplete$dimension_index)]]
+}
+
+next_incomplete_dimension_after <- function(con, active_dimension) {
+  status <- dimension_pass_status(con)
+  current_index <- match(active_dimension, dimension_fields)
+  incomplete <- status[status$pending > 0 & status$dimension_index > current_index, , drop = FALSE]
+  if (nrow(incomplete) == 0) return(NA_character_)
+  incomplete$active_dimension[[which.min(incomplete$dimension_index)]]
+}
+
+load_current_dimension_item <- function(con, active_dimension) {
+  ensure_dimension_pass_queue(con, active_dimension, target_n = default_target_n)
+  item <- dbGetQuery(con, "
+    SELECT rating_mode, active_dimension, queue_position, article_id, medium_post_id,
+      canonical_article_key, status, shown_at, completed_at, seconds_spent
+    FROM human_preview_dimension_pass_queue
+    WHERE rating_mode = ?
+      AND active_dimension = ?
+      AND status = 'pending'
+    ORDER BY queue_position
+    LIMIT 1
+  ", params = list(rating_mode, active_dimension))
+  if (nrow(item) == 0) return(NULL)
+
+  if (is.na(item$shown_at[[1]]) || !nzchar(item$shown_at[[1]])) {
+    item$shown_at[[1]] <- now_utc()
+    dbExecute(
+      con,
+      "UPDATE human_preview_dimension_pass_queue
+       SET shown_at = ?
+       WHERE rating_mode = ? AND active_dimension = ? AND queue_position = ?",
+      params = list(item$shown_at[[1]], rating_mode, active_dimension, item$queue_position[[1]])
+    )
+  }
+
+  details <- dbGetQuery(con, "
+    SELECT
+      canonical_article_key,
+      article_id,
+      medium_post_id,
+      url,
+      title,
+      subtitle,
+      thumbnail_url
+    FROM v_medium_title_prediction_dataset_v2
+    WHERE canonical_article_key = ?
+       OR article_id = ?
+       OR (medium_post_id IS NOT NULL AND medium_post_id = ?)
+    LIMIT 1
+  ", params = list(item$canonical_article_key[[1]], item$article_id[[1]], item$medium_post_id[[1]]))
+
+  if (nrow(details) == 0) return(NULL)
+
+  details$title <- clean_text(details$title)
+  details$subtitle <- clean_text(details$subtitle)
+  lookup <- build_thumbnail_lookup()
+  details$local_thumbnail_path <- lookup_local_thumbnail(
+    details$article_id[[1]],
+    details$medium_post_id[[1]],
+    details$thumbnail_url[[1]],
+    lookup
+  )
+
+  cbind(item, details[1, , drop = FALSE])
+}
+
+find_dimension_rating_id <- function(con, item) {
+  rows <- dbGetQuery(con, "
+    SELECT id, human_dimension_note
+    FROM human_preview_dimension_ratings
+    WHERE rating_mode = ?
+      AND (
+        (canonical_article_key IS NOT NULL AND canonical_article_key = ?)
+        OR (canonical_article_key IS NULL AND article_id IS NOT NULL AND article_id = ?)
+        OR (canonical_article_key IS NULL AND article_id IS NULL AND medium_post_id IS NOT NULL AND medium_post_id = ?)
+      )
+    ORDER BY updated_at DESC, rated_at DESC, id DESC
+    LIMIT 1
+  ", params = list(rating_mode, item$canonical_article_key[[1]], item$article_id[[1]], item$medium_post_id[[1]]))
+  if (nrow(rows) == 0) NULL else rows[1, , drop = FALSE]
+}
+
+update_dimension_note <- function(existing_note, active_dimension, note) {
+  note_value <- clean_text(note)
+  if (length(note_value) == 0 || is.na(note_value[[1]])) return(existing_note)
+  existing <- clean_text(existing_note)
+  lines <- if (length(existing) == 0 || is.na(existing[[1]])) character() else strsplit(existing[[1]], "\n", fixed = TRUE)[[1]]
+  prefix <- paste0("[", active_dimension, "]")
+  lines <- lines[!startsWith(lines, prefix)]
+  paste(c(lines, paste(prefix, note_value[[1]])), collapse = "\n")
+}
+
+save_current_dimension_rating <- function(con, item, active_dimension, value = NULL, note = "", skipped = FALSE, shown_started_at = Sys.time()) {
+  if (is.null(item) || nrow(item) == 0) return(invisible(FALSE))
+  if (!(active_dimension %in% dimension_fields)) return(invisible(FALSE))
+  rated_at <- now_utc()
+  seconds_spent <- as.numeric(difftime(Sys.time(), shown_started_at, units = "secs"))
+  seconds_spent <- max(0, seconds_spent)
+  rating_value <- if (isTRUE(skipped)) NA else value
+  if (!isTRUE(skipped) && active_dimension %in% dimension_numeric_fields) {
+    rating_value <- suppressWarnings(as.integer(rating_value))
+    if (is.na(rating_value) || rating_value < 1L || rating_value > 5L) return(invisible(FALSE))
+  }
+  if (!isTRUE(skipped) && active_dimension == "ai_low_effort_flag") {
+    if (!(rating_value %in% c("yes", "unsure", "no"))) return(invisible(FALSE))
+  }
+
+  dbBegin(con)
+  tryCatch({
+    existing <- find_dimension_rating_id(con, item)
+    existing_note <- if (is.null(existing)) NA_character_ else existing$human_dimension_note[[1]]
+    note_value <- update_dimension_note(existing_note, active_dimension, note)
+    if (length(note_value) == 0 || is.na(note_value[[1]])) note_value <- NA_character_
+
+    if (is.null(existing)) {
+      dbExecute(
+        con,
+        sprintf(
+          "INSERT INTO human_preview_dimension_ratings
+           (rating_session_id, queue_position, article_id, medium_post_id, canonical_article_key,
+            interface_version, rating_mode, shown_title, shown_subtitle, shown_thumbnail_path,
+            %s, human_dimension_note, skipped, shown_at, rated_at, seconds_spent, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          dbQuoteIdentifier(con, active_dimension)
+        ),
+        params = list(
+          NA_character_,
+          item$queue_position[[1]],
+          item$article_id[[1]],
+          item$medium_post_id[[1]],
+          item$canonical_article_key[[1]],
+          interface_version,
+          rating_mode,
+          item$title[[1]],
+          item$subtitle[[1]],
+          item$local_thumbnail_path[[1]],
+          rating_value,
+          note_value[[1]],
+          if (isTRUE(skipped)) 1L else 0L,
+          item$shown_at[[1]],
+          rated_at,
+          seconds_spent,
+          rated_at,
+          rated_at
+        )
+      )
+    } else {
+      dbExecute(
+        con,
+        sprintf(
+          "UPDATE human_preview_dimension_ratings
+           SET queue_position = ?, shown_title = ?, shown_subtitle = ?, shown_thumbnail_path = ?,
+             %s = ?, human_dimension_note = ?, skipped = ?,
+             shown_at = ?, rated_at = ?, seconds_spent = ?, updated_at = ?
+           WHERE id = ?",
+          dbQuoteIdentifier(con, active_dimension)
+        ),
+        params = list(
+          item$queue_position[[1]],
+          item$title[[1]],
+          item$subtitle[[1]],
+          item$local_thumbnail_path[[1]],
+          rating_value,
+          note_value[[1]],
+          if (isTRUE(skipped)) 1L else 0L,
+          item$shown_at[[1]],
+          rated_at,
+          seconds_spent,
+          rated_at,
+          existing$id[[1]]
+        )
+      )
+    }
+
+    dbExecute(
+      con,
+      "UPDATE human_preview_dimension_pass_queue
+       SET status = ?, completed_at = ?, seconds_spent = ?
+       WHERE rating_mode = ? AND active_dimension = ? AND queue_position = ?",
+      params = list(
+        if (isTRUE(skipped)) "skipped" else "rated",
+        rated_at,
+        seconds_spent,
+        rating_mode,
+        active_dimension,
+        item$queue_position[[1]]
+      )
+    )
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  invisible(TRUE)
+}
+
+undo_previous_dimension_rating <- function(con, active_dimension) {
+  if (!(active_dimension %in% dimension_fields)) return(FALSE)
+  previous <- dbGetQuery(con, "
+    SELECT queue_position, article_id, medium_post_id, canonical_article_key
+    FROM human_preview_dimension_pass_queue
+    WHERE rating_mode = ?
+      AND active_dimension = ?
+      AND status IN ('rated', 'skipped')
+    ORDER BY completed_at DESC, queue_position DESC
+    LIMIT 1
+  ", params = list(rating_mode, active_dimension))
+  if (nrow(previous) == 0) return(FALSE)
+
+  dbBegin(con)
+  tryCatch({
+    pseudo_item <- previous
+    rating_row <- find_dimension_rating_id(con, pseudo_item)
+    if (!is.null(rating_row)) {
+      dbExecute(
+        con,
+        sprintf(
+          "UPDATE human_preview_dimension_ratings
+           SET %s = NULL, updated_at = ?
+           WHERE id = ?",
+          dbQuoteIdentifier(con, active_dimension)
+        ),
+        params = list(now_utc(), rating_row$id[[1]])
+      )
+      dbExecute(
+        con,
+        "DELETE FROM human_preview_dimension_ratings
+         WHERE id = ?
+           AND personal_click_appeal IS NULL
+           AND title_hook_strength IS NULL
+           AND visual_hook IS NULL
+           AND emotional_pull_preview IS NULL
+           AND ai_low_effort_flag IS NULL
+           AND NULLIF(TRIM(COALESCE(human_dimension_note, '')), '') IS NULL",
+        params = list(rating_row$id[[1]])
+      )
+    }
+    dbExecute(
+      con,
+      "UPDATE human_preview_dimension_pass_queue
+       SET status = 'pending', shown_at = NULL, completed_at = NULL, seconds_spent = NULL
+       WHERE rating_mode = ? AND active_dimension = ? AND queue_position = ?",
+      params = list(rating_mode, active_dimension, previous$queue_position[[1]])
+    )
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  TRUE
+}
+
 ui <- fluidPage(
   tags$head(
     tags$title("Medium Preview Rating"),
@@ -556,6 +1324,8 @@ ui <- fluidPage(
       h1 { margin: 0; font-size: 26px; line-height: 1.05; font-weight: 750; letter-spacing: 0; }
       .progress-line { margin-top: 5px; color: var(--muted); font-size: 16px; }
       .progress-line .current { color: var(--green); font-weight: 750; }
+      .mode-line { margin-top: 5px; color: var(--muted); font-size: 12px; }
+      .mode-line strong { color: var(--green); font-weight: 650; }
       .tabs { display: flex; gap: 38px; border-bottom: 1px solid var(--line); margin-top: 14px; max-width: 760px; box-sizing: border-box; }
       .tab { padding-bottom: 8px; color: var(--muted); font-size: 15px; }
       .tab.active { color: var(--ink); font-weight: 650; border-bottom: 2px solid var(--ink); }
@@ -599,11 +1369,12 @@ ui <- fluidPage(
       }
       .prompt { font-size: 15px; line-height: 1.22; font-weight: 680; margin-bottom: 10px; }
       .note-row label { color: var(--muted); font-weight: 500; margin-bottom: 4px; font-size: 13px; }
-      textarea.form-control {
-        min-height: 44px; resize: vertical; border: 1px solid #d9d9d9; border-radius: 8px;
-        box-shadow: none; font-size: 14px; padding: 10px 12px;
+      .note-row input.form-control, .note-row textarea.form-control {
+        height: 40px; border: 1px solid #d9d9d9; border-radius: 8px;
+        box-shadow: none; font-size: 14px; padding: 8px 12px;
       }
-      textarea.form-control:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(26, 137, 23, .12); }
+      .note-row textarea.form-control { min-height: 54px; resize: vertical; }
+      .note-row input.form-control:focus, .note-row textarea.form-control:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(26, 137, 23, .12); }
       .scale-labels { display: flex; justify-content: space-between; color: var(--muted); margin: 9px 4px 5px; font-size: 13px; }
       .rating-buttons { display: grid; grid-template-columns: repeat(5, minmax(64px, 1fr)); gap: 10px; }
       .rating-buttons .btn {
@@ -623,6 +1394,41 @@ ui <- fluidPage(
       .rating-actions .btn {
         min-width: 136px; height: 34px; border-radius: 7px; font-size: 13px; font-weight: 650; box-shadow: none;
       }
+      .dimension-rubric { display: grid; gap: 8px; margin-top: 10px; }
+      .dimension-row {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 9px 10px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+      }
+      .dimension-row.active { border-color: var(--green); background: var(--green-soft); }
+      .dimension-name { font-size: 13px; font-weight: 720; margin-bottom: 2px; }
+      .dimension-question { color: var(--muted); font-size: 12px; line-height: 1.25; }
+      .dimension-buttons { display: flex; gap: 6px; flex-wrap: nowrap; }
+      .dimension-choice.btn {
+        min-width: 42px; min-height: 32px; padding: 4px 8px; border-radius: 7px;
+        border: 1px solid #d8d8d8; background: #fff; color: var(--ink);
+        font-weight: 650; box-shadow: none;
+      }
+      .dimension-choice.flag-choice { min-width: 64px; display: grid; gap: 1px; justify-items: center; line-height: 1.05; }
+      .dimension-choice-label { display: block; }
+      .dimension-choice-shortcut { display: block; color: #a0a0a0; font-size: 10px; font-weight: 500; }
+      .dimension-choice.selected,
+      .dimension-choice.dimension-confirm { border-color: var(--green); background: var(--green); color: #fff; }
+      .dimension-choice.selected .dimension-choice-shortcut,
+      .dimension-choice.dimension-confirm .dimension-choice-shortcut { color: rgba(255,255,255,.72); }
+      .dimension-pass-header { display: grid; gap: 6px; margin-bottom: 12px; }
+      .dimension-pass-kicker { color: var(--green); font-size: 12px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; }
+      .dimension-pass-name { font-size: 22px; line-height: 1.1; font-weight: 760; }
+      .dimension-pass-question { font-size: 15px; line-height: 1.28; font-weight: 650; }
+      .dimension-pass-focus { color: var(--muted); font-size: 13px; }
+      .dimension-scale-list { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 8px 0 10px; }
+      .dimension-scale-item { border: 1px solid var(--line); border-radius: 7px; padding: 7px 8px; min-height: 46px; font-size: 12px; line-height: 1.2; }
+      .dimension-scale-item strong { display: block; color: var(--green); font-size: 13px; margin-bottom: 2px; }
+      .dimension-flag-scale { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .btn-default { border-color: #d8d8d8; background: #fff; color: var(--ink); }
       .btn-default:hover { border-color: #bdbdbd; background: #fafafa; }
       .shortcut-copy { color: var(--muted); font-size: 13px; }
@@ -659,9 +1465,14 @@ ui <- fluidPage(
         .thumbnail-placeholder { width: 100% !important; height: auto !important; aspect-ratio: 1.5; }
         .rating-buttons { gap: 8px; }
         .rating-buttons .btn { height: 52px; font-size: 21px; }
+        .dimension-row { grid-template-columns: 1fr; }
+        .dimension-buttons { justify-content: stretch; }
+        .dimension-choice.btn { flex: 1; }
       }
     ")),
-    tags$script(HTML("
+    tags$script(HTML(paste0(
+      "window.__dimensionMode = ", if (is_dimension_mode) "true" else "false", ";\n",
+      "
       function flashAndSubmitRating(score) {
         const button = document.getElementById('score_' + score);
         if (button) {
@@ -672,7 +1483,25 @@ ui <- fluidPage(
         }
         window.setTimeout(function() {
           Shiny.setInputValue('score_key', {score: Number(score), nonce: Date.now()}, {priority: 'event'});
-        }, 140);
+        }, 70);
+      }
+
+      function flashAndSubmitDimension(field, value) {
+        const selector = '.dimension-choice[data-field=\"' + field + '\"][data-value=\"' + value + '\"]';
+        const button = document.querySelector(selector);
+        if (button) {
+          document.querySelectorAll('.dimension-choice').forEach(function(oneButton) {
+            oneButton.classList.remove('dimension-confirm');
+          });
+          button.classList.add('dimension-confirm');
+        }
+        window.setTimeout(function() {
+          Shiny.setInputValue('dimension_select', {
+            field: field,
+            value: value,
+            nonce: Date.now()
+          }, {priority: 'event'});
+        }, 23);
       }
 
       function alignSideCardsToRatingPanel() {
@@ -702,6 +1531,17 @@ ui <- fluidPage(
       window.setInterval(alignSideCardsToRatingPanel, 300);
 
       document.addEventListener('click', function(event) {
+        const dimensionButton = event.target && event.target.closest ? event.target.closest('.dimension-choice') : null;
+        if (dimensionButton) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          flashAndSubmitDimension(
+            dimensionButton.getAttribute('data-field'),
+            dimensionButton.getAttribute('data-value')
+          );
+          return;
+        }
         const button = event.target && event.target.closest ? event.target.closest('.rating-buttons .btn') : null;
         if (!button || !button.id || !button.id.match(/^score_[1-5]$/)) return;
         event.preventDefault();
@@ -710,32 +1550,87 @@ ui <- fluidPage(
         flashAndSubmitRating(button.id.replace('score_', ''));
       }, true);
 
+      function isTextEntryTarget(target) {
+        if (!target) return false;
+        const tag = (target.tagName || '').toLowerCase();
+        return tag === 'textarea' ||
+          tag === 'input' ||
+          tag === 'select' ||
+          target.isContentEditable === true;
+      }
+
       document.addEventListener('keydown', function(event) {
         if (event.metaKey || event.ctrlKey || event.altKey) return;
-        const tag = (event.target && event.target.tagName || '').toLowerCase();
-        const inText = tag === 'textarea' || tag === 'input';
+        const inText = isTextEntryTarget(event.target);
         const rawKey = event.key || '';
         const rawCode = event.code || '';
         const digitMatch = rawKey.match(/^[1-5]$/) || rawCode.match(/^(Digit|Numpad)([1-5])$/);
         const digit = digitMatch ? Number(digitMatch[2] || digitMatch[0]) : null;
         const letter = rawKey.length === 1 ? rawKey.toLowerCase() : rawCode.replace(/^Key/, '').toLowerCase();
+        const homeRowRatings = {a: 1, s: 2, d: 3, f: 4, j: 5};
 
-        if (rawKey === 'Escape' || rawCode === 'Escape') {
+        if (inText) {
           const note = document.getElementById('note');
-          if (note) {
-            note.value = '';
-            note.dispatchEvent(new Event('input', { bubbles: true }));
+          const noteFocused = note && document.activeElement === note;
+          if (noteFocused && (rawKey === 'Enter' || rawCode === 'Enter' || rawKey === 'Escape' || rawCode === 'Escape')) {
+            event.preventDefault();
+            note.dispatchEvent(new Event('change', { bubbles: true }));
+            note.blur();
           }
-          Shiny.setInputValue('clear_note_shortcut', Date.now(), {priority: 'event'});
           return;
         }
 
-        if (inText) return;
+        if (window.__dimensionMode) {
+          if (digit !== null) {
+            event.preventDefault();
+            const keyField = document.querySelector('.dimension-choice')?.getAttribute('data-field');
+            const flagValueMap = {'1': 'yes', '2': 'unsure', '3': 'no'};
+            const numericButton = document.querySelector('.dimension-choice[data-value=\"' + digit + '\"]');
+            const flagButton = document.querySelector('.dimension-choice[data-value=\"' + flagValueMap[String(digit)] + '\"]');
+            const targetButton = numericButton || flagButton;
+            if (keyField && targetButton) targetButton.classList.add('dimension-confirm');
+            window.setTimeout(function() {
+              Shiny.setInputValue('dimension_key', {key: String(digit), nonce: Date.now()}, {priority: 'event'});
+            }, 23);
+          } else if (['a', 's', 'd', 'f', 'j'].indexOf(letter) >= 0) {
+            event.preventDefault();
+            const keyField = document.querySelector('.dimension-choice')?.getAttribute('data-field');
+            const numericValueMap = {a: '1', s: '2', d: '3', f: '4', j: '5'};
+            const flagValueMap = {a: 'yes', s: 'unsure', j: 'no'};
+            const numericButton = document.querySelector('.dimension-choice[data-value=\"' + numericValueMap[letter] + '\"]');
+            const flagButton = document.querySelector('.dimension-choice[data-value=\"' + flagValueMap[letter] + '\"]');
+            const targetButton = numericButton || flagButton;
+            if (keyField && targetButton) targetButton.classList.add('dimension-confirm');
+            window.setTimeout(function() {
+              Shiny.setInputValue('dimension_key', {key: letter, nonce: Date.now()}, {priority: 'event'});
+            }, 23);
+          } else if (rawKey === ' ' || rawCode === 'Space') {
+            event.preventDefault();
+            Shiny.setInputValue('skip_key', Date.now(), {priority: 'event'});
+          } else if (letter === 'u') {
+            event.preventDefault();
+            Shiny.setInputValue('undo_key', Date.now(), {priority: 'event'});
+          } else if (letter === 'n') {
+            event.preventDefault();
+            const note = document.getElementById('note');
+            if (note) note.focus();
+          } else if (letter === 'r') {
+            event.preventDefault();
+            Shiny.setInputValue('dimension_reset_key', Date.now(), {priority: 'event'});
+          } else if (letter === 'b' || rawKey === 'Backspace' || rawCode === 'Backspace') {
+            event.preventDefault();
+            Shiny.setInputValue('dimension_back_key', Date.now(), {priority: 'event'});
+          }
+          return;
+        }
 
         if (digit !== null) {
           event.preventDefault();
           flashAndSubmitRating(digit);
-        } else if (letter === 's') {
+        } else if (Object.prototype.hasOwnProperty.call(homeRowRatings, letter)) {
+          event.preventDefault();
+          flashAndSubmitRating(homeRowRatings[letter]);
+        } else if (rawKey === ' ' || rawCode === 'Space') {
           event.preventDefault();
           Shiny.setInputValue('skip_key', Date.now(), {priority: 'event'});
         } else if (letter === 'u') {
@@ -764,7 +1659,7 @@ ui <- fluidPage(
           Shiny.addCustomMessageHandler('clearRatingFocus', handleClearRatingFocus);
         }, { once: true });
       }
-    "))
+    ")))
   ),
   div(
     class = "topbar",
@@ -784,46 +1679,192 @@ ui <- fluidPage(
         strong("Daily goal"),
         htmlOutput("sidebar_progress"),
         uiOutput("progress_bar"),
-        div(class = "shortcut-copy", "1-5 rate, S skip, U undo")
+        uiOutput("sidebar_shortcuts")
       )
     ),
     tags$main(
       class = "main",
       h1("Medium Preview Rating"),
       htmlOutput("progress_line"),
+      htmlOutput("mode_line"),
       div(class = "tabs", div(class = "tab active", "For you"), div(class = "tab", "Featured")),
       uiOutput("article_area"),
-      div(
-        class = "rating-panel",
-        div(class = "prompt", rating_prompt),
-        div(
-          class = "note-row",
-          textAreaInput(
-            "note",
-            "Optional note",
-            value = "",
-            width = "100%",
-            placeholder = "Share any quick thoughts on this headline, angle, or topic..."
-          )
-        ),
-        div(class = "scale-labels", span("Very weak"), span("Very strong")),
-        div(
-          class = "rating-buttons",
-          actionButton("score_1", "1"),
-          actionButton("score_2", "2"),
-          actionButton("score_3", "3"),
-          actionButton("score_4", "4"),
-          actionButton("score_5", "5")
-        ),
-        div(
-          class = "rating-actions",
-          div(actionButton("skip", "Skip"), actionButton("undo", "Undo previous")),
-          div(class = "shortcut-copy", "N focuses note. Esc clears note.")
-        )
-      )
+      uiOutput("rating_panel")
     ),
     tags$aside(
       class = "guide",
+      uiOutput("guide_content")
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  con <- connect_db()
+  onStop(function() dbDisconnect(con))
+  ensure_rating_schema(con)
+
+  if (is_dimension_mode) ensure_dimension_pass_queues(con, target_n = default_target_n)
+  rating_session_id <- if (is_dimension_mode) NULL else resume_or_create_session(con, target_n = default_target_n)
+  active_dimension <- reactiveVal(if (is_dimension_mode) first_incomplete_dimension(con) else NA_character_)
+  current <- reactiveVal(NULL)
+  shown_started_at <- reactiveVal(Sys.time())
+
+  refresh_current <- function() {
+    item <- if (is_dimension_mode) {
+      field <- isolate(active_dimension())
+      if (is.na(field)) NULL else load_current_dimension_item(con, field)
+    } else {
+      load_current_item(con, rating_session_id)
+    }
+    current(item)
+    shown_started_at(Sys.time())
+    if (is_dimension_mode) {
+      updateTextAreaInput(session, "note", value = "")
+    } else {
+      updateTextInput(session, "note", value = "")
+    }
+    session$sendCustomMessage("clearRatingFocus", list())
+  }
+
+  refresh_current()
+
+  counts <- reactive({
+    invalidateLater(1000, session)
+    if (is_dimension_mode) {
+      field <- active_dimension()
+      if (is.na(field)) {
+        data.frame(total = 0L, completed = 0L, pending = 0L, skipped = 0L)
+      } else {
+        dimension_queue_counts(con, field)
+      }
+    } else {
+      queue_counts(con, rating_session_id)
+    }
+  })
+
+  candidate_stats <- reactive({
+    invalidateLater(5000, session)
+    if (is_dimension_mode) dimension_candidate_counts(con) else candidate_counts(con)
+  })
+
+  output$progress_line <- renderUI({
+    c <- counts()
+    stats <- candidate_stats()
+    completed <- ifelse(is.na(c$completed[[1]]), 0, c$completed[[1]])
+    if (is_dimension_mode) {
+      total <- ifelse(is.na(c$total[[1]]), 0, c$total[[1]])
+      field <- active_dimension()
+      if (is.na(field)) {
+        HTML(sprintf("All <span class='current'>%s</span> dimension passes complete", length(dimension_fields)))
+      } else if (completed >= total && total > 0) {
+        HTML(sprintf("Dimension complete: <span class='current'>%s</span> · %s / %s", dimension_labels[[field]], completed, total))
+      } else {
+        HTML(sprintf("Dimension progress: <span class='current'>%s</span> / %s", completed + 1L, total))
+      }
+    } else {
+      remaining <- stats$remaining_unrated[[1]]
+      total <- completed + remaining
+      HTML(sprintf("Article <span class='current'>%s</span> / %s", completed + 1L, total))
+    }
+  })
+
+  output$mode_line <- renderUI({
+    c <- counts()
+    stats <- candidate_stats()
+    pending <- ifelse(is.na(c$pending[[1]]), 0, c$pending[[1]])
+    completed <- ifelse(is.na(c$completed[[1]]), 0, c$completed[[1]])
+    if (is_dimension_mode) {
+      field <- active_dimension()
+      active_label <- if (is.na(field)) "all complete" else field
+      HTML(sprintf(
+        "<div class='mode-line'><strong>Mode:</strong> human_preview_dimensions_v1 · active dimension %s · cohort rows %s · usable local thumbnails %s · dimension progress %s done / %s pending · overall %s / %s dimensions complete</div>",
+        active_label,
+        stats$total_cohort_rows[[1]],
+        stats$usable_local_thumbnails[[1]],
+        completed,
+        pending,
+        stats$completed_dimensions[[1]],
+        stats$total_dimensions[[1]]
+      ))
+    } else {
+      HTML(sprintf(
+        "<div class='mode-line'><strong>Mode:</strong> unrated thumbnails only · thumbnail candidates %s · already rated %s · remaining unrated %s · session %s done / %s pending</div>",
+        stats$total_thumbnail_candidates[[1]],
+        stats$already_rated[[1]],
+        stats$remaining_unrated[[1]],
+        completed,
+        pending
+      ))
+    }
+  })
+
+  output$sidebar_progress <- renderUI({
+    c <- counts()
+    stats <- candidate_stats()
+    completed <- ifelse(is.na(c$completed[[1]]), 0, c$completed[[1]])
+    total <- if (is_dimension_mode) {
+      ifelse(is.na(c$total[[1]]), 0, c$total[[1]])
+    } else {
+      completed + stats$remaining_unrated[[1]]
+    }
+    HTML(sprintf("<span class='num'>%s</span> / %s", completed, total))
+  })
+
+  output$progress_bar <- renderUI({
+    c <- counts()
+    stats <- candidate_stats()
+    completed <- ifelse(is.na(c$completed[[1]]), 0, c$completed[[1]])
+    total <- if (is_dimension_mode) {
+      max(1, ifelse(is.na(c$total[[1]]), 0, c$total[[1]]))
+    } else {
+      max(1, completed + stats$remaining_unrated[[1]])
+    }
+    div(
+      class = "progress-track",
+      div(class = "progress-fill", style = sprintf("width: %.1f%%;", 100 * completed / total))
+    )
+  })
+
+  output$sidebar_shortcuts <- renderUI({
+    if (is_dimension_mode) {
+      field <- active_dimension()
+      text <- if (!is.na(field) && field == "ai_low_effort_flag") {
+        "A/S/J flag, Space skip, U undo"
+      } else {
+        "A/S/D/F/J rate, Space skip, U undo"
+      }
+      div(class = "shortcut-copy", text)
+    } else {
+      div(class = "shortcut-copy", "A/S/D/F/J rate, Space skip, U undo")
+    }
+  })
+
+  output$guide_content <- renderUI({
+    if (is_dimension_mode) {
+      field <- active_dimension()
+      if (is.na(field)) {
+        return(tagList(
+          div(class = "guide-section", h3("Dimension pass"), p("All dimension passes are complete.")),
+          div(class = "tip", h3("Reminder"), p("No outcome, API, or prior human score data is shown during rating."))
+        ))
+      }
+      return(tagList(
+        div(class = "guide-section", h3("Active dimension"), p(dimension_labels[[field]])),
+        div(class = "guide-section", h3("Focus"), p(dimension_focus[[field]])),
+        div(
+          class = "guide-section",
+          h3("Hotkeys"),
+          if (field == "ai_low_effort_flag") {
+            tags$ul(tags$li("A or 1 = yes"), tags$li("S or 2 = unsure"), tags$li("J or 3 = no"))
+          } else {
+            tags$ul(tags$li("A/S/D/F/J = 1/2/3/4/5"), tags$li("1 through 5 also work"))
+          }
+        ),
+        div(class = "tip", h3("Reminder"), p("Score only the active dimension. Do not judge the other dimensions during this pass."))
+      ))
+    }
+
+    tagList(
       div(class = "guide-section", h3("How it works"), p("Rate each preview using only the visible headline, subtitle, and thumbnail.")),
       div(
         class = "guide-section",
@@ -846,60 +1887,18 @@ ui <- fluidPage(
       ),
       div(class = "tip", h3("Tip"), p("There are no right or wrong answers. Consistency is the goal."))
     )
-  )
-)
-
-server <- function(input, output, session) {
-  con <- connect_db()
-  onStop(function() dbDisconnect(con))
-  ensure_rating_schema(con)
-
-  rating_session_id <- resume_or_create_session(con, target_n = 100)
-  current <- reactiveVal(NULL)
-  shown_started_at <- reactiveVal(Sys.time())
-
-  refresh_current <- function() {
-    item <- load_current_item(con, rating_session_id)
-    current(item)
-    shown_started_at(Sys.time())
-    updateTextAreaInput(session, "note", value = "")
-    session$sendCustomMessage("clearRatingFocus", list())
-  }
-
-  refresh_current()
-
-  counts <- reactive({
-    invalidateLater(1000, session)
-    queue_counts(con, rating_session_id)
-  })
-
-  output$progress_line <- renderUI({
-    c <- counts()
-    completed <- ifelse(is.na(c$completed[[1]]), 0, c$completed[[1]])
-    total <- c$total[[1]]
-    HTML(sprintf("Article <span class='current'>%s</span> / %s", completed + 1L, total))
-  })
-
-  output$sidebar_progress <- renderUI({
-    c <- counts()
-    completed <- ifelse(is.na(c$completed[[1]]), 0, c$completed[[1]])
-    total <- c$total[[1]]
-    HTML(sprintf("<span class='num'>%s</span> / %s", completed, total))
-  })
-
-  output$progress_bar <- renderUI({
-    c <- counts()
-    completed <- ifelse(is.na(c$completed[[1]]), 0, c$completed[[1]])
-    total <- max(1, c$total[[1]])
-    div(
-      class = "progress-track",
-      div(class = "progress-fill", style = sprintf("width: %.1f%%;", 100 * completed / total))
-    )
   })
 
   output$article_area <- renderUI({
     item <- current()
     if (is.null(item)) {
+      if (is_dimension_mode) {
+        field <- active_dimension()
+        if (is.na(field)) {
+          return(div(class = "done-state", h2("All dimensions complete"), p("Every dimension pass has been completed for the cohort.")))
+        }
+        return(div(class = "done-state", h2("Dimension complete"), p(paste("Completed pass:", dimension_labels[[field]]))))
+      }
       return(div(class = "done-state", h2("Session complete"), p("All queued previews have been rated or skipped.")))
     }
 
@@ -930,7 +1929,158 @@ server <- function(input, output, session) {
     list(src = normalizePath(path, mustWork = TRUE), alt = "", width = 170, height = 113)
   }, deleteFile = FALSE)
 
+  output$rating_panel <- renderUI({
+    if (!is_dimension_mode) {
+      return(div(
+        class = "rating-panel",
+        div(class = "prompt", rating_prompt),
+        div(
+          class = "note-row",
+          textInput(
+            "note",
+            "Optional note",
+            value = "",
+            width = "100%",
+            placeholder = "Quick note, e.g. AI thumbnail, strong title, generic topic"
+          )
+        ),
+        div(class = "scale-labels", span("Very weak"), span("Very strong")),
+        div(
+          class = "rating-buttons",
+          actionButton("score_1", "1"),
+          actionButton("score_2", "2"),
+          actionButton("score_3", "3"),
+          actionButton("score_4", "4"),
+          actionButton("score_5", "5")
+        ),
+        div(
+          class = "rating-actions",
+          div(actionButton("skip", "Skip"), actionButton("undo", "Undo previous")),
+          div(class = "shortcut-copy", "A=1, S=2, D=3, F=4, J=5 · 1-5 also work · Space=skip · U=undo · N=note · Enter/Esc exits note")
+        )
+      ))
+    }
+
+    field <- active_dimension()
+    c <- counts()
+    completed <- ifelse(is.na(c$completed[[1]]), 0, c$completed[[1]])
+    total <- ifelse(is.na(c$total[[1]]), 0, c$total[[1]])
+
+    if (is.na(field)) {
+      return(div(
+        class = "rating-panel",
+        div(class = "dimension-pass-header",
+            div(class = "dimension-pass-kicker", "Dimension pass complete"),
+            div(class = "dimension-pass-name", "All dimensions complete"),
+            div(class = "dimension-pass-focus", sprintf("Overall dimension progress: %s / %s dimensions complete", length(dimension_fields), length(dimension_fields)))
+        )
+      ))
+    }
+
+    if (total > 0 && completed >= total) {
+      next_field <- next_incomplete_dimension_after(con, field)
+      return(div(
+        class = "rating-panel",
+        div(class = "dimension-pass-header",
+            div(class = "dimension-pass-kicker", "Dimension complete"),
+            div(class = "dimension-pass-name", dimension_labels[[field]]),
+            div(class = "dimension-pass-focus", sprintf("Dimension progress: %s / %s", completed, total))
+        ),
+        if (!is.na(next_field)) actionButton("start_next_dimension", paste("Start next dimension:", dimension_labels[[next_field]])) else div(class = "shortcut-copy", "All dimension passes are complete.")
+      ))
+    }
+
+    numeric_buttons <- function(field) {
+      div(
+        class = "dimension-buttons",
+        lapply(1:5, function(score) {
+          tags$button(
+            type = "button",
+            class = "btn dimension-choice",
+            `data-field` = field,
+            `data-value` = as.character(score),
+            as.character(score)
+          )
+        })
+      )
+    }
+    flag_buttons <- function(field) {
+      choices <- c("yes", "unsure", "no")
+      shortcuts <- c(yes = "A", unsure = "S", no = "J")
+      div(
+        class = "dimension-buttons",
+        lapply(choices, function(choice) {
+          tags$button(
+            type = "button",
+            class = "btn dimension-choice flag-choice",
+            `data-field` = field,
+            `data-value` = choice,
+            span(class = "dimension-choice-label", choice),
+            span(class = "dimension-choice-shortcut", shortcuts[[choice]])
+          )
+        })
+      )
+    }
+    scale_ui <- function(field) {
+      scale <- dimension_scale[[field]]
+      div(
+        class = paste("dimension-scale-list", if (field == "ai_low_effort_flag") "dimension-flag-scale" else ""),
+        lapply(names(scale), function(name) {
+          div(class = "dimension-scale-item", strong(name), scale[[name]])
+        })
+      )
+    }
+
+    div(
+      class = "rating-panel",
+      div(
+        class = "dimension-pass-header",
+        div(class = "dimension-pass-kicker", "Active dimension"),
+        div(class = "dimension-pass-name", field),
+        div(class = "dimension-pass-question", dimension_questions[[field]]),
+        div(class = "dimension-pass-focus", strong("Focus: "), dimension_focus[[field]]),
+        div(class = "dimension-pass-focus", sprintf("Dimension progress: %s / %s · Overall dimension progress: %s / %s dimensions complete", completed, total, candidate_stats()$completed_dimensions[[1]], length(dimension_fields)))
+      ),
+      scale_ui(field),
+      div(
+        class = "dimension-rubric",
+        div(
+          class = "dimension-row active",
+          div(
+            div(class = "dimension-name", dimension_labels[[field]]),
+            div(class = "dimension-question", "Score only this dimension for the current pass.")
+          ),
+          if (field %in% dimension_numeric_fields) numeric_buttons(field) else flag_buttons(field)
+        )
+      ),
+      div(
+        class = "note-row",
+        textAreaInput(
+          "note",
+          "Optional note",
+          value = "",
+          width = "100%",
+          height = "54px",
+          placeholder = "Optional note"
+        )
+      ),
+      div(
+        class = "rating-actions",
+        div(actionButton("skip", "Skip"), actionButton("undo", "Undo previous")),
+        div(
+          class = "shortcut-copy",
+          if (field == "ai_low_effort_flag") {
+            "A=yes, S=unsure, J=no · 1=yes, 2=unsure, 3=no · Space=skip, U=undo, N=note"
+          } else {
+            "A=1, S=2, D=3, F=4, J=5 · 1-5 also work · Space=skip, U=undo, N=note"
+          }
+        )
+      )
+    )
+  })
+
   handle_score <- function(score) {
+    if (is_dimension_mode) return(invisible(NULL))
     item <- current()
     if (is.null(item)) return(invisible(NULL))
     save_current_rating(con, item, score = score, note = input$note, skipped = FALSE, shown_started_at = shown_started_at())
@@ -953,30 +2103,88 @@ server <- function(input, output, session) {
   observeEvent(input$skip, {
     item <- current()
     if (is.null(item)) return(invisible(NULL))
-    save_current_rating(con, item, score = NULL, note = input$note, skipped = TRUE, shown_started_at = shown_started_at())
+    if (is_dimension_mode) {
+      save_current_dimension_rating(con, item, active_dimension(), note = input$note, skipped = TRUE, shown_started_at = shown_started_at())
+    } else {
+      save_current_rating(con, item, score = NULL, note = input$note, skipped = TRUE, shown_started_at = shown_started_at())
+    }
     refresh_current()
   }, ignoreInit = TRUE)
 
   observeEvent(input$skip_key, {
     item <- current()
     if (is.null(item)) return(invisible(NULL))
-    save_current_rating(con, item, score = NULL, note = input$note, skipped = TRUE, shown_started_at = shown_started_at())
+    if (is_dimension_mode) {
+      save_current_dimension_rating(con, item, active_dimension(), note = input$note, skipped = TRUE, shown_started_at = shown_started_at())
+    } else {
+      save_current_rating(con, item, score = NULL, note = input$note, skipped = TRUE, shown_started_at = shown_started_at())
+    }
     refresh_current()
   }, ignoreInit = TRUE)
 
   observeEvent(input$undo, {
-    undo_previous_rating(con, rating_session_id)
+    if (is_dimension_mode) undo_previous_dimension_rating(con, active_dimension()) else undo_previous_rating(con, rating_session_id)
     refresh_current()
   }, ignoreInit = TRUE)
 
   observeEvent(input$undo_key, {
-    undo_previous_rating(con, rating_session_id)
+    if (is_dimension_mode) undo_previous_dimension_rating(con, active_dimension()) else undo_previous_rating(con, rating_session_id)
     refresh_current()
   }, ignoreInit = TRUE)
 
-  observeEvent(input$clear_note_shortcut, {
-    updateTextAreaInput(session, "note", value = "")
+  apply_dimension_value <- function(field, value) {
+    if (!is_dimension_mode || !(field %in% dimension_fields)) return(invisible(NULL))
+    if (!identical(field, active_dimension())) return(invisible(NULL))
+    item <- current()
+    if (is.null(item)) return(invisible(NULL))
+    save_current_dimension_rating(
+      con,
+      item,
+      field,
+      value = value,
+      note = input$note,
+      skipped = FALSE,
+      shown_started_at = shown_started_at()
+    )
+    refresh_current()
+  }
+
+  observeEvent(input$dimension_select, {
+    value <- input$dimension_select
+    if (!is.list(value)) return(invisible(NULL))
+    apply_dimension_value(value$field, value$value)
   }, ignoreInit = TRUE)
+
+  observeEvent(input$dimension_key, {
+    value <- input$dimension_key
+    key <- if (is.list(value)) value$key else value
+    field <- active_dimension()
+    if (is.na(field)) return(invisible(NULL))
+    if (field %in% dimension_numeric_fields) {
+      numeric_map <- c(a = 1L, s = 2L, d = 3L, f = 4L, j = 5L)
+      score <- if (key %in% names(numeric_map)) numeric_map[[key]] else suppressWarnings(as.integer(key))
+      apply_dimension_value(field, score)
+    } else {
+      flag_map <- c(a = "yes", s = "unsure", j = "no", `1` = "yes", `2` = "unsure", `3` = "no")
+      if (key %in% names(flag_map)) apply_dimension_value(field, flag_map[[key]])
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$dimension_back_key, {
+    invisible(NULL)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$dimension_reset_key, {
+    invisible(NULL)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$start_next_dimension, {
+    if (!is_dimension_mode) return(invisible(NULL))
+    next_field <- next_incomplete_dimension_after(con, active_dimension())
+    if (!is.na(next_field)) active_dimension(next_field)
+    refresh_current()
+  }, ignoreInit = TRUE)
+
 }
 
 shinyApp(ui, server)

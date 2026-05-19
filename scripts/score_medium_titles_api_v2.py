@@ -28,7 +28,7 @@ DEFAULT_DB = Path("data/db/medium_articles.sqlite")
 DEFAULT_MODEL = os.environ.get("OPENAI_TITLE_SCORING_MODEL", "gpt-5-mini")
 DEFAULT_PROMPT_VERSION = "v2_2"
 DEFAULT_SCOPE = "title_subtitle"
-VALID_SCOPES = {"title_only", "title_subtitle"}
+VALID_SCOPES = {"subtitle_only", "title_only", "title_subtitle"}
 DEFAULT_SAMPLE_MODE = "default"
 VALID_SAMPLE_MODES = {"default", "thumbnail_first", "thumbnail_only", "random"}
 API_URL = "https://api.openai.com/v1/responses"
@@ -171,11 +171,17 @@ def score_schema() -> dict[str, Any]:
 def scope_instruction(scope: str) -> str:
     if scope == "title_only":
         return "You are scoring only the title. Do not infer a subtitle. Treat missing context as missing."
+    if scope == "subtitle_only":
+        return "You are scoring only the subtitle. Do not infer a title. Treat missing context as missing."
     return "You are scoring the title and subtitle as a reader-facing pair."
 
 
 def scope_label(scope: str) -> str:
-    return "title" if scope == "title_only" else "title/subtitle"
+    if scope == "title_only":
+        return "title"
+    if scope == "subtitle_only":
+        return "subtitle"
+    return "title/subtitle"
 
 
 def prompt_content(prompt_version: str, input_fields: dict[str, str], scope: str) -> str:
@@ -259,15 +265,19 @@ def prompt_content(prompt_version: str, input_fields: dict[str, str], scope: str
 
 
 def build_payload(model: str, title: str, subtitle: str | None, prompt_version: str, scope: str) -> dict[str, Any]:
-    input_fields = {"title": title}
+    if scope == "subtitle_only":
+        input_fields = {"subtitle": subtitle or ""}
+    else:
+        input_fields = {"title": title}
     if scope == "title_subtitle":
         input_fields["subtitle"] = subtitle or ""
     schema_name = f"medium_title_scores_{prompt_version}_{scope}".replace("-", "_")
-    system_scope = (
-        "Use only the supplied title. Do not infer a subtitle."
-        if scope == "title_only"
-        else "Use only the supplied title and subtitle."
-    )
+    if scope == "title_only":
+        system_scope = "Use only the supplied title. Do not infer a subtitle."
+    elif scope == "subtitle_only":
+        system_scope = "Use only the supplied subtitle. Do not infer a title."
+    else:
+        system_scope = "Use only the supplied title and subtitle."
     return {
         "model": model,
         "input": [
@@ -718,7 +728,12 @@ def main() -> int:
         print(f"Thumbnail criterion: {sample_metadata['thumbnail_criterion']}")
         print(f"Thumbnail rows selected: {sample_metadata['thumbnail_selected']}")
         print(f"Filler/random rows selected: {sample_metadata['filler_selected']}")
-        print("API input fields: title" if args.scope == "title_only" else "API input fields: title, subtitle")
+        if args.scope == "title_only":
+            print("API input fields: title")
+        elif args.scope == "subtitle_only":
+            print("API input fields: subtitle")
+        else:
+            print("API input fields: title, subtitle")
         print("Leakage guard: no claps, responses, success_score, rank, page position, publication performance, dates, observations, times seen, thumbnail data, or other outcome fields are sent.")
         print(f"Candidate rows after cache/limit: {len(candidates)}")
 

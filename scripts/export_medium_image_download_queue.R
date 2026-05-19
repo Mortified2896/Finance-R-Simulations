@@ -105,6 +105,16 @@ first_existing_download_path <- function(stem) {
   matches[1]
 }
 
+local_path_matches_stem <- function(path, stem) {
+  clean_path <- clean_text_vector(path)
+  clean_stem <- clean_text_vector(stem)
+  if (length(clean_path) == 0 || length(clean_stem) == 0 || is.na(clean_path) || is.na(clean_stem)) {
+    return(FALSE)
+  }
+
+  startsWith(tools::file_path_sans_ext(basename(clean_path)), clean_stem)
+}
+
 dataset <- read.csv(input_path, stringsAsFactors = FALSE, na.strings = c("", "NA"))
 existing_queue <- if (file.exists(output_path)) {
   read.csv(output_path, stringsAsFactors = FALSE, na.strings = c("", "NA"))
@@ -224,7 +234,46 @@ if (nrow(queue) > 0) {
     for (column_name in c("download_status", "local_image_path", "notes")) {
       replacement <- clean_text_vector(existing_queue[[column_name]][match_index])
       fill <- matched & is.na(clean_text_vector(queue[[column_name]])) & !is.na(replacement)
+      if (column_name == "local_image_path") {
+        stem_matches <- mapply(
+          local_path_matches_stem,
+          replacement,
+          queue$image_file_stem,
+          USE.NAMES = FALSE
+        )
+        fill <- fill & stem_matches
+      }
       queue[[column_name]][fill] <- replacement[fill]
+    }
+
+    stale_path <- !is.na(clean_text_vector(queue$local_image_path)) & !mapply(
+      local_path_matches_stem,
+      queue$local_image_path,
+      queue$image_file_stem,
+      USE.NAMES = FALSE
+    )
+    if (any(stale_path)) {
+      queue$download_status[stale_path] <- NA_character_
+      queue$local_image_path[stale_path] <- NA_character_
+      queue$notes[stale_path] <- paste(
+        clean_text_vector(queue$notes[stale_path]),
+        "Cleared stale local path during queue export",
+        sep = "; "
+      )
+      queue$notes[stale_path] <- sub("^NA; ", "", queue$notes[stale_path])
+    }
+
+    missing_download_path <- tolower(clean_text_vector(queue$download_status)) == "downloaded" &
+      is.na(clean_text_vector(queue$local_image_path))
+    missing_download_path[is.na(missing_download_path)] <- FALSE
+    if (any(missing_download_path)) {
+      queue$download_status[missing_download_path] <- NA_character_
+      queue$notes[missing_download_path] <- paste(
+        clean_text_vector(queue$notes[missing_download_path]),
+        "Cleared downloaded status without valid local path during queue export",
+        sep = "; "
+      )
+      queue$notes[missing_download_path] <- sub("^NA; ", "", queue$notes[missing_download_path])
     }
   }
 
