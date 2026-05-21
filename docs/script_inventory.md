@@ -38,14 +38,16 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `audit_medium_thumbnail_mapping.R`: audits dataset-to-queue thumbnail mappings and stored human/API thumbnail paths.
 - `build_validated_thumbnail_manifest_v2.R`: builds the clean manifest-verified thumbnail cohort and valid sample CSV.
 - `audit_validated_thumbnail_experiment_v2.R`: verifies v2 manual/API thumbnail paths and SHA-256 hashes against the manifest.
+- `validate_dimension_v2_thumbnail_queue_mapping.R`: read-only v2 rating integrity check for validated cohort file/hash state and one-to-one queue-to-cohort key mapping.
+- `audit_dimension_v2_thumbnail_provenance_row.R`: read-only row-level provenance trace across cohort CSV, source sample CSVs, DB/article/view rows, queue rows, observation tables, and local file identity.
 - `rate_medium_titles_terminal.R`: blind terminal human-rating workflow.
 - `score_medium_headlines_openai.py`, `analyze_openai_headline_scores.R`, and `analyze_openai_headline_scores_regularized.R`: older headline scoring workflow.
 
 ## Image Queues And Downloads
 
-- `export_medium_image_download_queue.R`: creates the thumbnail image download queue.
+- `export_medium_image_download_queue.R`: creates the thumbnail image download queue and preserves validated per-row local paths from prior runs.
 - `export_medium_body_image_download_queue.R`: creates the body image download queue.
-- `download_medium_images.py`: downloads queued Medium images with robot/crawl-delay awareness.
+- `download_medium_images.py`: downloads queued Medium images with robot/crawl-delay awareness. Duplicate image hashes are allowed; when downloaded bytes match an existing file, the downloader copies that file to the current row's expected `image_file_stem` path and records duplicate metadata so local paths remain unique.
 
 ## Inspection And Tests
 

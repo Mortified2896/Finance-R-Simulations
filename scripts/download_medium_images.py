@@ -13,6 +13,7 @@ import hashlib
 import mimetypes
 import random
 import re
+import shutil
 import time
 from pathlib import Path
 from urllib import robotparser
@@ -203,6 +204,19 @@ def destination_path(row: dict[str, str], output_dir: Path, fallback_index: int,
     return output_dir / f"{safe_stem(row.get('image_file_stem', ''), fallback_index)}{extension}"
 
 
+def destination_path_for_duplicate(
+    row: dict[str, str],
+    output_dir: Path,
+    fallback_index: int,
+    duplicate_path: Path,
+    content_type: str = "",
+) -> Path:
+    extension = extension_from_content_type(content_type) or duplicate_path.suffix or extension_from_url(
+        clean_text(row.get("primary_image_url_for_download") or row.get("body_image_url"))
+    ) or ".img"
+    return output_dir / f"{safe_stem(row.get('image_file_stem', ''), fallback_index)}{extension}"
+
+
 def request_image(url: str, user_agent: str, timeout: int):
     request = Request(
         url,
@@ -341,6 +355,97 @@ def existing_sha_index(rows: list[dict[str, str]]) -> dict[str, str]:
     return index
 
 
+def materialize_duplicate_image(
+    row: dict[str, str],
+    output_dir: Path,
+    fallback_index: int,
+    duplicate_path_value: str,
+    digest: str,
+    content_type: str,
+) -> tuple[Path, str]:
+    duplicate_path = Path(clean_text(duplicate_path_value))
+    if not duplicate_path.exists():
+        raise OSError(f"Duplicate source file does not exist: {duplicate_path}")
+
+    source_digest = sha256_file(duplicate_path)
+    if source_digest != digest:
+        raise OSError(
+            f"Duplicate source SHA-256 mismatch for {duplicate_path}: expected {digest}, got {source_digest}"
+        )
+
+    destination = destination_path_for_duplicate(row, output_dir, fallback_index, duplicate_path, content_type)
+    if destination == duplicate_path:
+        return destination, "duplicate already materialized at expected path"
+
+    if destination.exists():
+        destination_digest = sha256_file(destination)
+        if destination_digest != digest:
+            raise OSError(
+                f"Expected duplicate destination exists with different SHA-256: {destination}"
+            )
+        return destination, "duplicate expected file already existed"
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(duplicate_path, destination)
+    copied_digest = sha256_file(destination)
+    if copied_digest != digest:
+        try:
+            destination.unlink()
+        except OSError:
+            pass
+        raise OSError(f"Copied duplicate SHA-256 mismatch at {destination}")
+    return destination, "copied duplicate content to expected path"
+
+
+def local_path_matches_stem(path_value: str, stem_value: str) -> bool:
+    path_text = clean_text(path_value)
+    stem_text = safe_stem(stem_value, 0)
+    return bool(path_text and stem_text and Path(path_text).stem.startswith(stem_text))
+
+
+def materialize_existing_duplicate_rows(rows: list[dict[str, str]], output_dir: Path) -> int:
+    repaired = 0
+    for index, row in enumerate(rows, start=1):
+        duplicate_path = clean_text(row.get("duplicate_of_path"))
+        if not duplicate_path:
+            continue
+        local_path = clean_text(row.get("local_image_path"))
+        if (
+            clean_text(row.get("download_status")).lower() == "downloaded"
+            and local_path_matches_stem(local_path, clean_text(row.get("image_file_stem")))
+            and Path(local_path).exists()
+        ):
+            continue
+
+        digest = clean_text(row.get("download_sha256"))
+        if not digest:
+            try:
+                digest = sha256_file(Path(duplicate_path))
+            except OSError:
+                continue
+            row["download_sha256"] = digest
+
+        try:
+            destination, duplicate_note = materialize_duplicate_image(
+                row,
+                output_dir,
+                index,
+                duplicate_path,
+                digest,
+                "",
+            )
+        except OSError as error:
+            row["download_status"] = "duplicate_materialization_failed"
+            row["notes"] = str(error)
+            continue
+
+        row["download_status"] = "downloaded"
+        row["local_image_path"] = str(destination)
+        row["notes"] = f"{duplicate_note}; duplicate SHA-256 {digest}"
+        repaired += 1
+    return repaired
+
+
 def format_duration(seconds: float) -> str:
     seconds = max(0, int(round(seconds)))
     hours, remainder = divmod(seconds, 3600)
@@ -470,12 +575,21 @@ def main() -> int:
     rows, fieldnames = read_queue(queue_path)
     if args.url_column not in fieldnames:
         raise SystemExit(f"Queue CSV is missing URL column: {args.url_column}")
+
+    repaired_existing_duplicates = 0
+    if not args.dry_run:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        repaired_existing_duplicates = materialize_existing_duplicate_rows(rows, output_dir)
+        if repaired_existing_duplicates:
+            write_queue(queue_path, rows, fieldnames)
+
     candidates = pending_rows(rows, overwrite=args.overwrite, url_column=args.url_column)
     selected = candidates if args.all else candidates[: args.limit]
 
     print("Medium Image Downloader")
     print("=======================")
     print(f"Queue rows: {len(rows)}")
+    print(f"Existing duplicate aliases materialized: {repaired_existing_duplicates}")
     print(f"Pending rows: {len(candidates)}")
     print(f"Selected rows: {len(selected)}")
     print(f"URL column: {args.url_column}")
@@ -620,16 +734,38 @@ def main() -> int:
                     row["download_sha256"] = digest
                     duplicate_path = sha_index.get(digest)
                     if duplicate_path and not args.overwrite:
-                        row["download_status"] = "duplicate_sha256"
+                        try:
+                            destination, duplicate_note = materialize_duplicate_image(
+                                row,
+                                output_dir,
+                                batch_index,
+                                duplicate_path,
+                                digest,
+                                content_type,
+                            )
+                        except OSError as error:
+                            row["download_status"] = "duplicate_materialization_failed"
+                            row["duplicate_of_path"] = duplicate_path
+                            row["notes"] = str(error)
+                            failed += 1
+                            consecutive_403_failures = 0
+                            consecutive_5xx_failures = 0
+                            row_finished = True
+                            print(f"Failed to materialize duplicate image content: {error}")
+                            break
+
+                        row["download_status"] = "downloaded"
                         row["duplicate_of_path"] = duplicate_path
-                        row["local_image_path"] = duplicate_path
-                        row["notes"] = f"Downloaded bytes matched existing SHA-256 {digest}"
+                        row["local_image_path"] = str(destination)
+                        row["notes"] = f"{duplicate_note}; duplicate SHA-256 {digest}"
+                        sha_index.setdefault(digest, str(destination))
                         duplicate_sha256 += 1
-                        skipped += 1
+                        downloaded += 1
+                        row_downloaded = True
                         consecutive_403_failures = 0
                         consecutive_5xx_failures = 0
                         row_finished = True
-                        print(f"Skipping duplicate image content: {duplicate_path}")
+                        print(f"Materialized duplicate image content: {duplicate_path} -> {destination}")
                         break
 
                     destination = destination_path(row, output_dir, batch_index, content_type)
@@ -780,7 +916,7 @@ def main() -> int:
     print(f"Skipped: {skipped}")
     print(f"Failed: {failed}")
     print(f"Duplicate URLs skipped: {duplicate_urls}")
-    print(f"Duplicate SHA-256 images skipped: {duplicate_sha256}")
+    print(f"Duplicate SHA-256 images materialized: {duplicate_sha256}")
     print(f"Total elapsed: {format_duration(time.monotonic() - started_at)}")
     print(f"Updated queue: {queue_path}")
     return 0

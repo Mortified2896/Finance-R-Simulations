@@ -45,14 +45,14 @@ dimension_fields <- c(
 )
 dimension_numeric_fields <- setdiff(dimension_fields, "ai_low_effort_flag")
 dimension_labels <- c(
-  ai_low_effort_flag = "AI / low-effort flag",
+  ai_low_effort_flag = "AI / low-effort thumbnail",
   visual_hook = "Visual hook",
   title_hook_strength = "Title hook strength",
   emotional_pull_preview = "Emotional pull",
   personal_click_appeal = "Personal click appeal"
 )
 dimension_questions <- c(
-  ai_low_effort_flag = "Does the thumbnail look AI-generated, generic, sloppy, or low-effort?",
+  ai_low_effort_flag = "Does this thumbnail look AI-generated, generic, sloppy, or low-effort?",
   visual_hook = "Does the thumbnail catch attention visually?",
   title_hook_strength = "How strong is the title as a hook?",
   emotional_pull_preview = "Does the full preview create curiosity, concern, aspiration, tension, or emotion?",
@@ -61,7 +61,7 @@ dimension_questions <- c(
 dimension_focus <- c(
   ai_low_effort_flag = "thumbnail only",
   visual_hook = "thumbnail only",
-  title_hook_strength = "title, with subtitle only as context if needed",
+  title_hook_strength = "title only; subtitle and thumbnail are hidden behind placeholders",
   emotional_pull_preview = "full preview: title, subtitle, and thumbnail",
   personal_click_appeal = "full preview: title, subtitle, and thumbnail"
 )
@@ -72,6 +72,22 @@ dimension_scale <- list(
   emotional_pull_preview = c(`1` = "emotionally flat", `2` = "weak", `3` = "moderate", `4` = "strong", `5` = "very strong"),
   personal_click_appeal = c(`1` = "definitely no", `2` = "probably no", `3` = "maybe / unclear", `4` = "probably yes", `5` = "definitely yes")
 )
+thumbnail_only_dimension_fields <- c("ai_low_effort_flag", "visual_hook")
+thumbnail_paused_dimension_fields <- c(
+  "ai_low_effort_flag",
+  "visual_hook",
+  "emotional_pull_preview",
+  "personal_click_appeal"
+)
+active_dimension_fields <- if (is_dimension_v2_mode) {
+  setdiff(dimension_fields, thumbnail_paused_dimension_fields)
+} else {
+  dimension_fields
+}
+text_only_dimension_fields <- if (is_dimension_v2_mode) active_dimension_fields else character()
+title_isolation_dimension_fields <- c("title_hook_strength")
+title_only_placeholder_subtitle <- "[Subtitle hidden for title-only rating]"
+title_only_placeholder_thumbnail_label <- "Placeholder image\nThumbnail hidden for title-only rating"
 target_n_env <- Sys.getenv("HUMAN_RATING_TARGET_N", unset = "")
 default_target_n <- suppressWarnings(as.integer(target_n_env))
 if (!nzchar(target_n_env) || is.na(default_target_n) || default_target_n < 1L) default_target_n <- Inf
@@ -95,6 +111,80 @@ file_sha256 <- function(path) {
   hash <- suppressWarnings(tools::sha256sum(path))
   if (length(hash) == 0 || is.na(hash[[1]])) return(NA_character_)
   unname(hash[[1]])
+}
+
+first_value <- function(row, column, default = NA_character_) {
+  if (is.null(row) || nrow(row) == 0 || !(column %in% names(row))) return(default)
+  value <- row[[column]][[1]]
+  if (length(value) == 0) default else value
+}
+
+displayed_subtitle_for_field <- function(item, field) {
+  if (!is.null(field) && !is.na(field) && field %in% title_isolation_dimension_fields) {
+    return(title_only_placeholder_subtitle)
+  }
+  first_value(item, "subtitle")
+}
+
+displayed_thumbnail_path_for_field <- function(item, field) {
+  if (!is.null(field) && !is.na(field) && field %in% title_isolation_dimension_fields) {
+    return(NA_character_)
+  }
+  first_value(item, "local_thumbnail_path")
+}
+
+v2_render_info <- function(item) {
+  if (!is_dimension_v2_mode || is.null(item) || nrow(item) == 0) {
+    return(list(
+      path = NA_character_,
+      path_abs = NA_character_,
+      manifest_hash = NA_character_,
+      rendered_hash = NA_character_,
+      valid = FALSE,
+      reason = "not_dimensions_v2"
+    ))
+  }
+
+  path <- first_value(item, "local_thumbnail_path", first_value(item, "local_image_path"))
+  path_abs <- first_value(item, "local_thumbnail_path_abs")
+  if (is.na(path_abs)) path_abs <- as_abs_path(path)[[1]]
+  manifest_hash <- first_value(item, "image_sha256", first_value(item, "manifest_image_sha256"))
+  rendered_hash <- first_value(item, "current_image_sha256")
+  exists <- !is.na(path_abs) && nzchar(path_abs) && file.exists(path_abs)
+  manifest_flag <- suppressWarnings(as.logical(first_value(item, "hash_matches_manifest")))
+  computed_hash_matches <- exists &&
+    !is.na(rendered_hash) &&
+    !is.na(manifest_hash) &&
+    identical(rendered_hash, manifest_hash)
+  hash_matches <- exists &&
+    !is.na(manifest_hash) &&
+    !is.na(rendered_hash) &&
+    isTRUE(manifest_flag) &&
+    computed_hash_matches
+  reason <- if (!exists) {
+    "missing_file"
+  } else if (is.na(manifest_hash)) {
+    "missing_manifest_hash"
+  } else if (is.na(rendered_hash)) {
+    "missing_rendered_hash"
+  } else if (is.na(manifest_flag)) {
+    "missing_manifest_hash_flag"
+  } else if (!isTRUE(manifest_flag)) {
+    "manifest_hash_flag_false"
+  } else if (!computed_hash_matches) {
+    "hash_mismatch"
+  } else {
+    "ok"
+  }
+
+  list(
+    path = path,
+    path_abs = path_abs,
+    manifest_hash = manifest_hash,
+    rendered_hash = rendered_hash,
+    valid = hash_matches,
+    reason = reason
+  )
 }
 
 find_project_root <- function() {
@@ -906,7 +996,7 @@ dimension_candidate_counts <- function(con) {
   } else {
     data.frame(active_dimension = character(), total = integer(), completed = integer(), pending = integer())
   }
-  completed_dimensions <- sum(vapply(dimension_fields, function(field) {
+  completed_dimensions <- sum(vapply(active_dimension_fields, function(field) {
     row <- status[status$active_dimension == field, , drop = FALSE]
     nrow(row) > 0 && !is.na(row$pending[[1]]) && row$pending[[1]] == 0 && row$total[[1]] > 0
   }, logical(1)))
@@ -914,7 +1004,7 @@ dimension_candidate_counts <- function(con) {
     total_cohort_rows = total_cohort_rows,
     usable_local_thumbnails = nrow(candidates),
     completed_dimensions = completed_dimensions,
-    total_dimensions = length(dimension_fields),
+    total_dimensions = length(active_dimension_fields),
     cohort_source = if (nrow(candidates) > 0) candidates$cohort_source[[1]] else if (file.exists(dimension_cohort_path)) "all_cohort_csv" else "human_preview_ratings_fallback"
   )
 }
@@ -1005,17 +1095,6 @@ load_current_item <- function(con, session_id) {
        WHERE rating_session_id = ? AND queue_position = ?",
       params = list(item$shown_at[[1]], session_id, item$queue_position[[1]])
     )
-  }
-
-  if (is_dimension_v2_mode) {
-    candidates <- load_dimension_candidates(con, exclude_rated = FALSE)
-    if (nrow(candidates) == 0) return(NULL)
-    candidate_keys <- dimension_row_keys(candidates)
-    item_key <- dimension_row_key(item$canonical_article_key[[1]], item$article_id[[1]], item$medium_post_id[[1]])
-    match_index <- match(item_key, candidate_keys)
-    if (is.na(match_index)) return(NULL)
-    details <- candidates[match_index, , drop = FALSE]
-    return(cbind(item, details[1, , drop = FALSE]))
   }
 
   details <- dbGetQuery(con, "
@@ -1248,7 +1327,7 @@ ensure_dimension_pass_queue <- function(con, active_dimension, target_n = Inf) {
 }
 
 ensure_dimension_pass_queues <- function(con, target_n = Inf) {
-  for (field in dimension_fields) ensure_dimension_pass_queue(con, field, target_n = target_n)
+  for (field in active_dimension_fields) ensure_dimension_pass_queue(con, field, target_n = target_n)
   invisible(TRUE)
 }
 
@@ -1267,7 +1346,7 @@ dimension_queue_counts <- function(con, active_dimension) {
 
 dimension_pass_status <- function(con) {
   ensure_dimension_pass_queues(con, target_n = default_target_n)
-  counts <- do.call(rbind, lapply(dimension_fields, function(field) {
+  counts <- do.call(rbind, lapply(active_dimension_fields, function(field) {
     c <- dimension_queue_counts(con, field)
     data.frame(
       active_dimension = field,
@@ -1277,7 +1356,7 @@ dimension_pass_status <- function(con) {
       skipped = ifelse(is.na(c$skipped[[1]]), 0L, c$skipped[[1]])
     )
   }))
-  counts$dimension_index <- match(counts$active_dimension, dimension_fields)
+  counts$dimension_index <- match(counts$active_dimension, active_dimension_fields)
   counts
 }
 
@@ -1290,7 +1369,7 @@ first_incomplete_dimension <- function(con) {
 
 next_incomplete_dimension_after <- function(con, active_dimension) {
   status <- dimension_pass_status(con)
-  current_index <- match(active_dimension, dimension_fields)
+  current_index <- match(active_dimension, active_dimension_fields)
   incomplete <- status[status$pending > 0 & status$dimension_index > current_index, , drop = FALSE]
   if (nrow(incomplete) == 0) return(NA_character_)
   incomplete$active_dimension[[which.min(incomplete$dimension_index)]]
@@ -1319,6 +1398,56 @@ load_current_dimension_item <- function(con, active_dimension) {
        WHERE rating_mode = ? AND active_dimension = ? AND queue_position = ?",
       params = list(item$shown_at[[1]], rating_mode, active_dimension, item$queue_position[[1]])
     )
+  }
+
+  if (is_dimension_v2_mode) {
+    candidates <- load_dimension_candidates(con, exclude_rated = FALSE)
+    if (nrow(candidates) == 0) return(NULL)
+    candidate_keys <- dimension_row_keys(candidates)
+    item_key <- dimension_row_key(item$canonical_article_key[[1]], item$article_id[[1]], item$medium_post_id[[1]])
+    match_index <- match(item_key, candidate_keys)
+    if (is.na(match_index)) return(NULL)
+    candidate <- candidates[match_index, , drop = FALSE]
+    current_item <- data.frame(
+      rating_mode = item$rating_mode[[1]],
+      active_dimension = item$active_dimension[[1]],
+      queue_position = item$queue_position[[1]],
+      article_id = item$article_id[[1]],
+      medium_post_id = item$medium_post_id[[1]],
+      canonical_article_key = item$canonical_article_key[[1]],
+      status = item$status[[1]],
+      shown_at = item$shown_at[[1]],
+      completed_at = item$completed_at[[1]],
+      seconds_spent = item$seconds_spent[[1]],
+      title = candidate$title[[1]],
+      subtitle = candidate$subtitle[[1]],
+      thumbnail_url = candidate$thumbnail_url[[1]],
+      local_image_path = candidate$local_image_path[[1]],
+      local_thumbnail_path = candidate$local_thumbnail_path[[1]],
+      local_thumbnail_path_abs = candidate$local_thumbnail_path_abs[[1]],
+      image_sha256 = candidate$image_sha256[[1]],
+      current_image_sha256 = candidate$current_image_sha256[[1]],
+      hash_matches_manifest = candidate$hash_matches_manifest[[1]],
+      thumbnail_status = candidate$thumbnail_status[[1]],
+      cohort_source = if ("cohort_source" %in% names(candidate)) candidate$cohort_source[[1]] else NA_character_,
+      render_source = "validated_manifest_v2",
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+    info <- v2_render_info(current_item)
+    message(sprintf(
+      "dimensions_v2 render audit | queue_position=%s | article_id=%s | medium_post_id=%s | canonical_article_key=%s | local_thumbnail_path=%s | manifest image_sha256=%s | rendered file path=%s | rendered file sha256=%s | hashes_match=%s",
+      first_value(current_item, "queue_position"),
+      first_value(current_item, "article_id"),
+      first_value(current_item, "medium_post_id"),
+      first_value(current_item, "canonical_article_key"),
+      info$path,
+      info$manifest_hash,
+      info$path_abs,
+      info$rendered_hash,
+      isTRUE(info$valid)
+    ))
+    return(current_item)
   }
 
   details <- dbGetQuery(con, "
@@ -1402,11 +1531,16 @@ save_current_dimension_rating <- function(con, item, active_dimension, value = N
   if (!isTRUE(skipped) && active_dimension == "ai_low_effort_flag") {
     if (!(rating_value %in% c("yes", "unsure", "no"))) return(invisible(FALSE))
   }
+  shown_subtitle <- displayed_subtitle_for_field(item, active_dimension)
+  shown_thumbnail_path <- displayed_thumbnail_path_for_field(item, active_dimension)
   shown_image_sha256 <- if (is_dimension_v2_mode) {
-    hash <- if ("current_image_sha256" %in% names(item)) item$current_image_sha256[[1]] else file_sha256(as_abs_path(item$local_thumbnail_path[[1]])[[1]])
-    manifest_hash <- if ("image_sha256" %in% names(item)) item$image_sha256[[1]] else NA_character_
-    if (is.na(hash) || is.na(manifest_hash) || !identical(hash, manifest_hash)) return(invisible(FALSE))
-    hash
+    if (active_dimension %in% text_only_dimension_fields) {
+      NA_character_
+    } else {
+    info <- v2_render_info(item)
+    if (!isTRUE(info$valid)) return(invisible(FALSE))
+    info$rendered_hash
+    }
   } else {
     NA_character_
   }
@@ -1441,8 +1575,8 @@ save_current_dimension_rating <- function(con, item, active_dimension, value = N
             rating_mode,
             manifest_version,
             item$title[[1]],
-            item$subtitle[[1]],
-            item$local_thumbnail_path[[1]],
+            shown_subtitle,
+            shown_thumbnail_path,
             shown_image_sha256,
             rating_value,
             note_value[[1]],
@@ -1474,8 +1608,8 @@ save_current_dimension_rating <- function(con, item, active_dimension, value = N
             interface_version,
             rating_mode,
             item$title[[1]],
-            item$subtitle[[1]],
-            item$local_thumbnail_path[[1]],
+            shown_subtitle,
+            shown_thumbnail_path,
             rating_value,
             note_value[[1]],
             if (isTRUE(skipped)) 1L else 0L,
@@ -1504,8 +1638,8 @@ save_current_dimension_rating <- function(con, item, active_dimension, value = N
             item$queue_position[[1]],
             manifest_version,
             item$title[[1]],
-            item$subtitle[[1]],
-            item$local_thumbnail_path[[1]],
+            shown_subtitle,
+            shown_thumbnail_path,
             shown_image_sha256,
             rating_value,
             note_value[[1]],
@@ -1531,8 +1665,8 @@ save_current_dimension_rating <- function(con, item, active_dimension, value = N
           params = list(
             item$queue_position[[1]],
             item$title[[1]],
-            item$subtitle[[1]],
-            item$local_thumbnail_path[[1]],
+            shown_subtitle,
+            shown_thumbnail_path,
             rating_value,
             note_value[[1]],
             if (isTRUE(skipped)) 1L else 0L,
@@ -1683,6 +1817,35 @@ ui <- fluidPage(
       .progress-line .current { color: var(--green); font-weight: 750; }
       .mode-line { margin-top: 5px; color: var(--muted); font-size: 12px; }
       .mode-line strong { color: var(--green); font-weight: 650; }
+      .v2-debug-banner {
+        max-width: 760px;
+        margin-top: 8px;
+        padding: 8px 10px;
+        border: 1px solid #b8d8ba;
+        border-radius: 6px;
+        background: #f4fbf4;
+        color: #3f6f42;
+        font-size: 11px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+      .v2-debug-banner.error {
+        border-color: #d95f5f;
+        background: #fff5f5;
+        color: #a83232;
+      }
+      .v2-debug-banner strong { color: inherit; font-weight: 700; }
+      .v2-paused-warning {
+        max-width: 760px;
+        margin-top: 8px;
+        padding: 9px 11px;
+        border: 1px solid #e0c36f;
+        border-radius: 6px;
+        background: #fff9e8;
+        color: #6f5600;
+        font-size: 12px;
+        line-height: 1.35;
+      }
       .tabs { display: flex; gap: 38px; border-bottom: 1px solid var(--line); margin-top: 14px; max-width: 760px; box-sizing: border-box; }
       .tab { padding-bottom: 8px; color: var(--muted); font-size: 15px; }
       .tab.active { color: var(--ink); font-weight: 650; border-bottom: 2px solid var(--ink); }
@@ -1716,7 +1879,50 @@ ui <- fluidPage(
         width: 170px; height: 113px; border-radius: 1px; background: #fff; border: 1px dashed #cfcfcf;
         box-sizing: border-box; color: #777; font-size: 11px; display: grid; place-items: center; text-align: center;
         padding: 8px;
+        white-space: pre-line;
       }
+      .thumbnail-placeholder.error {
+        border-color: #d95f5f;
+        color: #a83232;
+        background: #fff5f5;
+      }
+      .article-card.thumbnail-only {
+        grid-template-columns: 170px;
+        justify-content: center;
+        align-items: center;
+        max-width: 760px;
+        padding-top: 18px;
+      }
+      .article-card.thumbnail-only .thumbnail-wrap { justify-content: center; }
+      .article-card.thumbnail-only .thumbnail-wrap .shiny-image-output,
+      .article-card.thumbnail-only .thumbnail-wrap img,
+      .article-card.thumbnail-only .thumbnail-placeholder {
+        width: 170px !important;
+        height: 113px !important;
+      }
+      .article-card.text-only {
+        grid-template-columns: minmax(0, 1fr);
+        max-width: 760px;
+      }
+      .article-card.text-only .article-title {
+        font-size: 30px;
+        line-height: 1.12;
+        margin-bottom: 10px;
+      }
+      .article-card.text-only .article-subtitle {
+        font-size: 20px;
+        line-height: 1.35;
+      }
+      .dimension-verification-title {
+        color: #9a9a9a;
+        font-size: 12px;
+        line-height: 1.25;
+        font-weight: 400;
+        max-width: 360px;
+        cursor: copy;
+        user-select: text;
+      }
+      .dimension-verification-title.copied { color: var(--green); }
       .thumbnail-invalid-label { max-width: 130px; }
       .rating-panel {
         border: 1px solid var(--line);
@@ -1786,9 +1992,25 @@ ui <- fluidPage(
       .dimension-pass-question { font-size: 15px; line-height: 1.28; font-weight: 650; }
       .dimension-pass-focus { color: var(--muted); font-size: 13px; }
       .dimension-scale-list { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 8px 0 10px; }
-      .dimension-scale-item { border: 1px solid var(--line); border-radius: 7px; padding: 7px 8px; min-height: 46px; font-size: 12px; line-height: 1.2; }
+      .dimension-scale-item {
+        border: 1px solid var(--line); border-radius: 7px; padding: 7px 8px; min-height: 46px;
+        font-size: 12px; line-height: 1.2; text-align: left; box-shadow: none;
+      }
       .dimension-scale-item strong { display: block; color: var(--green); font-size: 13px; margin-bottom: 2px; }
+      .dimension-scale-shortcut { display: block; color: #a0a0a0; font-size: 10px; font-weight: 500; margin-top: 4px; }
+      .dimension-scale-choice { width: 100%; background: #fff; cursor: pointer; transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
+      .dimension-scale-choice:hover:not(:disabled) { border-color: #bdbdbd; background: #fafafa; }
+      .dimension-scale-choice:disabled { cursor: not-allowed; opacity: .55; }
+      .dimension-scale-choice.dimension-confirm,
+      .dimension-scale-choice.selected,
+      .dimension-scale-choice.dimension-confirm strong,
+      .dimension-scale-choice.selected strong { border-color: var(--green); color: #fff; }
+      .dimension-scale-choice.dimension-confirm .dimension-scale-shortcut,
+      .dimension-scale-choice.selected .dimension-scale-shortcut { color: rgba(255,255,255,.72); }
+      .dimension-scale-choice.dimension-confirm,
+      .dimension-scale-choice.selected { background: var(--green); }
       .dimension-flag-scale { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .dimension-flag-scale .dimension-scale-item strong { color: var(--ink); }
       .btn-default { border-color: #d8d8d8; background: #fff; color: var(--ink); }
       .btn-default:hover { border-color: #bdbdbd; background: #fafafa; }
       .shortcut-copy { color: var(--muted); font-size: 13px; }
@@ -1819,6 +2041,8 @@ ui <- fluidPage(
         .sidebar { display: none; }
         .main { padding: 28px 18px; }
         .article-card { grid-template-columns: 1fr; gap: 18px; padding: 24px 0 26px; }
+        .article-card.thumbnail-only { grid-template-columns: 170px; }
+        .article-card.text-only { grid-template-columns: 1fr; }
         .thumbnail-wrap { justify-content: flex-start; }
         .thumbnail-wrap .shiny-image-output,
         .thumbnail-wrap img,
@@ -1864,6 +2088,28 @@ ui <- fluidPage(
         }, 23);
       }
 
+      function copyVerificationTitle(element) {
+        if (!element) return;
+        const title = element.getAttribute('data-copy-title') || element.textContent || '';
+        const done = function() {
+          element.classList.add('copied');
+          const original = element.getAttribute('data-original-title') || title;
+          element.setAttribute('data-original-title', original);
+          element.textContent = 'Copied title';
+          window.setTimeout(function() {
+            element.classList.remove('copied');
+            element.textContent = original;
+          }, 850);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(title).then(done).catch(function() {
+            window.prompt('Copy title', title);
+          });
+        } else {
+          window.prompt('Copy title', title);
+        }
+      }
+
       function alignSideCardsToRatingPanel() {
         const ratingPanel = document.querySelector('.rating-panel');
         const sidebar = document.querySelector('.sidebar');
@@ -1891,6 +2137,14 @@ ui <- fluidPage(
       window.setInterval(alignSideCardsToRatingPanel, 300);
 
       document.addEventListener('click', function(event) {
+        const verificationTitle = event.target && event.target.closest ? event.target.closest('.dimension-verification-title') : null;
+        if (verificationTitle) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          copyVerificationTitle(verificationTitle);
+          return;
+        }
         const dimensionButton = event.target && event.target.closest ? event.target.closest('.dimension-choice') : null;
         if (dimensionButton) {
           event.preventDefault();
@@ -1956,7 +2210,7 @@ ui <- fluidPage(
             event.preventDefault();
             const keyField = document.querySelector('.dimension-choice')?.getAttribute('data-field');
             const numericValueMap = {a: '1', s: '2', d: '3', f: '4', j: '5'};
-            const flagValueMap = {a: 'yes', s: 'unsure', j: 'no'};
+            const flagValueMap = {s: 'yes', d: 'unsure', j: 'no'};
             const numericButton = document.querySelector('.dimension-choice[data-value=\"' + numericValueMap[letter] + '\"]');
             const flagButton = document.querySelector('.dimension-choice[data-value=\"' + flagValueMap[letter] + '\"]');
             const targetButton = numericButton || flagButton;
@@ -2047,6 +2301,8 @@ ui <- fluidPage(
       h1("Medium Preview Rating"),
       htmlOutput("progress_line"),
       htmlOutput("mode_line"),
+      uiOutput("v2_paused_warning"),
+      uiOutput("v2_debug_banner"),
       div(class = "tabs", div(class = "tab active", "For you"), div(class = "tab", "Featured")),
       uiOutput("article_area"),
       uiOutput("rating_panel")
@@ -2115,7 +2371,7 @@ server <- function(input, output, session) {
       total <- ifelse(is.na(c$total[[1]]), 0, c$total[[1]])
       field <- active_dimension()
       if (is.na(field)) {
-        HTML(sprintf("All <span class='current'>%s</span> dimension passes complete", length(dimension_fields)))
+        HTML(sprintf("All <span class='current'>%s</span> active dimension passes complete", length(active_dimension_fields)))
       } else if (completed >= total && total > 0) {
         HTML(sprintf("Dimension complete: <span class='current'>%s</span> · %s / %s", dimension_labels[[field]], completed, total))
       } else {
@@ -2136,6 +2392,19 @@ server <- function(input, output, session) {
     if (is_dimension_mode) {
       field <- active_dimension()
       active_label <- if (is.na(field)) "all complete" else field
+      if (is_dimension_v2_mode) {
+        return(HTML(sprintf(
+          "<div class='mode-line'><strong>Mode:</strong> %s · active dimension %s · cohort rows %s · active dimensions %s · dimension progress %s done / %s pending · overall %s / %s active dimensions complete</div>",
+          rating_mode,
+          active_label,
+          stats$total_cohort_rows[[1]],
+          stats$total_dimensions[[1]],
+          completed,
+          pending,
+          stats$completed_dimensions[[1]],
+          stats$total_dimensions[[1]]
+        )))
+      }
       HTML(sprintf(
         "<div class='mode-line'><strong>Mode:</strong> %s · active dimension %s · cohort rows %s · usable local thumbnails %s · dimension progress %s done / %s pending · overall %s / %s dimensions complete</div>",
         rating_mode,
@@ -2157,6 +2426,53 @@ server <- function(input, output, session) {
         pending
       ))
     }
+  })
+
+  output$v2_paused_warning <- renderUI({
+    if (!is_dimension_v2_mode) return(NULL)
+    NULL
+  })
+
+  output$v2_debug_banner <- renderUI({
+    if (!is_dimension_v2_mode) return(NULL)
+    item <- current()
+    field <- active_dimension()
+    c <- counts()
+    completed <- ifelse(is.na(c$completed[[1]]), 0, c$completed[[1]])
+    total <- ifelse(is.na(c$total[[1]]), 0, c$total[[1]])
+    if (is.na(field) || (total > 0 && completed >= total)) return(NULL)
+    if (is.null(item)) {
+      return(div(
+        class = "v2-debug-banner error",
+        strong("dimensions_v2 manifest render debug: "),
+        "no current manifest item"
+      ))
+    }
+    info <- v2_render_info(item)
+    local_basename <- basename(first_value(item, "local_thumbnail_path_abs", first_value(item, "local_thumbnail_path")))
+    short_hash <- function(x) {
+      value <- clean_text(x)
+      if (length(value) == 0 || is.na(value[[1]])) return("NA")
+      substr(value[[1]], 1, 12)
+    }
+    div(
+      class = paste("v2-debug-banner", if (isTRUE(info$valid)) "" else "error"),
+      strong("dimensions_v2 manifest render debug: "),
+      paste0(
+        "queue_position=", first_value(item, "queue_position"),
+        " | article_id=", first_value(item, "article_id"),
+        " | medium_post_id=", first_value(item, "medium_post_id"),
+        " | canonical_article_key=", first_value(item, "canonical_article_key"),
+        " | image=", local_basename,
+        " | thumbnail_status=", first_value(item, "thumbnail_status"),
+        " | hash_matches_manifest=", first_value(item, "hash_matches_manifest"),
+        " | image_sha256=", short_hash(first_value(item, "image_sha256")),
+        " | current_image_sha256=", short_hash(first_value(item, "current_image_sha256")),
+        " | render_valid=", isTRUE(info$valid),
+        " | render_reason=", info$reason,
+        " | active_dimension=", field
+      )
+    )
   })
 
   output$sidebar_progress <- renderUI({
@@ -2263,16 +2579,61 @@ server <- function(input, output, session) {
       return(div(class = "done-state", h2("Session complete"), p("All queued previews have been rated or skipped.")))
     }
 
+    field <- if (is_dimension_mode) active_dimension() else NA_character_
+    render_info <- if (is_dimension_v2_mode) v2_render_info(item) else NULL
     thumbnail_path <- item$local_thumbnail_path[[1]]
+    thumbnail_path_abs <- if (is_dimension_v2_mode) {
+      render_info$path_abs
+    } else if ("local_thumbnail_path_abs" %in% names(item)) {
+      item$local_thumbnail_path_abs[[1]]
+    } else {
+      as_abs_path(thumbnail_path)[[1]]
+    }
     thumbnail_status <- if ("thumbnail_status" %in% names(item)) item$thumbnail_status[[1]] else NA_character_
-    has_thumbnail <- identical(thumbnail_status, "valid") && !is.na(thumbnail_path) && file.exists(thumbnail_path)
-    thumbnail_ui <- if (has_thumbnail) {
+    has_thumbnail <- if (is_dimension_v2_mode) {
+      isTRUE(render_info$valid)
+    } else {
+      identical(thumbnail_status, "valid") && !is.na(thumbnail_path_abs) && file.exists(thumbnail_path_abs)
+    }
+    isolate_title_field <- is_dimension_mode && !is.na(field) && field %in% title_isolation_dimension_fields
+    thumbnail_ui <- if (isolate_title_field) {
+      div(class = "thumbnail-placeholder", div(class = "thumbnail-invalid-label", title_only_placeholder_thumbnail_label))
+    } else if (has_thumbnail) {
       imageOutput("thumbnail", width = "170px", height = "113px")
+    } else if (is_dimension_v2_mode) {
+      missing_reason <- render_info$reason %in% c("missing_file", "missing_manifest_hash", "missing_rendered_hash")
+      placeholder_label <- if (isTRUE(missing_reason)) {
+        "Thumbnail missing: validated manifest image unavailable"
+      } else {
+        "Thumbnail blocked: manifest/hash mismatch"
+      }
+      div(class = "thumbnail-placeholder error", div(class = "thumbnail-invalid-label", placeholder_label))
     } else {
       div(class = "thumbnail-placeholder", div(class = "thumbnail-invalid-label", "Invalid or missing thumbnail"))
     }
 
-    subtitle <- item$subtitle[[1]]
+    subtitle <- displayed_subtitle_for_field(item, field)
+    thumbnail_only <- is_dimension_mode && !is.na(field) && field %in% thumbnail_only_dimension_fields
+    text_only <- is_dimension_mode && !is.na(field) && field %in% text_only_dimension_fields
+
+    if (text_only) {
+      return(div(
+        class = "article-card",
+        div(
+          h2(class = "article-title", item$title[[1]]),
+          if (!is.na(subtitle)) p(class = "article-subtitle", subtitle)
+        ),
+        div(class = "thumbnail-wrap", thumbnail_ui)
+      ))
+    }
+
+    if (thumbnail_only) {
+      return(div(
+        class = "article-card thumbnail-only",
+        div(class = "thumbnail-wrap", thumbnail_ui)
+      ))
+    }
+
     div(
       class = "article-card",
       div(
@@ -2286,9 +2647,20 @@ server <- function(input, output, session) {
   output$thumbnail <- renderImage({
     item <- current()
     req(!is.null(item))
-    path <- item$local_thumbnail_path[[1]]
-    req(!is.na(path), file.exists(path))
-    list(src = normalizePath(path, mustWork = TRUE), alt = "", width = 170, height = 113)
+    if (is_dimension_v2_mode) {
+      info <- v2_render_info(item)
+      req(isTRUE(info$valid))
+      path_abs <- info$path_abs
+    } else {
+      path <- item$local_thumbnail_path[[1]]
+      path_abs <- if ("local_thumbnail_path_abs" %in% names(item)) {
+      item$local_thumbnail_path_abs[[1]]
+      } else {
+        as_abs_path(path)[[1]]
+      }
+    }
+    req(!is.na(path_abs), file.exists(path_abs))
+    list(src = normalizePath(path_abs, mustWork = TRUE), alt = "", width = 170, height = 113)
   }, deleteFile = FALSE)
 
   output$rating_panel <- renderUI({
@@ -2334,7 +2706,7 @@ server <- function(input, output, session) {
         div(class = "dimension-pass-header",
             div(class = "dimension-pass-kicker", "Dimension pass complete"),
             div(class = "dimension-pass-name", "All dimensions complete"),
-            div(class = "dimension-pass-focus", sprintf("Overall dimension progress: %s / %s dimensions complete", length(dimension_fields), length(dimension_fields)))
+            div(class = "dimension-pass-focus", sprintf("Overall active dimension progress: %s / %s dimensions complete", length(active_dimension_fields), length(active_dimension_fields)))
         )
       ))
     }
@@ -2352,7 +2724,12 @@ server <- function(input, output, session) {
       ))
     }
 
-    numeric_buttons <- function(field) {
+    item <- current()
+    can_rate_current <- !is_dimension_v2_mode ||
+      field %in% text_only_dimension_fields ||
+      (!is.null(item) && isTRUE(v2_render_info(item)$valid))
+
+    numeric_buttons <- function(field, enabled = TRUE) {
       div(
         class = "dimension-buttons",
         lapply(1:5, function(score) {
@@ -2361,14 +2738,15 @@ server <- function(input, output, session) {
             class = "btn dimension-choice",
             `data-field` = field,
             `data-value` = as.character(score),
+            disabled = if (isTRUE(enabled)) NULL else "disabled",
             as.character(score)
           )
         })
       )
     }
-    flag_buttons <- function(field) {
+    flag_buttons <- function(field, enabled = TRUE) {
       choices <- c("yes", "unsure", "no")
-      shortcuts <- c(yes = "A", unsure = "S", no = "J")
+      shortcuts <- c(yes = "D", unsure = "F", no = "J")
       div(
         class = "dimension-buttons",
         lapply(choices, function(choice) {
@@ -2377,6 +2755,7 @@ server <- function(input, output, session) {
             class = "btn dimension-choice flag-choice",
             `data-field` = field,
             `data-value` = choice,
+            disabled = if (isTRUE(enabled)) NULL else "disabled",
             span(class = "dimension-choice-label", choice),
             span(class = "dimension-choice-shortcut", shortcuts[[choice]])
           )
@@ -2385,36 +2764,67 @@ server <- function(input, output, session) {
     }
     scale_ui <- function(field) {
       scale <- dimension_scale[[field]]
+      scale_shortcuts <- c("1" = "A=1", "2" = "S=2", "3" = "D=3", "4" = "F=4", "5" = "J=5")
+      flag_shortcuts <- c(yes = "S", unsure = "D", no = "J")
       div(
         class = paste("dimension-scale-list", if (field == "ai_low_effort_flag") "dimension-flag-scale" else ""),
         lapply(names(scale), function(name) {
-          div(class = "dimension-scale-item", strong(name), scale[[name]])
+          if (field == "ai_low_effort_flag") {
+            tags$button(
+              type = "button",
+              class = "btn dimension-scale-item dimension-scale-choice dimension-choice",
+              `data-field` = field,
+              `data-value` = as.character(name),
+              disabled = if (isTRUE(can_rate_current)) NULL else "disabled",
+              strong(scale[[name]]),
+              span(class = "dimension-scale-shortcut", flag_shortcuts[[as.character(name)]])
+            )
+          } else {
+            tags$button(
+              type = "button",
+              class = "btn dimension-scale-item dimension-scale-choice dimension-choice",
+              `data-field` = field,
+              `data-value` = as.character(name),
+              disabled = if (isTRUE(can_rate_current)) NULL else "disabled",
+              strong(name),
+              span(scale[[name]]),
+              if (as.character(name) %in% names(scale_shortcuts)) {
+                span(class = "dimension-scale-shortcut", scale_shortcuts[[as.character(name)]])
+              }
+            )
+          }
         })
       )
+    }
+
+    verification_title <- if (
+      !is.null(item) &&
+        field %in% thumbnail_only_dimension_fields &&
+        "title" %in% names(item) &&
+        !is.na(item$title[[1]])
+    ) {
+      div(
+        class = "dimension-verification-title",
+        `data-copy-title` = item$title[[1]],
+        title = "Click to copy title",
+        item$title[[1]]
+      )
+    } else {
+      NULL
     }
 
     div(
       class = "rating-panel",
       div(
         class = "dimension-pass-header",
-        div(class = "dimension-pass-kicker", "Active dimension"),
-        div(class = "dimension-pass-name", field),
-        div(class = "dimension-pass-question", dimension_questions[[field]]),
+        div(class = "dimension-pass-kicker", "Dimension pass"),
+        div(class = "dimension-pass-name", paste("Active dimension:", dimension_labels[[field]])),
         div(class = "dimension-pass-focus", strong("Focus: "), dimension_focus[[field]]),
-        div(class = "dimension-pass-focus", sprintf("Dimension progress: %s / %s · Overall dimension progress: %s / %s dimensions complete", completed, total, candidate_stats()$completed_dimensions[[1]], length(dimension_fields)))
+        div(class = "dimension-pass-question", strong("Question: "), dimension_questions[[field]]),
+        div(class = "dimension-pass-focus", sprintf("Dimension progress: %s / %s · Overall active dimension progress: %s / %s dimensions complete", completed, total, candidate_stats()$completed_dimensions[[1]], candidate_stats()$total_dimensions[[1]])),
+        verification_title
       ),
       scale_ui(field),
-      div(
-        class = "dimension-rubric",
-        div(
-          class = "dimension-row active",
-          div(
-            div(class = "dimension-name", dimension_labels[[field]]),
-            div(class = "dimension-question", "Score only this dimension for the current pass.")
-          ),
-          if (field %in% dimension_numeric_fields) numeric_buttons(field) else flag_buttons(field)
-        )
-      ),
       div(
         class = "note-row",
         textAreaInput(
@@ -2432,7 +2842,7 @@ server <- function(input, output, session) {
         div(
           class = "shortcut-copy",
           if (field == "ai_low_effort_flag") {
-            "A=yes, S=unsure, J=no · 1=yes, 2=unsure, 3=no · Space=skip, U=undo, N=note"
+            "S=yes, D=unsure, J=no · 1=yes, 2=unsure, 3=no · Space=skip, U=undo, N=note"
           } else {
             "A=1, S=2, D=3, F=4, J=5 · 1-5 also work · Space=skip, U=undo, N=note"
           }
@@ -2499,6 +2909,13 @@ server <- function(input, output, session) {
     if (!identical(field, active_dimension())) return(invisible(NULL))
     item <- current()
     if (is.null(item)) return(invisible(NULL))
+    if (
+      is_dimension_v2_mode &&
+        !(field %in% text_only_dimension_fields) &&
+        !isTRUE(v2_render_info(item)$valid)
+    ) {
+      return(invisible(NULL))
+    }
     save_current_dimension_rating(
       con,
       item,
@@ -2527,7 +2944,7 @@ server <- function(input, output, session) {
       score <- if (key %in% names(numeric_map)) numeric_map[[key]] else suppressWarnings(as.integer(key))
       apply_dimension_value(field, score)
     } else {
-      flag_map <- c(a = "yes", s = "unsure", j = "no", `1` = "yes", `2` = "unsure", `3` = "no")
+      flag_map <- c(s = "yes", d = "unsure", j = "no", `1` = "yes", `2` = "unsure", `3` = "no")
       if (key %in% names(flag_map)) apply_dimension_value(field, flag_map[[key]])
     }
   }, ignoreInit = TRUE)

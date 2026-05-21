@@ -212,13 +212,17 @@ if (nrow(image_rows) > 0) {
     image_file_stem = character(),
     download_status = character(),
     local_image_path = character(),
+    download_sha256 = character(),
+    duplicate_of_path = character(),
     notes = character(),
     stringsAsFactors = FALSE
   )
 }
 
 if (nrow(queue) > 0) {
-  for (column_name in c("download_status", "local_image_path", "notes")) {
+  queue_state_columns <- c("download_status", "local_image_path", "download_sha256", "duplicate_of_path", "notes")
+
+  for (column_name in queue_state_columns) {
     if (!(column_name %in% names(queue))) {
       queue[[column_name]] <- ""
     }
@@ -231,7 +235,10 @@ if (nrow(queue) > 0) {
     match_index <- match(queue$normalized_image_url, existing_queue$normalized_image_url)
     matched <- !is.na(match_index)
 
-    for (column_name in c("download_status", "local_image_path", "notes")) {
+    for (column_name in queue_state_columns) {
+      if (!(column_name %in% names(existing_queue))) {
+        next
+      }
       replacement <- clean_text_vector(existing_queue[[column_name]][match_index])
       fill <- matched & is.na(clean_text_vector(queue[[column_name]])) & !is.na(replacement)
       if (column_name == "local_image_path") {

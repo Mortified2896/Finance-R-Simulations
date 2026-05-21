@@ -73,6 +73,7 @@ echo "Medium Missing Image Downloader"
 echo "==============================="
 echo
 echo "This rebuilds the image queues, then downloads only rows not already marked downloaded."
+echo "Duplicate thumbnail image content is copied to each row's expected local path."
 echo "Thumbnail images come from the title prediction dataset."
 echo "Body images come from imported article text snapshots."
 echo "Configure the run before it starts. Press Enter to keep each default."
@@ -204,15 +205,15 @@ start_awake_guard
 trap stop_awake_guard EXIT INT TERM
 
 echo
-echo "1/5 Building title prediction dataset for thumbnail URLs..."
+echo "1/6 Building title prediction dataset for thumbnail URLs..."
 run_or_stop Rscript scripts/build_medium_title_prediction_dataset.R
 
 echo
-echo "2/5 Exporting thumbnail download queue..."
+echo "2/6 Exporting thumbnail download queue..."
 run_or_stop Rscript scripts/export_medium_image_download_queue.R
 
 echo
-echo "3/5 Downloading missing thumbnails, count=$thumbnail_limit_display..."
+echo "3/6 Downloading missing thumbnails, count=$thumbnail_limit_display..."
 run_or_stop python3 scripts/download_medium_images.py \
   --input data/analysis/medium_images/medium_image_download_queue.csv \
   --output-dir data/analysis/medium_images/downloaded \
@@ -228,11 +229,15 @@ run_or_stop python3 scripts/download_medium_images.py \
   --max-bytes "$max_bytes"
 
 echo
-echo "4/5 Exporting article-body image download queue..."
+echo "4/6 Rebuilding validated thumbnail v2 manifest..."
+run_or_stop Rscript scripts/build_validated_thumbnail_manifest_v2.R
+
+echo
+echo "5/6 Exporting article-body image download queue..."
 run_or_stop Rscript scripts/export_medium_body_image_download_queue.R
 
 echo
-echo "5/5 Downloading missing article-body images, count=$body_limit_display..."
+echo "6/6 Downloading missing article-body images, count=$body_limit_display..."
 run_or_stop python3 scripts/download_medium_images.py \
   --input data/analysis/medium_body_images/medium_body_image_download_queue.csv \
   --output-dir data/analysis/medium_body_images/downloaded \
