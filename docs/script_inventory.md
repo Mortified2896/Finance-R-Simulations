@@ -35,6 +35,9 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `score_medium_thumbnails_api_v1.py`: thumbnail API scoring.
 - `analyze_medium_thumbnail_api_scores_v1.R`: evaluates stored thumbnail API scores.
 - `audit_medium_thumbnail_assets_v1.R`: checks thumbnail asset availability.
+- `audit_medium_thumbnail_mapping.R`: audits dataset-to-queue thumbnail mappings and stored human/API thumbnail paths.
+- `build_validated_thumbnail_manifest_v2.R`: builds the clean manifest-verified thumbnail cohort and valid sample CSV.
+- `audit_validated_thumbnail_experiment_v2.R`: verifies v2 manual/API thumbnail paths and SHA-256 hashes against the manifest.
 - `rate_medium_titles_terminal.R`: blind terminal human-rating workflow.
 - `score_medium_headlines_openai.py`, `analyze_openai_headline_scores.R`, and `analyze_openai_headline_scores_regularized.R`: older headline scoring workflow.
 

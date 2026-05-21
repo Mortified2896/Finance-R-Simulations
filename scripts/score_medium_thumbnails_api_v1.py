@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 DEFAULT_DB = Path("data/db/medium_articles.sqlite")
 DEFAULT_MODEL = os.environ.get("OPENAI_THUMBNAIL_SCORING_MODEL", "gpt-5-mini")
 DEFAULT_PROMPT_VERSION = "thumbnail_v1"
+DEFAULT_VALIDATED_PROMPT_VERSION = "thumbnail_v1_validated"
 DEFAULT_SCOPE = "thumbnail_only"
 DEFAULT_SAMPLE_FILE = Path("data/analysis/title_api_score_samples/thumbnail_100_v1.csv")
 DEFAULT_IMAGE_INPUT_MODE = "auto"
@@ -84,12 +85,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Print candidate/payload preview and do not call the API.")
     parser.add_argument("--force", action="store_true", help="Ignore cache and rescore selected rows.")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenAI model.")
-    parser.add_argument("--prompt-version", default=DEFAULT_PROMPT_VERSION, help="Prompt/cache version.")
+    parser.add_argument("--prompt-version", default=None, help="Prompt/cache version.")
     parser.add_argument("--scope", default=DEFAULT_SCOPE, choices=sorted(VALID_SCOPES), help="Allowed input scope.")
     parser.add_argument("--sample-file", default=str(DEFAULT_SAMPLE_FILE), help="Fixed cohort CSV to score.")
+    parser.add_argument("--manifest-file", help="Validated thumbnail manifest CSV with local_image_path and image_sha256.")
     parser.add_argument("--image-input-mode", default=DEFAULT_IMAGE_INPUT_MODE, choices=sorted(VALID_IMAGE_INPUT_MODES))
     parser.add_argument("--max-retries", type=int, default=3, help="Retries for transient API failures.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.prompt_version is None:
+        args.prompt_version = DEFAULT_VALIDATED_PROMPT_VERSION if args.manifest_file else DEFAULT_PROMPT_VERSION
+    if args.manifest_file and args.image_input_mode == "remote_url":
+        raise SystemExit("--manifest-file requires local image scoring; use --image-input-mode auto or local_base64.")
+    return args
 
 
 def connect_db(path: Path) -> sqlite3.Connection:
@@ -134,20 +141,39 @@ def load_thumbnail_queue(path: Path = THUMBNAIL_QUEUE) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def local_path_matches_stem(local_path: str | None, image_file_stem: str | None) -> bool:
+    path_text = clean_text(local_path)
+    expected_stem = clean_text(image_file_stem)
+    if not path_text or not expected_stem:
+        return False
+    return Path(path_text).stem.startswith(expected_stem)
+
+
 def local_path_from_queue(row: sqlite3.Row, queue_rows: list[dict[str, str]]) -> str | None:
     thumbnail_url = clean_text(row["thumbnail_url"])
     article_id = clean_text(row["article_id"])
     medium_post_id = clean_text(row["medium_post_id"])
+
+    valid_rows: list[tuple[dict[str, str], str]] = []
     for queue_row in queue_rows:
         local_path = clean_text(queue_row.get("local_image_path"))
-        if not local_path or not Path(local_path).exists():
+        if (
+            not local_path
+            or not Path(local_path).exists()
+            or not local_path_matches_stem(local_path, queue_row.get("image_file_stem"))
+        ):
             continue
+        valid_rows.append((queue_row, local_path))
+
+    for queue_row, local_path in valid_rows:
         queue_urls = {
             clean_text(queue_row.get("primary_image_url_for_download")),
             clean_text(queue_row.get("normalized_image_url")),
         }
         if thumbnail_url and thumbnail_url in queue_urls:
             return local_path
+
+    for queue_row, local_path in valid_rows:
         if article_id and article_id in split_multi(queue_row.get("article_ids")):
             return local_path
         if medium_post_id and medium_post_id in split_multi(queue_row.get("medium_post_ids")):
@@ -207,6 +233,104 @@ def load_sample_rows(connection: sqlite3.Connection, sample_path: Path) -> list[
         seen_keys.add(key)
         rows.append(matched)
     return rows
+
+
+def manifest_record_key(record: dict[str, str]) -> str | None:
+    canonical = clean_text(record.get("canonical_article_key"))
+    article_id = clean_text(record.get("article_id"))
+    medium_post_id = clean_text(record.get("medium_post_id"))
+    if canonical:
+        return f"canonical:{canonical}"
+    if article_id:
+        return f"article:{article_id}"
+    if medium_post_id:
+        return f"post:{medium_post_id}"
+    return None
+
+
+def load_manifest_records(manifest_path: Path) -> list[dict[str, str]]:
+    if not manifest_path.exists():
+        raise SystemExit(f"Manifest file not found: {manifest_path}")
+    with manifest_path.open(newline="", encoding="utf-8-sig") as handle:
+        records = list(csv.DictReader(handle))
+    required = {
+        "canonical_article_key",
+        "article_id",
+        "medium_post_id",
+        "title",
+        "subtitle",
+        "thumbnail_url",
+        "local_image_path",
+        "image_sha256",
+        "thumbnail_status",
+    }
+    missing = sorted(required - set(records[0].keys())) if records else []
+    if missing:
+        raise SystemExit(f"Manifest is missing required column(s): {', '.join(missing)}")
+
+    rows: list[dict[str, str]] = []
+    seen_keys: set[str] = set()
+    for record in records:
+        if clean_text(record.get("thumbnail_status")) != "valid":
+            continue
+        key = manifest_record_key(record)
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        local_path_text = clean_text(record.get("local_image_path"))
+        expected_hash = clean_text(record.get("image_sha256"))
+        if not local_path_text:
+            raise SystemExit(f"Manifest valid row has no local_image_path for {key}")
+        if not expected_hash:
+            raise SystemExit(f"Manifest valid row has no image_sha256 for {key}")
+        local_path = Path(local_path_text)
+        if not local_path.exists():
+            raise SystemExit(f"Manifest image file is missing for {key}: {local_path_text}")
+        actual_hash = file_sha256(local_path)
+        if actual_hash != expected_hash:
+            raise SystemExit(
+                f"Manifest image hash mismatch for {key}: expected {expected_hash}, got {actual_hash}"
+            )
+        rows.append(
+            {
+                "canonical_article_key": clean_text(record.get("canonical_article_key")) or "",
+                "article_id": clean_text(record.get("article_id")) or "",
+                "medium_post_id": clean_text(record.get("medium_post_id")) or "",
+                "title": clean_text(record.get("title")) or "",
+                "subtitle": clean_text(record.get("subtitle")) or "",
+                "thumbnail_url": clean_text(record.get("thumbnail_url")) or "",
+                "has_thumbnail_url": "1" if clean_text(record.get("thumbnail_url")) else "0",
+                "local_image_path": local_path_text,
+                "image_sha256": expected_hash,
+            }
+        )
+    return rows
+
+
+def choose_image_input_from_manifest(row: dict[str, str]) -> dict[str, str] | None:
+    local_path_text = clean_text(row.get("local_image_path"))
+    expected_hash = clean_text(row.get("image_sha256"))
+    if not local_path_text or not expected_hash:
+        return None
+    path = Path(local_path_text)
+    if not path.exists():
+        return None
+    actual_hash = file_sha256(path)
+    if actual_hash != expected_hash:
+        raise SystemExit(
+            f"Manifest image hash mismatch while scoring {row.get('canonical_article_key')}: "
+            f"expected {expected_hash}, got {actual_hash}"
+        )
+    mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    with path.open("rb") as handle:
+        encoded = base64.b64encode(handle.read()).decode("ascii")
+    return {
+        "image_url": clean_text(row.get("thumbnail_url")) or "",
+        "local_image_path": local_path_text,
+        "image_hash": expected_hash,
+        "image_input_mode": "local_base64",
+        "payload_image_url": f"data:{mime};base64,{encoded}",
+    }
 
 
 def choose_image_input(row: sqlite3.Row, queue_rows: list[dict[str, str]], mode: str) -> dict[str, str] | None:
@@ -283,8 +407,11 @@ def already_scored(connection: sqlite3.Connection, item: dict[str, Any], args: a
 
 
 def load_candidates(connection: sqlite3.Connection, args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    rows = load_sample_rows(connection, Path(args.sample_file)) if args.sample_file else fetch_dataset_rows(connection)
-    queue_rows = load_thumbnail_queue()
+    if args.manifest_file:
+        rows = load_manifest_records(Path(args.manifest_file))
+    else:
+        rows = load_sample_rows(connection, Path(args.sample_file)) if args.sample_file else fetch_dataset_rows(connection)
+    queue_rows = [] if args.manifest_file else load_thumbnail_queue()
     candidates: list[dict[str, Any]] = []
     local_count = 0
     remote_count = 0
@@ -297,7 +424,7 @@ def load_candidates(connection: sqlite3.Connection, args: argparse.Namespace) ->
         if key in seen_keys:
             continue
         seen_keys.add(key)
-        image_input = choose_image_input(row, queue_rows, args.image_input_mode)
+        image_input = choose_image_input_from_manifest(row) if args.manifest_file else choose_image_input(row, queue_rows, args.image_input_mode)
         if image_input is None:
             continue
         item = candidate_from_row(row, image_input, args.scope)
@@ -313,6 +440,7 @@ def load_candidates(connection: sqlite3.Connection, args: argparse.Namespace) ->
     return candidates, {
         "sample_rows_matched": len(rows),
         "queue_rows": len(queue_rows),
+        "manifest_file": args.manifest_file or "",
         "local_image_candidates": local_count,
         "remote_image_candidates": remote_count,
     }
@@ -538,7 +666,8 @@ def print_run_header(args: argparse.Namespace, candidates: list[dict[str, Any]],
     print(f"Prompt version: {args.prompt_version}")
     print(f"Model: {args.model}")
     print(f"Scope: {args.scope}")
-    print(f"Sample file used: {args.sample_file or 'none'}")
+    print(f"Manifest file used: {metadata['manifest_file'] or 'none'}")
+    print(f"Sample file used: {'none' if metadata['manifest_file'] else (args.sample_file or 'none')}")
     print(f"Image input mode: {args.image_input_mode}")
     print(f"Sample rows matched: {metadata['sample_rows_matched']}")
     print(f"Thumbnail queue rows read: {metadata['queue_rows']}")

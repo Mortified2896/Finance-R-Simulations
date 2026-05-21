@@ -14,13 +14,23 @@ library(DBI)
 library(RSQLite)
 
 requested_rating_mode <- Sys.getenv("HUMAN_RATING_MODE", unset = "feed_preview_1_5")
-is_dimension_mode <- requested_rating_mode %in% c("dimensions_v1", "human_preview_dimensions_v1")
+is_dimension_v1_mode <- requested_rating_mode %in% c("dimensions_v1", "human_preview_dimensions_v1")
+is_dimension_v2_mode <- requested_rating_mode %in% c("dimensions_v2", "human_preview_dimensions_v2")
+is_dimension_mode <- is_dimension_v1_mode || is_dimension_v2_mode
 interface_version <- if (is_dimension_mode) {
-  "human_preview_rating_app_v3_dimensions_v1"
+  if (is_dimension_v2_mode) "human_preview_rating_app_v4_dimensions_v2_validated_manifest" else "human_preview_rating_app_v3_dimensions_v1"
 } else {
   "human_preview_rating_app_v2_unrated_thumbnails"
 }
-rating_mode <- if (is_dimension_mode) "human_preview_dimensions_v1" else "feed_preview_1_5"
+rating_mode <- if (is_dimension_v2_mode) {
+  "human_preview_dimensions_v2"
+} else if (is_dimension_v1_mode) {
+  "human_preview_dimensions_v1"
+} else {
+  "feed_preview_1_5"
+}
+manifest_version <- if (is_dimension_v2_mode) "human_rated_thumbnail_valid_cohort_v2" else NA_character_
+dimension_rating_table <- if (is_dimension_v2_mode) "human_preview_dimension_ratings_v2" else "human_preview_dimension_ratings"
 rating_prompt <- if (is_dimension_mode) {
   "Score only the active dimension for this pass."
 } else {
@@ -80,6 +90,13 @@ now_utc <- function() {
   format(as.POSIXct(Sys.time(), tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ")
 }
 
+file_sha256 <- function(path) {
+  if (is.na(path) || !file.exists(path)) return(NA_character_)
+  hash <- suppressWarnings(tools::sha256sum(path))
+  if (length(hash) == 0 || is.na(hash[[1]])) return(NA_character_)
+  unname(hash[[1]])
+}
+
 find_project_root <- function() {
   env_root <- Sys.getenv("MEDIUM_PROJECT_ROOT", unset = "")
   candidates <- unique(c(
@@ -113,9 +130,17 @@ dimension_cohort_path <- file.path(
   project_root,
   "data",
   "analysis",
-  "title_api_score_samples",
-  "human_rated_thumbnail_all_v1.csv"
+  if (is_dimension_v2_mode) "medium_images" else "title_api_score_samples",
+  if (is_dimension_v2_mode) "human_rated_thumbnail_valid_cohort_v2.csv" else "human_rated_thumbnail_all_v1.csv"
 )
+
+as_abs_path <- function(path) {
+  path <- clean_text(path)
+  vapply(path, function(one_path) {
+    if (is.na(one_path)) return(NA_character_)
+    if (grepl("^/", one_path)) one_path else file.path(project_root, one_path)
+  }, character(1), USE.NAMES = FALSE)
+}
 
 split_keys <- function(x) {
   value <- clean_text(x)
@@ -261,6 +286,36 @@ ensure_rating_schema <- function(con) {
   }
 
   dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS human_preview_dimension_ratings_v2 (
+      id INTEGER PRIMARY KEY,
+      rating_session_id TEXT,
+      queue_position INTEGER,
+      article_id INTEGER,
+      medium_post_id TEXT,
+      canonical_article_key TEXT,
+      interface_version TEXT,
+      rating_mode TEXT,
+      manifest_version TEXT,
+      shown_title TEXT,
+      shown_subtitle TEXT,
+      shown_thumbnail_path TEXT,
+      shown_image_sha256 TEXT,
+      personal_click_appeal INTEGER,
+      title_hook_strength INTEGER,
+      visual_hook INTEGER,
+      emotional_pull_preview INTEGER,
+      ai_low_effort_flag TEXT,
+      human_dimension_note TEXT,
+      skipped INTEGER DEFAULT 0,
+      shown_at TEXT,
+      rated_at TEXT,
+      seconds_spent REAL,
+      created_at TEXT,
+      updated_at TEXT
+    )
+  ")
+
+  dbExecute(con, "
     CREATE TABLE IF NOT EXISTS human_preview_dimension_pass_queue (
       rating_mode TEXT,
       active_dimension TEXT,
@@ -296,6 +351,11 @@ ensure_rating_schema <- function(con) {
     ON human_preview_dimension_ratings (rating_mode, rated_at, id)
   ")
 
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_human_preview_dimension_ratings_v2_mode
+    ON human_preview_dimension_ratings_v2 (rating_mode, manifest_version, updated_at, id)
+  ")
+
   try(dbExecute(con, "
     CREATE UNIQUE INDEX IF NOT EXISTS idx_human_preview_dimension_ratings_canonical_unique
     ON human_preview_dimension_ratings (rating_mode, canonical_article_key)
@@ -311,6 +371,24 @@ ensure_rating_schema <- function(con) {
   try(dbExecute(con, "
     CREATE UNIQUE INDEX IF NOT EXISTS idx_human_preview_dimension_ratings_post_unique
     ON human_preview_dimension_ratings (rating_mode, medium_post_id)
+    WHERE canonical_article_key IS NULL AND article_id IS NULL AND medium_post_id IS NOT NULL
+  "), silent = TRUE)
+
+  try(dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_human_preview_dimension_ratings_v2_canonical_unique
+    ON human_preview_dimension_ratings_v2 (rating_mode, manifest_version, canonical_article_key)
+    WHERE canonical_article_key IS NOT NULL
+  "), silent = TRUE)
+
+  try(dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_human_preview_dimension_ratings_v2_article_unique
+    ON human_preview_dimension_ratings_v2 (rating_mode, manifest_version, article_id)
+    WHERE canonical_article_key IS NULL AND article_id IS NOT NULL
+  "), silent = TRUE)
+
+  try(dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_human_preview_dimension_ratings_v2_post_unique
+    ON human_preview_dimension_ratings_v2 (rating_mode, manifest_version, medium_post_id)
     WHERE canonical_article_key IS NULL AND article_id IS NULL AND medium_post_id IS NOT NULL
   "), silent = TRUE)
 
@@ -406,13 +484,13 @@ lookup_local_thumbnail <- function(article_id, medium_post_id, thumbnail_url, lo
   post_key <- clean_text(medium_post_id)
   thumb_key <- normalize_image_url(thumbnail_url)
 
+  path <- lookup_map_value(lookup$urls, thumb_key)
+  if (!is.na(path)) return(path)
+
   path <- lookup_map_value(lookup$article_ids, article_key)
   if (!is.na(path)) return(path)
 
   path <- lookup_map_value(lookup$post_ids, post_key)
-  if (!is.na(path)) return(path)
-
-  path <- lookup_map_value(lookup$urls, thumb_key)
   if (!is.na(path)) return(path)
 
   NA_character_
@@ -531,15 +609,17 @@ candidate_counts <- function(con) {
 }
 
 get_dimension_rated_keys <- function(con) {
-  if (!dbExistsTable(con, "human_preview_dimension_ratings")) {
+  if (!dbExistsTable(con, dimension_rating_table)) {
     return(list(canonical = character(), article_ids = character(), post_ids = character()))
   }
 
-  rated <- dbGetQuery(con, "
+  manifest_filter <- if (is_dimension_v2_mode) "AND manifest_version = ?" else ""
+  rated <- dbGetQuery(con, sprintf("
     SELECT DISTINCT canonical_article_key, article_id, medium_post_id
-    FROM human_preview_dimension_ratings
+    FROM %s
     WHERE rating_mode = ?
-  ", params = list(rating_mode))
+      %s
+  ", dbQuoteIdentifier(con, dimension_rating_table), manifest_filter), params = if (is_dimension_v2_mode) list(rating_mode, manifest_version) else list(rating_mode))
 
   canonical <- clean_text(rated$canonical_article_key)
   article_ids <- clean_text(rated$article_id)
@@ -554,16 +634,58 @@ get_dimension_rated_keys <- function(con) {
 read_dimension_cohort <- function() {
   if (!file.exists(dimension_cohort_path)) return(data.frame())
   cohort <- read.csv(dimension_cohort_path, stringsAsFactors = FALSE, check.names = FALSE)
-  for (column in c("canonical_article_key", "article_id", "medium_post_id")) {
+  for (column in c("canonical_article_key", "article_id", "medium_post_id", "title", "subtitle", "thumbnail_url", "local_image_path", "image_sha256", "thumbnail_status")) {
     if (!(column %in% names(cohort))) cohort[[column]] <- NA_character_
   }
   cohort$canonical_article_key <- clean_text(cohort$canonical_article_key)
   cohort$article_id <- clean_text(cohort$article_id)
   cohort$medium_post_id <- clean_text(cohort$medium_post_id)
+  cohort$title <- clean_text(cohort$title)
+  cohort$subtitle <- clean_text(cohort$subtitle)
+  cohort$thumbnail_url <- clean_text(cohort$thumbnail_url)
+  cohort$local_image_path <- clean_text(cohort$local_image_path)
+  cohort$image_sha256 <- clean_text(cohort$image_sha256)
+  cohort$thumbnail_status <- clean_text(cohort$thumbnail_status)
   cohort
 }
 
 load_dimension_candidates <- function(con, exclude_rated = TRUE) {
+  if (is_dimension_v2_mode) {
+    cohort <- read_dimension_cohort()
+    if (nrow(cohort) == 0) return(data.frame())
+    total_cohort_rows <- nrow(cohort)
+    rows <- cohort[cohort$thumbnail_status == "valid", , drop = FALSE]
+    if (nrow(rows) == 0) return(rows)
+
+    rows$local_thumbnail_path <- rows$local_image_path
+    rows$local_thumbnail_path_abs <- as_abs_path(rows$local_thumbnail_path)
+    rows$current_image_sha256 <- vapply(rows$local_thumbnail_path_abs, file_sha256, character(1))
+    rows$hash_matches_manifest <- !is.na(rows$current_image_sha256) &
+      !is.na(rows$image_sha256) &
+      rows$current_image_sha256 == rows$image_sha256
+    rows$hash_matches_manifest[is.na(rows$hash_matches_manifest)] <- FALSE
+    rows$has_local_thumbnail <- !is.na(rows$local_thumbnail_path_abs) &
+      file.exists(rows$local_thumbnail_path_abs) &
+      rows$hash_matches_manifest
+    rows$thumbnail_status <- ifelse(rows$has_local_thumbnail, "valid", "stale_or_invalid")
+    rows <- rows[rows$has_local_thumbnail, , drop = FALSE]
+    if (nrow(rows) == 0) return(rows)
+
+    rated_keys <- get_dimension_rated_keys(con)
+    rows$already_dimension_rated <- (!is.na(rows$canonical_article_key) & rows$canonical_article_key %in% rated_keys$canonical) |
+      (!is.na(rows$article_id) & rows$article_id %in% rated_keys$article_ids) |
+      (!is.na(rows$medium_post_id) & rows$medium_post_id %in% rated_keys$post_ids)
+    rows$already_dimension_rated[is.na(rows$already_dimension_rated)] <- FALSE
+    rows$cohort_source <- "validated_manifest_v2"
+    rows$total_cohort_rows <- total_cohort_rows
+
+    if (isTRUE(exclude_rated)) {
+      rows <- rows[!rows$already_dimension_rated, , drop = FALSE]
+    }
+
+    return(rows)
+  }
+
   objects <- dbGetQuery(con, "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
   if (!("v_medium_title_prediction_dataset_v2" %in% objects$name)) {
     stop("Missing v_medium_title_prediction_dataset_v2. Run the Medium Analysis V2 schema setup first.", call. = FALSE)
@@ -620,6 +742,7 @@ load_dimension_candidates <- function(con, exclude_rated = TRUE) {
     lookup_local_thumbnail(rows$article_id[[i]], rows$medium_post_id[[i]], rows$thumbnail_url[[i]], lookup)
   }, character(1))
   rows$has_local_thumbnail <- !is.na(rows$local_thumbnail_path) & file.exists(rows$local_thumbnail_path)
+  rows$thumbnail_status <- ifelse(rows$has_local_thumbnail, "valid", "stale_or_invalid")
   rows <- rows[rows$has_local_thumbnail, , drop = FALSE]
 
   rated_keys <- get_dimension_rated_keys(con)
@@ -635,6 +758,132 @@ load_dimension_candidates <- function(con, exclude_rated = TRUE) {
   }
 
   rows
+}
+
+dimension_row_key <- function(canonical_article_key, article_id, medium_post_id) {
+  canonical_key <- clean_text(canonical_article_key)
+  article_key <- clean_text(article_id)
+  post_key <- clean_text(medium_post_id)
+  if (!is.na(canonical_key)) return(paste0("canonical:", canonical_key))
+  if (!is.na(article_key)) return(paste0("article:", article_key))
+  if (!is.na(post_key)) return(paste0("post:", post_key))
+  NA_character_
+}
+
+dimension_row_keys <- function(rows) {
+  vapply(seq_len(nrow(rows)), function(i) {
+    dimension_row_key(rows$canonical_article_key[[i]], rows$article_id[[i]], rows$medium_post_id[[i]])
+  }, character(1))
+}
+
+mark_invalid_dimension_pass_queue_items <- function(con, active_dimension, candidates) {
+  valid_keys <- dimension_row_keys(candidates)
+  valid_keys <- valid_keys[!is.na(valid_keys)]
+
+  pending <- dbGetQuery(con, "
+    SELECT queue_position, article_id, medium_post_id, canonical_article_key
+    FROM human_preview_dimension_pass_queue
+    WHERE rating_mode = ?
+      AND active_dimension = ?
+      AND status = 'pending'
+  ", params = list(rating_mode, active_dimension))
+  if (nrow(pending) == 0) return(0L)
+
+  pending_keys <- dimension_row_keys(pending)
+  invalid <- is.na(pending_keys) | !(pending_keys %in% valid_keys)
+  invalid[is.na(invalid)] <- TRUE
+  invalid_rows <- pending[invalid, , drop = FALSE]
+  if (nrow(invalid_rows) == 0) return(0L)
+
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_len(nrow(invalid_rows))) {
+      dbExecute(
+        con,
+        "UPDATE human_preview_dimension_pass_queue
+         SET status = 'ignored_invalid_thumbnail', completed_at = ?
+         WHERE rating_mode = ?
+           AND active_dimension = ?
+           AND queue_position = ?
+           AND status = 'pending'",
+        params = list(now_utc(), rating_mode, active_dimension, invalid_rows$queue_position[[i]])
+      )
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  nrow(invalid_rows)
+}
+
+top_up_dimension_pass_queue <- function(con, active_dimension, candidates, target_n = Inf) {
+  if (nrow(candidates) == 0) return(0L)
+
+  existing <- dbGetQuery(con, "
+    SELECT queue_position, article_id, medium_post_id, canonical_article_key, status
+    FROM human_preview_dimension_pass_queue
+    WHERE rating_mode = ?
+      AND active_dimension = ?
+  ", params = list(rating_mode, active_dimension))
+
+  desired_n <- if (is.infinite(target_n)) nrow(candidates) else min(as.integer(target_n), nrow(candidates))
+  active_status <- existing$status %in% c("pending", "rated", "skipped")
+  active_status[is.na(active_status)] <- FALSE
+  needed <- desired_n - sum(active_status)
+  if (needed <= 0) return(0L)
+
+  existing_keys <- dimension_row_keys(existing)
+  existing_keys <- existing_keys[!is.na(existing_keys)]
+  candidate_keys <- dimension_row_keys(candidates)
+  available <- !is.na(candidate_keys) & !(candidate_keys %in% existing_keys)
+  available[is.na(available)] <- FALSE
+  if (!any(available)) return(0L)
+
+  seed <- sum(utf8ToInt(active_dimension)) + 1009L
+  set.seed(seed)
+  additions <- candidates[available, , drop = FALSE]
+  additions <- additions[sample.int(nrow(additions)), , drop = FALSE]
+  additions <- head(additions, min(needed, nrow(additions)))
+
+  max_position <- if (nrow(existing) == 0 || all(is.na(existing$queue_position))) 0L else max(existing$queue_position, na.rm = TRUE)
+
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_len(nrow(additions))) {
+      completed <- dimension_has_value(
+        con,
+        additions$article_id[[i]],
+        additions$medium_post_id[[i]],
+        additions$canonical_article_key[[i]],
+        active_dimension
+      )
+      dbExecute(
+        con,
+        "INSERT OR IGNORE INTO human_preview_dimension_pass_queue
+         (rating_mode, active_dimension, queue_position, article_id, medium_post_id,
+          canonical_article_key, status, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        params = list(
+          rating_mode,
+          active_dimension,
+          max_position + i,
+          additions$article_id[[i]],
+          additions$medium_post_id[[i]],
+          additions$canonical_article_key[[i]],
+          if (completed) "rated" else "pending",
+          if (completed) now_utc() else NA_character_
+        )
+      )
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  nrow(additions)
 }
 
 dimension_candidate_counts <- function(con) {
@@ -756,6 +1005,17 @@ load_current_item <- function(con, session_id) {
        WHERE rating_session_id = ? AND queue_position = ?",
       params = list(item$shown_at[[1]], session_id, item$queue_position[[1]])
     )
+  }
+
+  if (is_dimension_v2_mode) {
+    candidates <- load_dimension_candidates(con, exclude_rated = FALSE)
+    if (nrow(candidates) == 0) return(NULL)
+    candidate_keys <- dimension_row_keys(candidates)
+    item_key <- dimension_row_key(item$canonical_article_key[[1]], item$article_id[[1]], item$medium_post_id[[1]])
+    match_index <- match(item_key, candidate_keys)
+    if (is.na(match_index)) return(NULL)
+    details <- candidates[match_index, , drop = FALSE]
+    return(cbind(item, details[1, , drop = FALSE]))
   }
 
   details <- dbGetQuery(con, "
@@ -904,12 +1164,14 @@ undo_previous_rating <- function(con, session_id) {
 
 dimension_has_value <- function(con, article_id, medium_post_id, canonical_article_key, active_dimension) {
   if (!(active_dimension %in% dimension_fields)) return(FALSE)
+  manifest_filter <- if (is_dimension_v2_mode) "AND manifest_version = ?" else ""
   rows <- dbGetQuery(
     con,
     sprintf("
       SELECT %s AS value
-      FROM human_preview_dimension_ratings
+      FROM %s
       WHERE rating_mode = ?
+        %s
         AND (
           (canonical_article_key IS NOT NULL AND canonical_article_key = ?)
           OR (canonical_article_key IS NULL AND article_id IS NOT NULL AND article_id = ?)
@@ -917,23 +1179,31 @@ dimension_has_value <- function(con, article_id, medium_post_id, canonical_artic
         )
       ORDER BY updated_at DESC, rated_at DESC, id DESC
       LIMIT 1
-    ", dbQuoteIdentifier(con, active_dimension)),
-    params = list(rating_mode, canonical_article_key, article_id, medium_post_id)
+    ", dbQuoteIdentifier(con, active_dimension), dbQuoteIdentifier(con, dimension_rating_table), manifest_filter),
+    params = if (is_dimension_v2_mode) {
+      list(rating_mode, manifest_version, canonical_article_key, article_id, medium_post_id)
+    } else {
+      list(rating_mode, canonical_article_key, article_id, medium_post_id)
+    }
   )
   nrow(rows) > 0 && !is.na(rows$value[[1]]) && nzchar(as.character(rows$value[[1]]))
 }
 
 ensure_dimension_pass_queue <- function(con, active_dimension, target_n = Inf) {
   if (!(active_dimension %in% dimension_fields)) stop("Unknown dimension: ", active_dimension, call. = FALSE)
+  candidates <- load_dimension_candidates(con, exclude_rated = FALSE)
+  if (nrow(candidates) == 0) stop("No dimension-rating candidate articles with valid local thumbnails were found.", call. = FALSE)
+
   existing <- dbGetQuery(con, "
     SELECT COUNT(*) AS n
     FROM human_preview_dimension_pass_queue
     WHERE rating_mode = ? AND active_dimension = ?
   ", params = list(rating_mode, active_dimension))
-  if (existing$n[[1]] > 0) return(invisible(FALSE))
-
-  candidates <- load_dimension_candidates(con, exclude_rated = FALSE)
-  if (nrow(candidates) == 0) stop("No dimension-rating candidate articles with local thumbnails were found.", call. = FALSE)
+  if (existing$n[[1]] > 0) {
+    mark_invalid_dimension_pass_queue_items(con, active_dimension, candidates)
+    top_up_dimension_pass_queue(con, active_dimension, candidates, target_n = target_n)
+    return(invisible(FALSE))
+  }
 
   seed <- sum(utf8ToInt(active_dimension)) + 1009L
   set.seed(seed)
@@ -1078,15 +1348,21 @@ load_current_dimension_item <- function(con, active_dimension) {
     details$thumbnail_url[[1]],
     lookup
   )
+  details$thumbnail_status <- if (
+    !is.na(details$local_thumbnail_path[[1]]) &&
+      file.exists(details$local_thumbnail_path[[1]])
+  ) "valid" else "stale_or_invalid"
 
   cbind(item, details[1, , drop = FALSE])
 }
 
 find_dimension_rating_id <- function(con, item) {
-  rows <- dbGetQuery(con, "
+  manifest_filter <- if (is_dimension_v2_mode) "AND manifest_version = ?" else ""
+  rows <- dbGetQuery(con, sprintf("
     SELECT id, human_dimension_note
-    FROM human_preview_dimension_ratings
+    FROM %s
     WHERE rating_mode = ?
+      %s
       AND (
         (canonical_article_key IS NOT NULL AND canonical_article_key = ?)
         OR (canonical_article_key IS NULL AND article_id IS NOT NULL AND article_id = ?)
@@ -1094,7 +1370,11 @@ find_dimension_rating_id <- function(con, item) {
       )
     ORDER BY updated_at DESC, rated_at DESC, id DESC
     LIMIT 1
-  ", params = list(rating_mode, item$canonical_article_key[[1]], item$article_id[[1]], item$medium_post_id[[1]]))
+  ", dbQuoteIdentifier(con, dimension_rating_table), manifest_filter), params = if (is_dimension_v2_mode) {
+    list(rating_mode, manifest_version, item$canonical_article_key[[1]], item$article_id[[1]], item$medium_post_id[[1]])
+  } else {
+    list(rating_mode, item$canonical_article_key[[1]], item$article_id[[1]], item$medium_post_id[[1]])
+  })
   if (nrow(rows) == 0) NULL else rows[1, , drop = FALSE]
 }
 
@@ -1122,6 +1402,14 @@ save_current_dimension_rating <- function(con, item, active_dimension, value = N
   if (!isTRUE(skipped) && active_dimension == "ai_low_effort_flag") {
     if (!(rating_value %in% c("yes", "unsure", "no"))) return(invisible(FALSE))
   }
+  shown_image_sha256 <- if (is_dimension_v2_mode) {
+    hash <- if ("current_image_sha256" %in% names(item)) item$current_image_sha256[[1]] else file_sha256(as_abs_path(item$local_thumbnail_path[[1]])[[1]])
+    manifest_hash <- if ("image_sha256" %in% names(item)) item$image_sha256[[1]] else NA_character_
+    if (is.na(hash) || is.na(manifest_hash) || !identical(hash, manifest_hash)) return(invisible(FALSE))
+    hash
+  } else {
+    NA_character_
+  }
 
   dbBegin(con)
   tryCatch({
@@ -1131,63 +1419,131 @@ save_current_dimension_rating <- function(con, item, active_dimension, value = N
     if (length(note_value) == 0 || is.na(note_value[[1]])) note_value <- NA_character_
 
     if (is.null(existing)) {
-      dbExecute(
-        con,
-        sprintf(
-          "INSERT INTO human_preview_dimension_ratings
-           (rating_session_id, queue_position, article_id, medium_post_id, canonical_article_key,
-            interface_version, rating_mode, shown_title, shown_subtitle, shown_thumbnail_path,
-            %s, human_dimension_note, skipped, shown_at, rated_at, seconds_spent, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          dbQuoteIdentifier(con, active_dimension)
-        ),
-        params = list(
-          NA_character_,
-          item$queue_position[[1]],
-          item$article_id[[1]],
-          item$medium_post_id[[1]],
-          item$canonical_article_key[[1]],
-          interface_version,
-          rating_mode,
-          item$title[[1]],
-          item$subtitle[[1]],
-          item$local_thumbnail_path[[1]],
-          rating_value,
-          note_value[[1]],
-          if (isTRUE(skipped)) 1L else 0L,
-          item$shown_at[[1]],
-          rated_at,
-          seconds_spent,
-          rated_at,
-          rated_at
+      if (is_dimension_v2_mode) {
+        dbExecute(
+          con,
+          sprintf(
+            "INSERT INTO human_preview_dimension_ratings_v2
+             (rating_session_id, queue_position, article_id, medium_post_id, canonical_article_key,
+              interface_version, rating_mode, manifest_version, shown_title, shown_subtitle,
+              shown_thumbnail_path, shown_image_sha256, %s, human_dimension_note, skipped,
+              shown_at, rated_at, seconds_spent, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            dbQuoteIdentifier(con, active_dimension)
+          ),
+          params = list(
+            NA_character_,
+            item$queue_position[[1]],
+            item$article_id[[1]],
+            item$medium_post_id[[1]],
+            item$canonical_article_key[[1]],
+            interface_version,
+            rating_mode,
+            manifest_version,
+            item$title[[1]],
+            item$subtitle[[1]],
+            item$local_thumbnail_path[[1]],
+            shown_image_sha256,
+            rating_value,
+            note_value[[1]],
+            if (isTRUE(skipped)) 1L else 0L,
+            item$shown_at[[1]],
+            rated_at,
+            seconds_spent,
+            rated_at,
+            rated_at
+          )
         )
-      )
+      } else {
+        dbExecute(
+          con,
+          sprintf(
+            "INSERT INTO human_preview_dimension_ratings
+             (rating_session_id, queue_position, article_id, medium_post_id, canonical_article_key,
+              interface_version, rating_mode, shown_title, shown_subtitle, shown_thumbnail_path,
+              %s, human_dimension_note, skipped, shown_at, rated_at, seconds_spent, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            dbQuoteIdentifier(con, active_dimension)
+          ),
+          params = list(
+            NA_character_,
+            item$queue_position[[1]],
+            item$article_id[[1]],
+            item$medium_post_id[[1]],
+            item$canonical_article_key[[1]],
+            interface_version,
+            rating_mode,
+            item$title[[1]],
+            item$subtitle[[1]],
+            item$local_thumbnail_path[[1]],
+            rating_value,
+            note_value[[1]],
+            if (isTRUE(skipped)) 1L else 0L,
+            item$shown_at[[1]],
+            rated_at,
+            seconds_spent,
+            rated_at,
+            rated_at
+          )
+        )
+      }
     } else {
-      dbExecute(
-        con,
-        sprintf(
-          "UPDATE human_preview_dimension_ratings
-           SET queue_position = ?, shown_title = ?, shown_subtitle = ?, shown_thumbnail_path = ?,
-             %s = ?, human_dimension_note = ?, skipped = ?,
-             shown_at = ?, rated_at = ?, seconds_spent = ?, updated_at = ?
-           WHERE id = ?",
-          dbQuoteIdentifier(con, active_dimension)
-        ),
-        params = list(
-          item$queue_position[[1]],
-          item$title[[1]],
-          item$subtitle[[1]],
-          item$local_thumbnail_path[[1]],
-          rating_value,
-          note_value[[1]],
-          if (isTRUE(skipped)) 1L else 0L,
-          item$shown_at[[1]],
-          rated_at,
-          seconds_spent,
-          rated_at,
-          existing$id[[1]]
+      if (is_dimension_v2_mode) {
+        dbExecute(
+          con,
+          sprintf(
+            "UPDATE human_preview_dimension_ratings_v2
+             SET queue_position = ?, manifest_version = ?, shown_title = ?, shown_subtitle = ?,
+               shown_thumbnail_path = ?, shown_image_sha256 = ?, %s = ?,
+               human_dimension_note = ?, skipped = ?, shown_at = ?, rated_at = ?,
+               seconds_spent = ?, updated_at = ?
+             WHERE id = ?",
+            dbQuoteIdentifier(con, active_dimension)
+          ),
+          params = list(
+            item$queue_position[[1]],
+            manifest_version,
+            item$title[[1]],
+            item$subtitle[[1]],
+            item$local_thumbnail_path[[1]],
+            shown_image_sha256,
+            rating_value,
+            note_value[[1]],
+            if (isTRUE(skipped)) 1L else 0L,
+            item$shown_at[[1]],
+            rated_at,
+            seconds_spent,
+            rated_at,
+            existing$id[[1]]
+          )
         )
-      )
+      } else {
+        dbExecute(
+          con,
+          sprintf(
+            "UPDATE human_preview_dimension_ratings
+             SET queue_position = ?, shown_title = ?, shown_subtitle = ?, shown_thumbnail_path = ?,
+               %s = ?, human_dimension_note = ?, skipped = ?,
+               shown_at = ?, rated_at = ?, seconds_spent = ?, updated_at = ?
+             WHERE id = ?",
+            dbQuoteIdentifier(con, active_dimension)
+          ),
+          params = list(
+            item$queue_position[[1]],
+            item$title[[1]],
+            item$subtitle[[1]],
+            item$local_thumbnail_path[[1]],
+            rating_value,
+            note_value[[1]],
+            if (isTRUE(skipped)) 1L else 0L,
+            item$shown_at[[1]],
+            rated_at,
+            seconds_spent,
+            rated_at,
+            existing$id[[1]]
+          )
+        )
+      }
     }
 
     dbExecute(
@@ -1233,23 +1589,24 @@ undo_previous_dimension_rating <- function(con, active_dimension) {
       dbExecute(
         con,
         sprintf(
-          "UPDATE human_preview_dimension_ratings
+          "UPDATE %s
            SET %s = NULL, updated_at = ?
            WHERE id = ?",
+          dbQuoteIdentifier(con, dimension_rating_table),
           dbQuoteIdentifier(con, active_dimension)
         ),
         params = list(now_utc(), rating_row$id[[1]])
       )
       dbExecute(
         con,
-        "DELETE FROM human_preview_dimension_ratings
+        sprintf("DELETE FROM %s
          WHERE id = ?
            AND personal_click_appeal IS NULL
            AND title_hook_strength IS NULL
            AND visual_hook IS NULL
            AND emotional_pull_preview IS NULL
            AND ai_low_effort_flag IS NULL
-           AND NULLIF(TRIM(COALESCE(human_dimension_note, '')), '') IS NULL",
+           AND NULLIF(TRIM(COALESCE(human_dimension_note, '')), '') IS NULL", dbQuoteIdentifier(con, dimension_rating_table)),
         params = list(rating_row$id[[1]])
       )
     }
@@ -1356,8 +1713,11 @@ ui <- fluidPage(
         width: 170px; height: 113px; object-fit: cover; border-radius: 1px; display: block;
       }
       .thumbnail-placeholder {
-        width: 170px; height: 113px; border-radius: 1px; background: #f2f2f2; border: 1px solid var(--line);
+        width: 170px; height: 113px; border-radius: 1px; background: #fff; border: 1px dashed #cfcfcf;
+        box-sizing: border-box; color: #777; font-size: 11px; display: grid; place-items: center; text-align: center;
+        padding: 8px;
       }
+      .thumbnail-invalid-label { max-width: 130px; }
       .rating-panel {
         border: 1px solid var(--line);
         border-radius: 8px;
@@ -1777,7 +2137,8 @@ server <- function(input, output, session) {
       field <- active_dimension()
       active_label <- if (is.na(field)) "all complete" else field
       HTML(sprintf(
-        "<div class='mode-line'><strong>Mode:</strong> human_preview_dimensions_v1 · active dimension %s · cohort rows %s · usable local thumbnails %s · dimension progress %s done / %s pending · overall %s / %s dimensions complete</div>",
+        "<div class='mode-line'><strong>Mode:</strong> %s · active dimension %s · cohort rows %s · usable local thumbnails %s · dimension progress %s done / %s pending · overall %s / %s dimensions complete</div>",
+        rating_mode,
         active_label,
         stats$total_cohort_rows[[1]],
         stats$usable_local_thumbnails[[1]],
@@ -1903,11 +2264,12 @@ server <- function(input, output, session) {
     }
 
     thumbnail_path <- item$local_thumbnail_path[[1]]
-    has_thumbnail <- !is.na(thumbnail_path) && file.exists(thumbnail_path)
+    thumbnail_status <- if ("thumbnail_status" %in% names(item)) item$thumbnail_status[[1]] else NA_character_
+    has_thumbnail <- identical(thumbnail_status, "valid") && !is.na(thumbnail_path) && file.exists(thumbnail_path)
     thumbnail_ui <- if (has_thumbnail) {
       imageOutput("thumbnail", width = "170px", height = "113px")
     } else {
-      div(class = "thumbnail-placeholder")
+      div(class = "thumbnail-placeholder", div(class = "thumbnail-invalid-label", "Invalid or missing thumbnail"))
     }
 
     subtitle <- item$subtitle[[1]]
