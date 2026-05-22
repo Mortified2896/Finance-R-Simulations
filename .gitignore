@@ -54,3 +54,9 @@ article_projects/*/api_outputs/*.md
 # Article writing workbench files
 article_projects/active/*/02_title_ideas.csv
 article_projects/active/*/03_title_scores.csv
+
+# Article writing workbench files
+article_projects/active/*/01_title_ideas.csv
+
+# Local active article drafts and writing workbench
+article_projects/active/
