@@ -187,6 +187,141 @@ print_metric(
   )
 )
 
+if (table_or_view_exists(connection, "human_preview_dimension_ratings_v2")) {
+  cat("\nHuman preview dimension rating counts\n")
+  cat("-----------------------------------\n")
+  preview_counts <- dbGetQuery(connection, "
+    SELECT
+      rating_mode,
+      manifest_version,
+      COUNT(*) AS n,
+      COUNT(DISTINCT canonical_article_key) AS articles
+    FROM human_preview_dimension_ratings_v2
+    GROUP BY rating_mode, manifest_version
+    ORDER BY n DESC, rating_mode, manifest_version
+  ")
+  if (nrow(preview_counts) == 0) {
+    cat("No preview dimension ratings yet.\n")
+  } else {
+    print(preview_counts, row.names = FALSE)
+  }
+
+  preview_total <- scalar(connection, "
+    SELECT COUNT(*)
+    FROM human_preview_dimension_ratings_v2
+    WHERE rating_mode = 'human_preview_dimensions_v2'
+      AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+  ")
+
+  print_metric(
+    "preview personal_click_appeal coverage",
+    sprintf(
+      "%s / %s (%.1f%%)",
+      format(scalar(connection, "
+        SELECT COUNT(*)
+        FROM human_preview_dimension_ratings_v2
+        WHERE rating_mode = 'human_preview_dimensions_v2'
+          AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+          AND personal_click_appeal IS NOT NULL
+      "), big.mark = ","),
+      format(preview_total, big.mark = ","),
+      if (preview_total == 0) 0 else 100 * scalar(connection, "
+        SELECT COUNT(*)
+        FROM human_preview_dimension_ratings_v2
+        WHERE rating_mode = 'human_preview_dimensions_v2'
+          AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+          AND personal_click_appeal IS NOT NULL
+      ") / preview_total
+    )
+  )
+  print_metric(
+    "preview title_hook_strength coverage",
+    sprintf(
+      "%s / %s (%.1f%%)",
+      format(scalar(connection, "
+        SELECT COUNT(*)
+        FROM human_preview_dimension_ratings_v2
+        WHERE rating_mode = 'human_preview_dimensions_v2'
+          AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+          AND title_hook_strength IS NOT NULL
+      "), big.mark = ","),
+      format(preview_total, big.mark = ","),
+      if (preview_total == 0) 0 else 100 * scalar(connection, "
+        SELECT COUNT(*)
+        FROM human_preview_dimension_ratings_v2
+        WHERE rating_mode = 'human_preview_dimensions_v2'
+          AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+          AND title_hook_strength IS NOT NULL
+      ") / preview_total
+    )
+  )
+  print_metric(
+    "preview visual_hook coverage",
+    sprintf(
+      "%s / %s (%.1f%%)",
+      format(scalar(connection, "
+        SELECT COUNT(*)
+        FROM human_preview_dimension_ratings_v2
+        WHERE rating_mode = 'human_preview_dimensions_v2'
+          AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+          AND visual_hook IS NOT NULL
+      "), big.mark = ","),
+      format(preview_total, big.mark = ","),
+      if (preview_total == 0) 0 else 100 * scalar(connection, "
+        SELECT COUNT(*)
+        FROM human_preview_dimension_ratings_v2
+        WHERE rating_mode = 'human_preview_dimensions_v2'
+          AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+          AND visual_hook IS NOT NULL
+      ") / preview_total
+    )
+  )
+  print_metric(
+    "preview emotional_pull coverage",
+    sprintf(
+      "%s / %s (%.1f%%)",
+      format(scalar(connection, "
+        SELECT COUNT(*)
+        FROM human_preview_dimension_ratings_v2
+        WHERE rating_mode = 'human_preview_dimensions_v2'
+          AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+          AND emotional_pull_preview IS NOT NULL
+      "), big.mark = ","),
+      format(preview_total, big.mark = ","),
+      if (preview_total == 0) 0 else 100 * scalar(connection, "
+        SELECT COUNT(*)
+        FROM human_preview_dimension_ratings_v2
+        WHERE rating_mode = 'human_preview_dimensions_v2'
+          AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+          AND emotional_pull_preview IS NOT NULL
+      ") / preview_total
+    )
+  )
+  print_metric(
+    "preview ai_low_effort_flag coverage",
+    sprintf(
+      "%s / %s (%.1f%%)",
+      format(scalar(connection, "
+        SELECT COUNT(*)
+        FROM human_preview_dimension_ratings_v2
+        WHERE rating_mode = 'human_preview_dimensions_v2'
+          AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+          AND ai_low_effort_flag IS NOT NULL
+          AND TRIM(ai_low_effort_flag) <> ''
+      "), big.mark = ","),
+      format(preview_total, big.mark = ","),
+      if (preview_total == 0) 0 else 100 * scalar(connection, "
+        SELECT COUNT(*)
+        FROM human_preview_dimension_ratings_v2
+        WHERE rating_mode = 'human_preview_dimensions_v2'
+          AND manifest_version = 'human_rated_thumbnail_valid_cohort_v2'
+          AND ai_low_effort_flag IS NOT NULL
+          AND TRIM(ai_low_effort_flag) <> ''
+      ") / preview_total
+    )
+  )
+}
+
 cat("\nWarnings\n")
 cat("--------\n")
 suspicious_publications <- dbGetQuery(connection, "
