@@ -2003,6 +2003,43 @@ ui <- fluidPage(
       .dimension-flag-scale .dimension-scale-item strong { color: var(--ink); }
       .btn-default { border-color: #d8d8d8; background: #fff; color: var(--ink); }
       .btn-default:hover { border-color: #bdbdbd; background: #fafafa; }
+      .next-dimension-cta {
+        margin-top: 12px;
+        padding: 14px 16px;
+        border: 1px solid #cfe4d2;
+        border-radius: 8px;
+        background: #f5fbf6;
+        display: grid;
+        gap: 10px;
+      }
+      .next-dimension-copy {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      .next-dimension-cta .btn {
+        width: 100%;
+        min-height: 46px;
+        border-radius: 8px;
+        border: 1px solid var(--green);
+        background: var(--green);
+        color: #fff;
+        font-size: 15px;
+        font-weight: 700;
+        box-shadow: none;
+      }
+      .next-dimension-cta .btn:hover {
+        border-color: #166f14;
+        background: #166f14;
+        color: #fff;
+      }
+      .next-dimension-cta .btn:focus {
+        border-color: #166f14;
+        background: #166f14;
+        color: #fff;
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(26, 137, 23, .14);
+      }
       .shortcut-copy { color: var(--muted); font-size: 13px; }
       .guide-section { border-bottom: 1px solid var(--line); padding: 10px 0 16px; }
       .guide-section:first-child { padding-top: 0; }
@@ -2318,7 +2355,19 @@ server <- function(input, output, session) {
   refresh_current <- function() {
     item <- if (is_dimension_mode) {
       field <- isolate(active_dimension())
-      if (is.na(field)) NULL else load_current_dimension_item(con, field)
+      if (is.na(field)) {
+        NULL
+      } else {
+        loaded_item <- load_current_dimension_item(con, field)
+        if (is.null(loaded_item)) {
+          next_field <- next_incomplete_dimension_after(con, field)
+          if (!is.na(next_field)) {
+            active_dimension(next_field)
+            loaded_item <- load_current_dimension_item(con, next_field)
+          }
+        }
+        loaded_item
+      }
     } else {
       load_current_item(con, rating_session_id)
     }
@@ -2734,7 +2783,15 @@ server <- function(input, output, session) {
               }
             )
         ),
-        if (!is.na(next_field)) actionButton("start_next_dimension", paste("Start next dimension:", dimension_labels[[next_field]])) else div(class = "shortcut-copy", "All dimension passes are complete.")
+        if (!is.na(next_field)) {
+          div(
+            class = "next-dimension-cta",
+            div(class = "next-dimension-copy", sprintf("This pass is finished. Continue directly into the next dimension: %s.", dimension_labels[[next_field]])),
+            actionButton("start_next_dimension", paste("Continue To", dimension_labels[[next_field]]))
+          )
+        } else {
+          div(class = "shortcut-copy", "All dimension passes are complete.")
+        }
       ))
     }
 
