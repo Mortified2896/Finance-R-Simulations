@@ -50,3 +50,7 @@ data/analysis/**/downloaded/
 data/analysis/**/*.jsonl
 data/analysis/**/api_outputs/
 article_projects/*/api_outputs/*.md
+
+# Article writing workbench files
+article_projects/active/*/02_title_ideas.csv
+article_projects/active/*/03_title_scores.csv
