@@ -1,4 +1,4 @@
-required_packages <- c("shiny", "DBI", "RSQLite")
+required_packages <- c("shiny", "DBI", "RSQLite", "jsonlite")
 missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_packages) > 0) {
   stop(
@@ -12,6 +12,7 @@ if (length(missing_packages) > 0) {
 library(shiny)
 library(DBI)
 library(RSQLite)
+library(jsonlite)
 
 requested_rating_mode <- Sys.getenv("HUMAN_RATING_MODE", unset = "feed_preview_1_5")
 is_dimension_v1_mode <- requested_rating_mode %in% c("dimensions_v1", "human_preview_dimensions_v1")
@@ -107,6 +108,10 @@ first_value <- function(row, column, default = NA_character_) {
   if (is.null(row) || nrow(row) == 0 || !(column %in% names(row))) return(default)
   value <- row[[column]][[1]]
   if (length(value) == 0) default else value
+}
+
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0 || (length(x) == 1 && is.na(x))) y else x
 }
 
 displayed_subtitle_for_field <- function(item, field) {
@@ -476,6 +481,427 @@ ensure_rating_schema <- function(con) {
     CREATE INDEX IF NOT EXISTS idx_human_preview_dimension_pass_queue_status
     ON human_preview_dimension_pass_queue (rating_mode, active_dimension, status, queue_position)
   ")
+}
+
+article_lab_default_prompt <- paste(
+  "Generate Medium-style article titles for personal finance and investing readers.",
+  "The titles should be science-based, beginner-friendly, credible, and clearly useful.",
+  "Avoid clickbait, overclaiming, and hype.",
+  "Lean into strong emotional tension or curiosity without sounding manipulative.",
+  "Prefer specific, human, readable titles that feel plausible on Medium.",
+  sep = "\n"
+)
+
+article_lab_default_model <- local({
+  configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_HEADLINE_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5-mini"
+  configured
+})
+
+ensure_article_lab_schema <- function(con) {
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_title_batches (
+      batch_id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      seed_topic TEXT,
+      inspiration_source TEXT,
+      requested_batch_size INTEGER,
+      model TEXT,
+      status TEXT NOT NULL DEFAULT 'generated',
+      notes TEXT
+    )
+  ")
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_title_candidates (
+      candidate_id TEXT PRIMARY KEY,
+      batch_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'generated',
+      source TEXT NOT NULL DEFAULT 'article_lab',
+      ready_for_human_rating INTEGER NOT NULL DEFAULT 0,
+      promoted INTEGER NOT NULL DEFAULT 0,
+      archived INTEGER NOT NULL DEFAULT 0,
+      raw_json TEXT,
+      FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
+    )
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_title_batches_created_at
+    ON article_lab_title_batches (created_at, batch_id)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_title_candidates_batch
+    ON article_lab_title_candidates (batch_id, created_at, candidate_id)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_title_candidates_status
+    ON article_lab_title_candidates (status, ready_for_human_rating, archived, promoted)
+  ")
+}
+
+article_lab_batch_id <- function() {
+  paste0("alb_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
+}
+
+article_lab_candidate_id <- function(batch_id, index) {
+  paste0("alc_", batch_id, "_", sprintf("%02d", as.integer(index)))
+}
+
+stub_title_candidates <- function(prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_) {
+  prompt_value <- clean_text(prompt)
+  if (length(prompt_value) == 0 || is.na(prompt_value[[1]])) prompt_value <- article_lab_default_prompt
+  topic_value <- clean_text(seed_topic)
+  source_value <- clean_text(inspiration_source)
+  model_value <- clean_text(model)
+  n <- suppressWarnings(as.integer(batch_size))
+  if (is.na(n) || n < 1L) n <- 10L
+  n <- min(n, 25L)
+
+  topic_phrase <- if (length(topic_value) > 0 && !is.na(topic_value[[1]])) {
+    topic_value[[1]]
+  } else {
+    "building wealth without getting lost in noise"
+  }
+
+  if (length(source_value) == 0 || is.na(source_value[[1]])) source_value <- "manual prompt"
+  if (length(model_value) == 0 || is.na(model_value[[1]])) model_value <- article_lab_default_model
+
+  seed_key <- paste(prompt_value[[1]], topic_phrase, source_value[[1]], model_value[[1]], sep = "|")
+  set.seed(sum(utf8ToInt(seed_key)) %% .Machine$integer.max)
+
+  opening <- c(
+    "What Most Beginners Miss About",
+    "The Quiet Truth About",
+    "Why Smart People Still Struggle With",
+    "A Better Way To Think About",
+    "The Science-Backed Case For",
+    "The Hidden Emotional Cost Of",
+    "What Finally Helped Me Understand",
+    "The Beginner-Friendly Guide To",
+    "Why So Many People Overcomplicate",
+    "The Calm, Credible Take On"
+  )
+  topic_suffix <- c(
+    "index fund investing",
+    "retirement planning",
+    "financial independence",
+    "building wealth slowly",
+    "market volatility",
+    "saving without burnout",
+    "long-term investing",
+    "money habits that actually stick",
+    "avoiding expensive investing mistakes",
+    "staying rational when headlines get loud"
+  )
+  payoff <- c(
+    "Before Your Next Money Decision",
+    "If You Want Progress Without Hype",
+    "When You Want Less Stress And Better Odds",
+    "Without Pretending The Future Is Predictable",
+    "If You Are Tired Of Generic Advice",
+    "For People Who Want A Realistic Plan",
+    "Without Turning Finance Into A Full-Time Job",
+    "If You Want Confidence, Not False Certainty",
+    "For Beginners Who Value Evidence",
+    "Without Falling For Clickbait"
+  )
+
+  titles <- character()
+  attempts <- 0L
+  while (length(titles) < n && attempts < n * 12L) {
+    attempts <- attempts + 1L
+    candidate <- paste(
+      sample(opening, 1),
+      if (!is.na(topic_phrase) && nzchar(topic_phrase) && runif(1) < 0.65) topic_phrase else sample(topic_suffix, 1)
+    )
+    if (runif(1) < 0.78) {
+      candidate <- paste(candidate, sample(payoff, 1), sep = ": ")
+    }
+    titles <- unique(c(titles, candidate))
+  }
+
+  if (length(titles) < n) {
+    filler <- vapply(seq_len(n - length(titles)), function(i) {
+      paste("A Smarter Beginner's Way To Approach", topic_phrase, sprintf("(%s)", i))
+    }, character(1))
+    titles <- c(titles, filler)
+  }
+
+  data.frame(
+    row_number = seq_len(n),
+    title = titles[seq_len(n)],
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+}
+
+article_lab_input_string <- function(x) {
+  value <- clean_text(x)
+  if (length(value) == 0 || is.na(value[[1]])) NULL else value[[1]]
+}
+
+article_lab_has_api_key <- function() {
+  env_key <- Sys.getenv("OPENAI_API_KEY", unset = "")
+  if (nzchar(trimws(env_key))) return(TRUE)
+  env_path <- file.path(project_root, ".env")
+  if (!file.exists(env_path)) return(FALSE)
+  lines <- tryCatch(readLines(env_path, warn = FALSE), error = function(e) character())
+  any(grepl("^\\s*OPENAI_API_KEY\\s*=\\s*.+", lines))
+}
+
+article_lab_top_title_examples <- function(con, limit = 8L) {
+  objects <- dbGetQuery(con, "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
+  if (!("v_medium_title_prediction_dataset_v2" %in% objects$name)) return(character())
+
+  query <- sprintf("
+    SELECT title
+    FROM v_medium_title_prediction_dataset_v2
+    WHERE NULLIF(TRIM(title), '') IS NOT NULL
+      AND success_score IS NOT NULL
+    ORDER BY COALESCE(CAST(top_20_percent AS INTEGER), 0) DESC, success_score DESC
+    LIMIT %s
+  ", as.integer(limit))
+  rows <- dbGetQuery(con, query)
+  titles <- clean_text(rows$title)
+  unique(titles[!is.na(titles)])
+}
+
+article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_, example_titles = character()) {
+  helper_path <- file.path("scripts", "writing_api", "generate_titles.mjs")
+  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_titles.mjs", call. = FALSE)
+  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+
+  request_payload <- list(
+    prompt = article_lab_input_string(prompt) %||% article_lab_default_prompt,
+    batch_size = as.integer(batch_size),
+    seed_topic = article_lab_input_string(seed_topic),
+    inspiration_source = article_lab_input_string(inspiration_source),
+    model = article_lab_input_string(model) %||% article_lab_default_model,
+    example_titles = unname(example_titles)
+  )
+
+  request_file <- tempfile(pattern = "article_lab_request_", fileext = ".json")
+  stdout_file <- tempfile(pattern = "article_lab_stdout_", fileext = ".json")
+  stderr_file <- tempfile(pattern = "article_lab_stderr_", fileext = ".log")
+  on.exit(unlink(c(request_file, stdout_file, stderr_file), force = TRUE), add = TRUE)
+
+  write_json(request_payload, request_file, auto_unbox = TRUE, pretty = FALSE, null = "null")
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2(
+    "node",
+    args = c(helper_path, request_file),
+    stdout = stdout_file,
+    stderr = stderr_file
+  )
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
+    stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Title generation helper failed.", call. = FALSE)
+  }
+  if (!nzchar(trimws(stdout_text))) stop("Title generation helper returned no output.", call. = FALSE)
+
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  titles <- unlist(parsed$titles %||% list(), use.names = FALSE)
+  titles <- clean_text(titles)
+  titles <- unique(titles[!is.na(titles)])
+  if (length(titles) == 0) stop("API helper returned no usable titles.", call. = FALSE)
+
+  list(
+    titles = data.frame(
+      row_number = seq_along(titles),
+      title = titles,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    ),
+    mode = article_lab_input_string(parsed$mode) %||% "api",
+    model = article_lab_input_string(parsed$model) %||% request_payload$model,
+    raw_json = stdout_text,
+    example_titles_used = as.integer(length(example_titles)),
+    response_id = article_lab_input_string(parsed$response_id)
+  )
+}
+
+generate_title_candidates <- function(con, prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_) {
+  inspiration_value <- article_lab_input_string(inspiration_source)
+  example_titles <- if (identical(inspiration_value, "top performing titles")) article_lab_top_title_examples(con, limit = 8L) else character()
+
+  tryCatch({
+    api_result <- article_lab_api_request(
+      prompt = prompt,
+      batch_size = batch_size,
+      seed_topic = seed_topic,
+      inspiration_source = inspiration_source,
+      model = model,
+      example_titles = example_titles
+    )
+    api_result$fallback_reason <- NULL
+    api_result
+  }, error = function(e) {
+    list(
+      titles = stub_title_candidates(
+        prompt = prompt,
+        batch_size = batch_size,
+        seed_topic = seed_topic,
+        inspiration_source = inspiration_source,
+        model = model
+      ),
+      mode = "stub",
+      model = article_lab_input_string(model) %||% article_lab_default_model,
+      raw_json = NULL,
+      example_titles_used = as.integer(length(example_titles)),
+      response_id = NULL,
+      fallback_reason = conditionMessage(e)
+    )
+  })
+}
+
+save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, raw_json = NA_character_, generation_mode = "generated") {
+  if (length(titles) == 0) return(invisible(NULL))
+  batch_id <- article_lab_batch_id()
+  created_at <- now_utc()
+  prompt_value <- clean_text(prompt)
+  if (length(prompt_value) == 0 || is.na(prompt_value[[1]])) prompt_value <- article_lab_default_prompt
+  seed_topic_value <- clean_text(seed_topic)
+  inspiration_value <- clean_text(inspiration_source)
+  model_value <- clean_text(model)
+  if (length(model_value) == 0 || is.na(model_value[[1]])) model_value <- article_lab_default_model
+  requested_size <- suppressWarnings(as.integer(requested_batch_size))
+  if (is.na(requested_size) || requested_size < 1L) requested_size <- length(titles)
+
+  dbBegin(con)
+  tryCatch({
+    dbExecute(
+      con,
+      "INSERT INTO article_lab_title_batches
+       (batch_id, created_at, prompt, seed_topic, inspiration_source, requested_batch_size, model, status, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      params = list(
+        batch_id,
+        created_at,
+        prompt_value[[1]],
+        if (length(seed_topic_value) == 0) NA_character_ else seed_topic_value[[1]],
+        if (length(inspiration_value) == 0) NA_character_ else inspiration_value[[1]],
+        requested_size,
+        model_value[[1]],
+        "generated",
+        paste(
+          sprintf("Generation mode: %s.", generation_mode),
+          "Queue integration TODO: stored as ready_for_human_rating for later title-only workflow ingestion."
+        )
+      )
+    )
+
+    for (i in seq_along(titles)) {
+      title_value <- clean_text(titles[[i]])
+      if (length(title_value) == 0 || is.na(title_value[[1]])) next
+      dbExecute(
+        con,
+        "INSERT INTO article_lab_title_candidates
+         (candidate_id, batch_id, created_at, title, status, source, ready_for_human_rating, promoted, archived, raw_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params = list(
+          article_lab_candidate_id(batch_id, i),
+          batch_id,
+          created_at,
+          title_value[[1]],
+          "ready_for_human_rating",
+          "article_lab",
+          1L,
+          0L,
+          0L,
+          raw_json
+        )
+      )
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  batch_id
+}
+
+load_latest_article_lab_batch <- function(con) {
+  if (!dbExistsTable(con, "article_lab_title_batches")) return(NULL)
+  batch <- dbGetQuery(con, "
+    SELECT batch_id, created_at, prompt, seed_topic, inspiration_source,
+      requested_batch_size, model, status, notes
+    FROM article_lab_title_batches
+    ORDER BY created_at DESC, batch_id DESC
+    LIMIT 1
+  ")
+  if (nrow(batch) == 0) NULL else batch[1, , drop = FALSE]
+}
+
+load_article_lab_candidates_for_batch <- function(con, batch_id) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_title_candidates")) {
+    return(data.frame())
+  }
+  dbGetQuery(
+    con,
+    "SELECT candidate_id, title, status, created_at, batch_id
+     FROM article_lab_title_candidates
+     WHERE batch_id = ?
+     ORDER BY candidate_id",
+    params = list(batch_id)
+  )
+}
+
+article_lab_overview <- function(con) {
+  if (!dbExistsTable(con, "article_lab_title_candidates")) {
+    return(data.frame(
+      saved_batches = 0L,
+      saved_candidates = 0L,
+      ready_for_human_rating = 0L,
+      promoted = 0L,
+      archived = 0L
+    ))
+  }
+
+  dbGetQuery(con, "
+    SELECT
+      (SELECT COUNT(*) FROM article_lab_title_batches) AS saved_batches,
+      COUNT(*) AS saved_candidates,
+      COALESCE(SUM(CASE WHEN ready_for_human_rating = 1 THEN 1 ELSE 0 END), 0) AS ready_for_human_rating,
+      COALESCE(SUM(CASE WHEN promoted = 1 THEN 1 ELSE 0 END), 0) AS promoted,
+      COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) AS archived
+    FROM article_lab_title_candidates
+  ")
+}
+
+article_lab_table_ui <- function(rows) {
+  if (nrow(rows) == 0) {
+    return(div(class = "empty-state", "No generated title batch yet. Generate a draft or save a batch to populate this table."))
+  }
+
+  headers <- c("Candidate", "Title", "Status", "Created", "Batch")
+  tagList(
+    tags$table(
+      class = "lab-table",
+      tags$thead(tags$tr(lapply(headers, tags$th))),
+      tags$tbody(
+        lapply(seq_len(nrow(rows)), function(i) {
+          tags$tr(
+            tags$td(rows$candidate_id[[i]]),
+            tags$td(rows$title[[i]]),
+            tags$td(rows$status[[i]]),
+            tags$td(rows$created_at[[i]]),
+            tags$td(rows$batch_id[[i]])
+          )
+        })
+      )
+    )
+  )
 }
 
 read_thumbnail_queue <- function() {
@@ -1789,6 +2215,15 @@ ui <- fluidPage(
         height: 42px; display: flex; align-items: center; gap: 14px; padding: 0 18px;
         border-radius: 8px; color: var(--ink); font-size: 16px; margin-bottom: 10px;
       }
+      button.nav-item {
+        width: 100%;
+        border: 0;
+        background: transparent;
+        text-align: left;
+      }
+      button.nav-item:hover { background: #f5f5f5; }
+      button.nav-item:focus { outline: none; box-shadow: none; }
+      button.nav-item:disabled { opacity: .78; cursor: default; }
       .nav-item.active { background: var(--green-soft); font-weight: 650; }
       .daily-goal {
         border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px;
@@ -1796,6 +2231,11 @@ ui <- fluidPage(
         position: absolute;
         left: 20px;
         right: 20px;
+      }
+      .daily-goal.static-card {
+        position: static;
+        max-width: none;
+        margin-top: 18px;
       }
       .daily-goal strong { display: block; margin-bottom: 8px; }
       .daily-goal .num { color: var(--green); font-weight: 700; }
@@ -2041,6 +2481,169 @@ ui <- fluidPage(
         box-shadow: 0 0 0 3px rgba(26, 137, 23, .14);
       }
       .shortcut-copy { color: var(--muted); font-size: 13px; }
+      .page-subtitle {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.4;
+        max-width: 760px;
+      }
+      .section-tabs {
+        display: flex;
+        gap: 24px;
+        border-bottom: 1px solid var(--line);
+        margin-top: 18px;
+        max-width: 760px;
+      }
+      .section-tab {
+        padding: 0 0 10px;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font-size: 15px;
+        font-weight: 500;
+      }
+      .section-tab.active {
+        color: var(--ink);
+        font-weight: 700;
+        border-bottom: 2px solid var(--green);
+      }
+      .section-tab.disabled { opacity: .66; cursor: default; }
+      .lab-card,
+      .status-card,
+      .empty-state {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+      }
+      .lab-card {
+        max-width: 760px;
+        margin-top: 18px;
+        padding: 18px 20px 20px;
+      }
+      .lab-card h2 {
+        margin: 0 0 12px;
+        font-size: 19px;
+        font-weight: 760;
+      }
+      .lab-card h3 {
+        margin: 0 0 10px;
+        font-size: 17px;
+        font-weight: 730;
+      }
+      .lab-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px 14px;
+        margin-top: 14px;
+      }
+      .lab-field label {
+        display: block;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      .lab-field .form-control {
+        border-radius: 8px;
+        border: 1px solid #d9d9d9;
+        box-shadow: none;
+      }
+      .lab-field .form-control:focus {
+        border-color: var(--green);
+        box-shadow: 0 0 0 3px rgba(26, 137, 23, .12);
+      }
+      .lab-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 14px;
+      }
+      .lab-actions .btn {
+        min-width: 138px;
+        height: 38px;
+        border-radius: 8px;
+        box-shadow: none;
+        font-weight: 650;
+      }
+      .lab-actions .btn.lab-primary {
+        border-color: var(--green);
+        background: var(--green);
+        color: #fff;
+      }
+      .lab-actions .btn.lab-primary:hover,
+      .lab-actions .btn.lab-primary:focus {
+        border-color: #166f14;
+        background: #166f14;
+        color: #fff;
+      }
+      .lab-actions .btn.lab-secondary {
+        border-color: #d8d8d8;
+        background: #fff;
+        color: var(--ink);
+      }
+      .lab-actions .btn.lab-secondary:hover,
+      .lab-actions .btn.lab-secondary:focus {
+        border-color: #bdbdbd;
+        background: #fafafa;
+        color: var(--ink);
+      }
+      .lab-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 6px;
+      }
+      .lab-table th,
+      .lab-table td {
+        padding: 10px 8px;
+        border-bottom: 1px solid #f0f0f0;
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      .lab-table th {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .01em;
+      }
+      .lab-status-copy {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .status-card {
+        padding: 14px 16px;
+        margin-bottom: 12px;
+      }
+      .status-card h3 {
+        margin: 0 0 8px;
+        font-size: 16px;
+        font-weight: 760;
+      }
+      .status-card p,
+      .status-card li {
+        margin: 0;
+        color: #333;
+        line-height: 1.4;
+        font-size: 13px;
+      }
+      .status-card .status-metric {
+        color: var(--green);
+        font-size: 24px;
+        font-weight: 760;
+        line-height: 1;
+        margin-bottom: 8px;
+      }
+      .empty-state {
+        max-width: 760px;
+        margin-top: 12px;
+        padding: 18px 20px;
+        color: var(--muted);
+        font-size: 14px;
+      }
       .guide-section { border-bottom: 1px solid var(--line); padding: 10px 0 16px; }
       .guide-section:first-child { padding-top: 0; }
       .guide-section:last-child { border-bottom: 0; }
@@ -2067,6 +2670,7 @@ ui <- fluidPage(
         .app-shell { display: block; }
         .sidebar { display: none; }
         .main { padding: 28px 18px; }
+        .lab-grid { grid-template-columns: 1fr; }
         .article-card { grid-template-columns: 1fr; gap: 18px; padding: 24px 0 26px; }
         .article-card.thumbnail-only { grid-template-columns: 170px; }
         .article-card.text-only { grid-template-columns: 1fr; }
@@ -2311,28 +2915,12 @@ ui <- fluidPage(
     class = "app-shell",
     tags$aside(
       class = "sidebar",
-      div(class = "nav-item active", span("\u2302"), span("Home")),
-      div(class = "nav-item", span("\u25a4"), span("Queue")),
-      div(class = "nav-item", span("\u21ba"), span("History")),
-      div(class = "nav-item", span("\u2699"), span("Settings")),
-      div(
-        class = "daily-goal",
-        strong("Daily goal"),
-        htmlOutput("sidebar_progress"),
-        uiOutput("progress_bar"),
-        uiOutput("sidebar_shortcuts")
-      )
+      uiOutput("sidebar_nav"),
+      uiOutput("sidebar_status_card")
     ),
     tags$main(
       class = "main",
-      h1("Medium Preview Rating"),
-      htmlOutput("progress_line"),
-      htmlOutput("mode_line"),
-      uiOutput("v2_paused_warning"),
-      uiOutput("v2_debug_banner"),
-      div(class = "tabs", div(class = "tab active", "For you"), div(class = "tab", "Featured")),
-      uiOutput("article_area"),
-      uiOutput("rating_panel")
+      uiOutput("main_panel")
     ),
     tags$aside(
       class = "guide",
@@ -2345,12 +2933,27 @@ server <- function(input, output, session) {
   con <- connect_db()
   onStop(function() dbDisconnect(con))
   ensure_rating_schema(con)
+  ensure_article_lab_schema(con)
 
   if (is_dimension_mode) ensure_dimension_pass_queues(con, target_n = default_target_n)
   rating_session_id <- if (is_dimension_mode) NULL else resume_or_create_session(con, target_n = default_target_n)
+  active_section <- reactiveVal("home")
   active_dimension <- reactiveVal(if (is_dimension_mode) first_incomplete_dimension(con) else NA_character_)
   current <- reactiveVal(NULL)
   shown_started_at <- reactiveVal(Sys.time())
+  article_lab_state <- reactiveValues(
+    draft = NULL,
+    draft_created_at = NULL,
+    draft_meta = NULL,
+    notice = NULL
+  )
+  article_lab_refresh <- reactiveVal(0L)
+
+  observeEvent(input$sidebar_nav, {
+    if (is.character(input$sidebar_nav) && input$sidebar_nav %in% c("home", "article_lab")) {
+      active_section(input$sidebar_nav)
+    }
+  }, ignoreInit = TRUE)
 
   refresh_current <- function() {
     item <- if (is_dimension_mode) {
@@ -2400,6 +3003,125 @@ server <- function(input, output, session) {
   candidate_stats <- reactive({
     invalidateLater(5000, session)
     if (is_dimension_mode) dimension_candidate_counts(con) else candidate_counts(con)
+  })
+
+  output$sidebar_nav <- renderUI({
+    current_section <- active_section()
+    nav_button <- function(section, icon, label, enabled = TRUE) {
+      tags$button(
+        type = "button",
+        class = paste("nav-item", if (identical(current_section, section)) "active" else ""),
+        onclick = if (enabled) sprintf("Shiny.setInputValue('sidebar_nav', '%s', {priority: 'event'})", section) else NULL,
+        disabled = if (!enabled) "disabled" else NULL,
+        span(icon),
+        span(label)
+      )
+    }
+
+    tagList(
+      nav_button("home", "\u2302", "Home"),
+      tags$button(type = "button", class = "nav-item", disabled = "disabled", span("\u25a4"), span("Queue")),
+      tags$button(type = "button", class = "nav-item", disabled = "disabled", span("\u21ba"), span("History")),
+      tags$button(type = "button", class = "nav-item", disabled = "disabled", span("\u2699"), span("Settings")),
+      nav_button("article_lab", "\u270e", "Article Lab")
+    )
+  })
+
+  output$sidebar_status_card <- renderUI({
+    if (identical(active_section(), "article_lab")) {
+      return(div(
+        class = "daily-goal static-card",
+        strong("Article Lab"),
+        p("Generate tab MVP only."),
+        p(class = "shortcut-copy", "Human rating stays in the normal workflow.")
+      ))
+    }
+
+    div(
+      class = "daily-goal",
+      strong("Daily goal"),
+      htmlOutput("sidebar_progress"),
+      uiOutput("progress_bar"),
+      uiOutput("sidebar_shortcuts")
+    )
+  })
+
+  output$main_panel <- renderUI({
+    if (identical(active_section(), "article_lab")) {
+      return(tagList(
+        h1("Article Lab"),
+        div(class = "page-subtitle", "Generate, save, and review new title candidates."),
+        div(
+          class = "section-tabs",
+          div(class = "section-tab active", "Generate"),
+          div(class = "section-tab disabled", "API score"),
+          div(class = "section-tab disabled", "Compare"),
+          div(class = "section-tab disabled", "Promote")
+        ),
+        div(
+          class = "lab-card",
+          h2("Generation prompt"),
+          div(
+            class = "lab-field",
+            textAreaInput(
+              "article_lab_prompt",
+              label = NULL,
+              value = article_lab_default_prompt,
+              width = "100%",
+              height = "230px"
+            )
+          ),
+          div(
+            class = "lab-grid",
+            div(
+              class = "lab-field",
+              numericInput("article_lab_batch_size", "Batch size", value = 12L, min = 1L, max = 25L, width = "100%")
+            ),
+            div(
+              class = "lab-field",
+              textInput("article_lab_model", "Model", value = article_lab_default_model, width = "100%")
+            ),
+            div(
+              class = "lab-field",
+              textInput("article_lab_seed_topic", "Optional seed/topic", value = "", width = "100%", placeholder = "Optional article idea or angle")
+            ),
+            div(
+              class = "lab-field",
+              selectInput(
+                "article_lab_inspiration_source",
+                "Optional inspiration source",
+                choices = c("", "manual prompt", "top performing titles", "custom"),
+                selected = "",
+                width = "100%"
+              )
+            )
+          ),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_generate", "Generate titles", class = "lab-primary"),
+            actionButton("article_lab_save", "Save batch", class = "lab-secondary"),
+            actionButton("article_lab_clear", "Clear draft", class = "lab-secondary")
+          ),
+          uiOutput("article_lab_notice")
+        ),
+        div(
+          class = "lab-card",
+          h3("Latest generated titles"),
+          uiOutput("article_lab_latest_titles")
+        )
+      ))
+    }
+
+    tagList(
+      h1("Medium Preview Rating"),
+      htmlOutput("progress_line"),
+      htmlOutput("mode_line"),
+      uiOutput("v2_paused_warning"),
+      uiOutput("v2_debug_banner"),
+      div(class = "tabs", div(class = "tab active", "For you"), div(class = "tab", "Featured")),
+      uiOutput("article_area"),
+      uiOutput("rating_panel")
+    )
   })
 
   output$progress_line <- renderUI({
@@ -2555,7 +3277,163 @@ server <- function(input, output, session) {
     }
   })
 
+  article_lab_saved_batch <- reactive({
+    article_lab_refresh()
+    load_latest_article_lab_batch(con)
+  })
+
+  article_lab_saved_candidates <- reactive({
+    article_lab_refresh()
+    batch <- article_lab_saved_batch()
+    if (is.null(batch)) return(data.frame())
+    load_article_lab_candidates_for_batch(con, batch$batch_id[[1]])
+  })
+
+  article_lab_overview_stats <- reactive({
+    article_lab_refresh()
+    article_lab_overview(con)
+  })
+
+  output$article_lab_notice <- renderUI({
+    notice <- article_lab_state$notice
+    if (is.null(notice) || !nzchar(notice)) return(NULL)
+    div(class = "lab-status-copy", notice)
+  })
+
+  output$article_lab_latest_titles <- renderUI({
+    saved <- article_lab_saved_candidates()
+    draft <- article_lab_state$draft
+    if (!is.null(draft) && nrow(draft) > 0) {
+      draft_rows <- data.frame(
+        candidate_id = sprintf("draft_%02d", seq_len(nrow(draft))),
+        title = draft$title,
+        status = rep("draft", nrow(draft)),
+        created_at = rep(article_lab_state$draft_created_at %||% now_utc(), nrow(draft)),
+        batch_id = rep("(draft)", nrow(draft)),
+        stringsAsFactors = FALSE,
+        check.names = FALSE
+      )
+      rows <- draft_rows
+    } else {
+      rows <- saved
+    }
+    article_lab_table_ui(rows)
+  })
+
+  observeEvent(input$article_lab_generate, {
+    generated <- generate_title_candidates(
+      con = con,
+      prompt = input$article_lab_prompt,
+      batch_size = input$article_lab_batch_size,
+      seed_topic = input$article_lab_seed_topic,
+      inspiration_source = input$article_lab_inspiration_source,
+      model = input$article_lab_model
+    )
+    article_lab_state$draft <- generated$titles
+    article_lab_state$draft_created_at <- now_utc()
+    article_lab_state$draft_meta <- generated
+    if (identical(generated$mode, "api")) {
+      example_copy <- if (isTRUE(generated$example_titles_used > 0)) {
+        sprintf(" Used %s top-performing title examples as inspiration.", generated$example_titles_used)
+      } else {
+        ""
+      }
+      article_lab_state$notice <- sprintf(
+        "Generated %s draft titles with the OpenAI API using model %s.%s Save the batch to persist it to SQLite.",
+        nrow(generated$titles),
+        generated$model %||% article_lab_default_model,
+        example_copy
+      )
+    } else {
+      article_lab_state$notice <- sprintf(
+        "API generation was unavailable, so the local stub helper generated %s draft titles instead. Reason: %s",
+        nrow(generated$titles),
+        generated$fallback_reason %||% "unknown error"
+      )
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_save, {
+    draft <- article_lab_state$draft
+    draft_meta <- article_lab_state$draft_meta
+    if (is.null(draft) || nrow(draft) == 0) {
+      article_lab_state$notice <- "Nothing to save yet. Generate a draft first."
+      return(invisible(NULL))
+    }
+
+    batch_id <- save_article_lab_batch(
+      con,
+      prompt = input$article_lab_prompt,
+      seed_topic = input$article_lab_seed_topic,
+      inspiration_source = input$article_lab_inspiration_source,
+      requested_batch_size = input$article_lab_batch_size,
+      model = input$article_lab_model,
+      titles = draft$title,
+      raw_json = if (is.null(draft_meta$raw_json)) NA_character_ else draft_meta$raw_json,
+      generation_mode = draft_meta$mode %||% "generated"
+    )
+    article_lab_state$draft <- NULL
+    article_lab_state$draft_created_at <- NULL
+    article_lab_state$draft_meta <- NULL
+    article_lab_state$notice <- sprintf(
+      "Saved batch %s. Candidates are stored with status ready_for_human_rating. Generation mode: %s.",
+      batch_id,
+      draft_meta$mode %||% "generated"
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_clear, {
+    article_lab_state$draft <- NULL
+    article_lab_state$draft_created_at <- NULL
+    article_lab_state$draft_meta <- NULL
+    article_lab_state$notice <- "Cleared the unsaved draft."
+  }, ignoreInit = TRUE)
+
   output$guide_content <- renderUI({
+    if (identical(active_section(), "article_lab")) {
+      overview <- article_lab_overview_stats()
+      saved_batch <- article_lab_saved_batch()
+      draft <- article_lab_state$draft
+      draft_n <- if (is.null(draft)) 0L else nrow(draft)
+      current_batch_label <- if (draft_n > 0) {
+        sprintf("Unsaved draft with %s titles", draft_n)
+      } else if (!is.null(saved_batch)) {
+        sprintf("Saved batch %s", saved_batch$batch_id[[1]])
+      } else {
+        "No batch saved yet"
+      }
+      current_batch_meta <- if (draft_n > 0) {
+        paste("Draft created at", article_lab_state$draft_created_at %||% now_utc())
+      } else if (!is.null(saved_batch)) {
+        paste("Created", saved_batch$created_at[[1]], "\u00b7 model", first_value(saved_batch, "model", article_lab_default_model))
+      } else {
+        "Generate first, then save to persist candidates."
+      }
+
+      return(tagList(
+        div(
+          class = "status-card",
+          h3("Article Lab status"),
+          div(class = "status-metric", overview$ready_for_human_rating[[1]]),
+          p(sprintf("%s saved candidates marked ready for later human rating.", overview$ready_for_human_rating[[1]])),
+          p(class = "lab-status-copy", sprintf("%s saved batches total.", overview$saved_batches[[1]]))
+        ),
+        div(
+          class = "status-card",
+          h3("Current batch"),
+          p(current_batch_label),
+          p(class = "lab-status-copy", current_batch_meta)
+        ),
+        div(
+          class = "status-card",
+          h3("Reminder"),
+          p("Human rating happens in the normal rating queue. API scores should stay hidden until human ratings are complete."),
+          p(class = "lab-status-copy", "Queue integration TODO: stored titles are marked ready_for_human_rating only in this MVP.")
+        )
+      ))
+    }
+
     if (is_dimension_mode) {
       field <- active_dimension()
       if (is.na(field)) {
@@ -2942,6 +3820,7 @@ server <- function(input, output, session) {
   })
 
   handle_score <- function(score) {
+    if (!identical(active_section(), "home")) return(invisible(NULL))
     if (is_dimension_mode) return(invisible(NULL))
     item <- current()
     if (is.null(item)) return(invisible(NULL))
@@ -2963,6 +3842,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$skip, {
+    if (!identical(active_section(), "home")) return(invisible(NULL))
     item <- current()
     if (is.null(item)) return(invisible(NULL))
     if (is_dimension_mode) {
@@ -2974,6 +3854,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$skip_key, {
+    if (!identical(active_section(), "home")) return(invisible(NULL))
     item <- current()
     if (is.null(item)) return(invisible(NULL))
     if (is_dimension_mode) {
@@ -2985,16 +3866,19 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$undo, {
+    if (!identical(active_section(), "home")) return(invisible(NULL))
     if (is_dimension_mode) undo_previous_dimension_rating(con, active_dimension()) else undo_previous_rating(con, rating_session_id)
     refresh_current()
   }, ignoreInit = TRUE)
 
   observeEvent(input$undo_key, {
+    if (!identical(active_section(), "home")) return(invisible(NULL))
     if (is_dimension_mode) undo_previous_dimension_rating(con, active_dimension()) else undo_previous_rating(con, rating_session_id)
     refresh_current()
   }, ignoreInit = TRUE)
 
   apply_dimension_value <- function(field, value) {
+    if (!identical(active_section(), "home")) return(invisible(NULL))
     if (!is_dimension_mode || !(field %in% dimension_fields)) return(invisible(NULL))
     if (!identical(field, active_dimension())) return(invisible(NULL))
     item <- current()
@@ -3048,6 +3932,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$start_next_dimension, {
+    if (!identical(active_section(), "home")) return(invisible(NULL))
     if (!is_dimension_mode) return(invisible(NULL))
     next_field <- next_incomplete_dimension_after(con, active_dimension())
     if (!is.na(next_field)) active_dimension(next_field)
