@@ -508,7 +508,10 @@ def input_text_for_scope(item: dict[str, Any], prompt_version: str, scope: str) 
 
 
 def build_payload(model: str, item: dict[str, Any], prompt_version: str, scope: str) -> dict[str, Any]:
-    schema_name = f"medium_thumbnail_scores_{prompt_version}_{scope}".replace("-", "_")
+    schema_name = f"med_thumb_{prompt_version}_{scope}".replace("-", "_")
+    if len(schema_name) > 64:
+        schema_hash = hashlib.sha256(schema_name.encode("utf-8")).hexdigest()[:10]
+        schema_name = f"med_thumb_{scope}_{schema_hash}".replace("-", "_")[:64]
     content = [
         {"type": "input_text", "text": input_text_for_scope(item, prompt_version, scope)},
         {"type": "input_image", "image_url": item["image"]["payload_image_url"]},
