@@ -73,19 +73,9 @@ dimension_scale <- list(
   personal_click_appeal = c(`1` = "definitely no", `2` = "probably no", `3` = "maybe / unclear", `4` = "probably yes", `5` = "definitely yes")
 )
 thumbnail_only_dimension_fields <- c("ai_low_effort_flag", "visual_hook")
-thumbnail_paused_dimension_fields <- c(
-  "ai_low_effort_flag",
-  "visual_hook",
-  "emotional_pull_preview",
-  "personal_click_appeal"
-)
-active_dimension_fields <- if (is_dimension_v2_mode) {
-  setdiff(dimension_fields, thumbnail_paused_dimension_fields)
-} else {
-  dimension_fields
-}
-text_only_dimension_fields <- if (is_dimension_v2_mode) active_dimension_fields else character()
+active_dimension_fields <- dimension_fields
 title_isolation_dimension_fields <- c("title_hook_strength")
+text_only_dimension_fields <- if (is_dimension_v2_mode) title_isolation_dimension_fields else character()
 title_only_placeholder_subtitle <- "[Subtitle hidden for title-only rating]"
 title_only_placeholder_thumbnail_label <- "Placeholder image\nThumbnail hidden for title-only rating"
 target_n_env <- Sys.getenv("HUMAN_RATING_TARGET_N", unset = "")
@@ -2394,7 +2384,7 @@ server <- function(input, output, session) {
       active_label <- if (is.na(field)) "all complete" else field
       if (is_dimension_v2_mode) {
         return(HTML(sprintf(
-          "<div class='mode-line'><strong>Mode:</strong> %s · active dimension %s · cohort rows %s · active dimensions %s · dimension progress %s done / %s pending · overall %s / %s active dimensions complete</div>",
+          "<div class='mode-line'><strong>Mode:</strong> %s · active dimension %s · cohort rows %s · active dimensions %s · dimension progress %s done / %s pending · overall manual ratings %s / %s complete</div>",
           rating_mode,
           active_label,
           stats$total_cohort_rows[[1]],
@@ -2706,7 +2696,18 @@ server <- function(input, output, session) {
         div(class = "dimension-pass-header",
             div(class = "dimension-pass-kicker", "Dimension pass complete"),
             div(class = "dimension-pass-name", "All dimensions complete"),
-            div(class = "dimension-pass-focus", sprintf("Overall active dimension progress: %s / %s dimensions complete", length(active_dimension_fields), length(active_dimension_fields)))
+            div(
+              class = "dimension-pass-focus",
+              if (is_dimension_v2_mode) {
+                sprintf(
+                  "Overall manual rating progress: %s / %s ratings complete",
+                  candidate_stats()$completed_dimensions[[1]],
+                  candidate_stats()$total_dimensions[[1]]
+                )
+              } else {
+                sprintf("Overall active dimension progress: %s / %s dimensions complete", length(active_dimension_fields), length(active_dimension_fields))
+              }
+            )
         )
       ))
     }
@@ -2718,7 +2719,20 @@ server <- function(input, output, session) {
         div(class = "dimension-pass-header",
             div(class = "dimension-pass-kicker", "Dimension complete"),
             div(class = "dimension-pass-name", dimension_labels[[field]]),
-            div(class = "dimension-pass-focus", sprintf("Dimension progress: %s / %s", completed, total))
+            div(
+              class = "dimension-pass-focus",
+              if (is_dimension_v2_mode) {
+                sprintf(
+                  "Dimension progress: %s / %s · Overall manual rating progress: %s / %s ratings complete",
+                  completed,
+                  total,
+                  candidate_stats()$completed_dimensions[[1]],
+                  candidate_stats()$total_dimensions[[1]]
+                )
+              } else {
+                sprintf("Dimension progress: %s / %s", completed, total)
+              }
+            )
         ),
         if (!is.na(next_field)) actionButton("start_next_dimension", paste("Start next dimension:", dimension_labels[[next_field]])) else div(class = "shortcut-copy", "All dimension passes are complete.")
       ))
@@ -2821,7 +2835,26 @@ server <- function(input, output, session) {
         div(class = "dimension-pass-name", paste("Active dimension:", dimension_labels[[field]])),
         div(class = "dimension-pass-focus", strong("Focus: "), dimension_focus[[field]]),
         div(class = "dimension-pass-question", strong("Question: "), dimension_questions[[field]]),
-        div(class = "dimension-pass-focus", sprintf("Dimension progress: %s / %s · Overall active dimension progress: %s / %s dimensions complete", completed, total, candidate_stats()$completed_dimensions[[1]], candidate_stats()$total_dimensions[[1]])),
+        div(
+          class = "dimension-pass-focus",
+          if (is_dimension_v2_mode) {
+            sprintf(
+              "Dimension progress: %s / %s · Overall manual rating progress: %s / %s ratings complete",
+              completed,
+              total,
+              candidate_stats()$completed_dimensions[[1]],
+              candidate_stats()$total_dimensions[[1]]
+            )
+          } else {
+            sprintf(
+              "Dimension progress: %s / %s · Overall active dimension progress: %s / %s dimensions complete",
+              completed,
+              total,
+              candidate_stats()$completed_dimensions[[1]],
+              candidate_stats()$total_dimensions[[1]]
+            )
+          }
+        ),
         verification_title
       ),
       scale_ui(field),

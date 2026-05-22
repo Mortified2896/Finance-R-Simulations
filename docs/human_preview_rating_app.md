@@ -41,7 +41,7 @@ install.packages(c("shiny", "DBI", "RSQLite"))
 
 `human_preview_dimensions_v1` is a separate dimension pass workflow over the thumbnail cohort. It writes one inspectable row per article to `human_preview_dimension_ratings`, with nullable columns for each dimension, and uses `human_preview_dimension_pass_queue` to track completion separately for each dimension. It does not read or mutate `human_preview_ratings` except as a fallback source for the cohort if the all-cohort CSV is missing.
 
-`human_preview_dimensions_v2` currently has thumbnail-based manual rating paused because article-to-thumbnail source mapping is under audit. The app only offers `title_hook_strength`, shows the real title, and replaces both subtitle and thumbnail with neutral placeholders so the rater stays focused on the title alone. It still reads the validated manifest cohort so text work stays on the same article set, and writes to `human_preview_dimension_ratings_v2`.
+`human_preview_dimensions_v2` is the clean validated-manifest workflow. It reads the validated manifest cohort, writes to `human_preview_dimension_ratings_v2`, and runs the full five-dimension pass order on that cohort. `title_hook_strength` remains title-only in v2 and hides subtitle and thumbnail during that pass. The thumbnail-based dimensions use the validated manifest image for the article.
 
 ## Dimension Cohort
 
@@ -61,7 +61,7 @@ The builder starts from `data/analysis/title_api_score_samples/human_rated_thumb
 
 The thumbnail downloader treats duplicate image content as valid, but each row still needs its own expected file path. If Medium serves bytes whose SHA-256 matches an existing thumbnail, `scripts/download_medium_images.py` copies the existing file to the current row's `image_file_stem` path, records `duplicate_of_path`, and marks the row downloaded. Duplicate image hashes are allowed because Medium can reuse the same image content. Duplicate `local_image_path` values are not allowed because the manifest, Shiny app, and API scorer must all point to a row-specific validated file.
 
-Important: thumbnail-based manual ratings are paused despite the validated manifest, because some article-to-thumbnail source linkage still appears semantically mismatched. Do not use old thumbnail human ratings or old thumbnail API scores for clean conclusions until the source-card linkage audit is complete.
+Important: treat old thumbnail-linked manual/API outputs outside the validated v2 manifest cautiously. Use the validated v2 cohort and manifest-backed image hashes for current manual thumbnail work and any clean downstream analysis.
 
 The matching valid sample for analysis and text scorers is:
 
@@ -85,6 +85,16 @@ Only rows with existing, stem-validated local thumbnails are queued for new sess
 
 Restart the Shiny app after any thumbnail queue/exporter or app mapping change. A running Shiny process keeps the loaded R code in memory, so thumbnail validation fixes do not affect an already-open app session until it is stopped and started again.
 
+## Verification Notes
+
+When verifying this app after code changes, do not rely only on a lightweight shell probe such as `curl` or a bare browser screenshot. The Shiny server can be listening on `127.0.0.1:3838` while the actual session-backed UI state has not been exercised yet.
+
+For app verification:
+
+- First confirm the server is running and the expected queue/rating state exists in `data/db/medium_articles.sqlite`.
+- Then verify the visible UI with a real browser-backed Shiny session, ideally by opening the app in a browser and refreshing after restart.
+- If browser automation shows a blank or stale page but the DB state is correct, treat that as an incomplete browser/session verification problem rather than proof that the queue logic failed.
+
 For reusable mapping QA, run:
 
 ```sh
@@ -105,16 +115,13 @@ That audit verifies `manual_shown_image_hash == api_scored_image_hash == manifes
 
 The app rates one active dimension across the full cohort before moving to the next dimension.
 
-In `human_preview_dimensions_v2`, only the text-based dimension is active while thumbnail mapping is under audit:
+In `human_preview_dimensions_v2`, the pass order is:
 
-1. `title_hook_strength`
-
-The following thumbnail-dependent dimensions are shelved in v2 for now:
-
-- `ai_low_effort_flag`
-- `visual_hook`
-- `emotional_pull_preview`
-- `personal_click_appeal`
+1. `ai_low_effort_flag`
+2. `visual_hook`
+3. `title_hook_strength`
+4. `emotional_pull_preview`
+5. `personal_click_appeal`
 
 In `human_preview_dimensions_v1`, the historical order is:
 
@@ -128,15 +135,15 @@ The app starts with the first incomplete dimension. A dimension is complete only
 
 ## Dimension Definitions
 
-`ai_low_effort_flag`: Does the thumbnail look AI-generated, generic, sloppy, or low-effort? Focus on thumbnail only. Values: `yes`, `unsure`, `no`. Paused in v2.
+`ai_low_effort_flag`: Does the thumbnail look AI-generated, generic, sloppy, or low-effort? Focus on thumbnail only. Values: `yes`, `unsure`, `no`.
 
-`visual_hook`: Does the thumbnail catch attention visually? Focus on thumbnail only. Scale: 1 visually boring, 2 weak, 3 okay, 4 strong, 5 very strong. Paused in v2.
+`visual_hook`: Does the thumbnail catch attention visually? Focus on thumbnail only. Scale: 1 visually boring, 2 weak, 3 okay, 4 strong, 5 very strong.
 
 `title_hook_strength`: How strong is the title as a hook? Focus on title only. In v2, the app masks subtitle and thumbnail with placeholders during this pass. Scale: 1 weak/generic, 2 below average, 3 okay, 4 strong, 5 excellent. Active in v2.
 
-`emotional_pull_preview`: Does the full preview create curiosity, concern, aspiration, tension, or emotion? Focus on title, subtitle, and thumbnail. Scale: 1 emotionally flat, 2 weak, 3 moderate, 4 strong, 5 very strong. Paused in v2.
+`emotional_pull_preview`: Does the full preview create curiosity, concern, aspiration, tension, or emotion? Focus on title, subtitle, and thumbnail. Scale: 1 emotionally flat, 2 weak, 3 moderate, 4 strong, 5 very strong.
 
-`personal_click_appeal`: Would I personally want to click/read this based on the preview? Focus on title, subtitle, and thumbnail. Scale: 1 definitely no, 2 probably no, 3 maybe/unclear, 4 probably yes, 5 definitely yes. Paused in v2.
+`personal_click_appeal`: Would I personally want to click/read this based on the preview? Focus on title, subtitle, and thumbnail. Scale: 1 definitely no, 2 probably no, 3 maybe/unclear, 4 probably yes, 5 definitely yes.
 
 The dimension mode intentionally does not include `professional_credibility` or `thumbnail_trust_quality`.
 
@@ -190,6 +197,6 @@ Dimension pass mode:
 
 Both manual workflows are blind rating workflows. Do not add outcome/API/performance data to the UI, tooltip text, browser console payloads intended for display, or the preview card.
 
-Old rows in `human_preview_ratings` and `human_preview_dimension_ratings` may include stale or wrong thumbnails. Old `medium_thumbnail_api_scores` rows with `prompt_version = thumbnail_v1` may also include stale or wrong thumbnails. Preserve them for audit/history, but do not use them as clean thumbnail evidence. Current text-only/title-subtitle work can continue on the valid v2 cohort. The next required step before using thumbnails again is a source-card linkage audit that proves each article is linked to the correct Medium source card image.
+Old rows in `human_preview_ratings` and `human_preview_dimension_ratings` may include stale or wrong thumbnails. Old `medium_thumbnail_api_scores` rows with `prompt_version = thumbnail_v1` may also include stale or wrong thumbnails. Preserve them for audit/history, but do not use them as clean thumbnail evidence. For current manual thumbnail work and clean conclusions, use `human_preview_dimensions_v2` with the validated manifest cohort and manifest-backed image hashes.
 
 Restart the Shiny app after app or manifest changes. A running Shiny process keeps loaded R code and cohort data in memory.
