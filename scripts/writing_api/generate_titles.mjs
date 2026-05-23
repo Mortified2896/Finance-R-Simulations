@@ -2,6 +2,8 @@ import "dotenv/config";
 import fs from "node:fs/promises";
 import OpenAI from "openai";
 
+const MAX_TITLE_CHARS = 45;
+
 function usage() {
   console.error("Usage: node scripts/writing_api/generate_titles.mjs <request.json>");
 }
@@ -46,6 +48,20 @@ function normalizeTitles(values, requestedCount) {
   return unique;
 }
 
+function titleLength(value) {
+  return Array.from(String(value ?? "")).length;
+}
+
+function splitByLength(titles, maxChars = MAX_TITLE_CHARS) {
+  const valid = [];
+  const invalid = [];
+  for (const title of titles) {
+    if (titleLength(title) <= maxChars) valid.push(title);
+    else invalid.push(title);
+  }
+  return { valid, invalid };
+}
+
 function parseTitles(rawText, requestedCount) {
   const stripped = stripCodeFences(rawText);
 
@@ -73,9 +89,11 @@ function buildPrompt({ prompt, batchSize, seedTopic, inspirationSource, exampleT
     "You generate Medium-style article title candidates for personal finance and investing.",
     "Return valid JSON only in the shape {\"titles\": [\"...\", \"...\"]}.",
     `Return exactly ${batchSize} titles.`,
+    `Every title must be at most ${MAX_TITLE_CHARS} characters, including spaces.`,
     "Do not include explanations, numbering, markdown, or code fences.",
     "Do not copy any example title verbatim.",
-    "Keep the titles credible, science-based, beginner-friendly, and not clickbait."
+    "Keep the titles credible, science-based, beginner-friendly, and not clickbait.",
+    "If a title would exceed the limit, rewrite it shorter instead of truncating it."
   ];
 
   if (seedTopic) {
@@ -95,6 +113,20 @@ function buildPrompt({ prompt, batchSize, seedTopic, inspirationSource, exampleT
 
   sections.push("User prompt:", prompt);
   return sections.join("\n\n");
+}
+
+function buildRetryPrompt({ originalPrompt, batchSize, invalidTitles }) {
+  return [
+    "Your previous title candidates were too long.",
+    `Rewrite them so every title is at most ${MAX_TITLE_CHARS} characters, including spaces.`,
+    `Return valid JSON only in the shape {\"titles\": [\"...\", \"...\"]}.`,
+    `Return exactly ${batchSize} titles.`,
+    "Do not explain anything.",
+    "Original prompt:",
+    originalPrompt,
+    "Too-long titles to shorten:",
+    invalidTitles.map((title, index) => `${index + 1}. ${title}`).join("\n")
+  ].join("\n\n");
 }
 
 async function main() {
@@ -150,8 +182,35 @@ async function main() {
   }
 
   const rawText = extractText(response);
-  const titles = parseTitles(rawText, batchSize);
-  if (titles.length === 0) {
+  let titles = parseTitles(rawText, batchSize);
+  let { valid, invalid } = splitByLength(titles, MAX_TITLE_CHARS);
+  let retryUsed = false;
+  let retryRawText = null;
+
+  if (invalid.length > 0) {
+    retryUsed = true;
+    let retryResponse;
+    try {
+      retryResponse = await client.responses.create({
+        model,
+        input: buildRetryPrompt({
+          originalPrompt: builtPrompt,
+          batchSize,
+          invalidTitles: invalid
+        })
+      });
+    } catch (error) {
+      console.error(`OpenAI API retry failure: ${error.message}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    retryRawText = extractText(retryResponse);
+    titles = parseTitles(retryRawText, batchSize);
+    ({ valid, invalid } = splitByLength(titles, MAX_TITLE_CHARS));
+  }
+
+  if (valid.length === 0) {
     console.error("The API response did not contain any usable titles.");
     process.exitCode = 1;
     return;
@@ -161,8 +220,12 @@ async function main() {
     mode: "api",
     model,
     response_id: response.id ?? null,
-    titles,
+    titles: valid,
     raw_text: rawText,
+    retry_used: retryUsed,
+    retry_raw_text: retryRawText,
+    dropped_count: invalid.length,
+    dropped_titles: invalid,
     usage: response.usage ?? null
   };
 

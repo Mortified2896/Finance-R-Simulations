@@ -62,9 +62,10 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 
 ## Writing Helpers
 
-- `writing_setup/apply_article_lab_schema.R`: creates or updates the Article Lab title-generation tables and indexes with a database backup first.
+- `writing_setup/apply_article_lab_schema.R`: creates or updates the Article Lab title-generation and title-scoring tables and indexes with a database backup first.
 - `writing_setup/apply_writing_lab_schema.R`: creates or updates the broader writing-lab schema objects.
 - `writing_api/generate_titles.mjs`: live OpenAI title-generation helper for the Article Lab Generate tab.
+- `writing_api/score_article_lab_titles.py`: live OpenAI title-only scoring helper for the Article Lab API score tab using the v2_2 rubric.
 - `writing_api/reroll_sentence.mjs`: article sentence/paragraph rewrite helper.
 - `writing_api/draft_section.mjs`: placeholder.
 - `writing_api/critique_draft.mjs`: placeholder.

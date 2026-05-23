@@ -89,13 +89,17 @@ db_execute(connection, "PRAGMA foreign_keys = ON")
 
 table_names <- c(
   "article_lab_title_batches",
-  "article_lab_title_candidates"
+  "article_lab_title_candidates",
+  "article_lab_title_api_scores"
 )
 
 index_names <- c(
   "idx_article_lab_title_batches_created_at",
   "idx_article_lab_title_candidates_batch",
-  "idx_article_lab_title_candidates_status"
+  "idx_article_lab_title_candidates_status",
+  "idx_article_lab_title_api_scores_batch",
+  "idx_article_lab_title_api_scores_cache",
+  "idx_article_lab_title_api_scores_prompt"
 )
 
 preexisting_tables <- table_names[vapply(table_names, table_exists, logical(1), connection = connection)]
@@ -122,11 +126,14 @@ invisible(dbWithTransaction(connection, {
       batch_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
       title TEXT NOT NULL,
+      title_char_count INTEGER,
+      title_length_flag TEXT,
       status TEXT NOT NULL DEFAULT 'generated',
       source TEXT NOT NULL DEFAULT 'article_lab',
       ready_for_human_rating INTEGER NOT NULL DEFAULT 0,
       promoted INTEGER NOT NULL DEFAULT 0,
       archived INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
       raw_json TEXT,
       FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
     )
@@ -145,6 +152,106 @@ invisible(dbWithTransaction(connection, {
   db_execute(connection, "
     CREATE INDEX IF NOT EXISTS idx_article_lab_title_candidates_status
     ON article_lab_title_candidates (status, ready_for_human_rating, archived, promoted)
+  ")
+
+  db_execute(connection, "
+    CREATE TABLE IF NOT EXISTS article_lab_title_api_scores (
+      score_id TEXT PRIMARY KEY,
+      candidate_id TEXT NOT NULL,
+      batch_id TEXT NOT NULL,
+      scored_at TEXT NOT NULL,
+      model TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      clarity REAL,
+      curiosity REAL,
+      specificity REAL,
+      beginner_appeal REAL,
+      credibility REAL,
+      emotional_pull REAL,
+      promise_strength REAL,
+      trust_risk REAL,
+      medium_clap_potential REAL,
+      medium_comment_potential REAL,
+      overall_article_potential REAL,
+      combined_title_score REAL,
+      predicted_success_bucket TEXT,
+      short_reason TEXT,
+      raw_json TEXT,
+      error TEXT,
+      FOREIGN KEY(candidate_id) REFERENCES article_lab_title_candidates(candidate_id),
+      FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
+    )
+  ")
+
+  db_execute(connection, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_title_api_scores_batch
+    ON article_lab_title_api_scores (batch_id, scored_at, candidate_id)
+  ")
+
+  db_execute(connection, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_article_lab_title_api_scores_cache
+    ON article_lab_title_api_scores (candidate_id, model, prompt_version, scope)
+  ")
+
+  db_execute(connection, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_title_api_scores_prompt
+    ON article_lab_title_api_scores (prompt_version, model, scope)
+  ")
+
+  candidate_columns <- dbGetQuery(connection, "PRAGMA table_info(article_lab_title_candidates)")$name
+  if (!("title_char_count" %in% candidate_columns)) {
+    db_execute(connection, "ALTER TABLE article_lab_title_candidates ADD COLUMN title_char_count INTEGER")
+  }
+  if (!("title_length_flag" %in% candidate_columns)) {
+    db_execute(connection, "ALTER TABLE article_lab_title_candidates ADD COLUMN title_length_flag TEXT")
+  }
+  if (!("notes" %in% candidate_columns)) {
+    db_execute(connection, "ALTER TABLE article_lab_title_candidates ADD COLUMN notes TEXT")
+  }
+
+  db_execute(connection, "
+    UPDATE article_lab_title_candidates
+    SET title_char_count = COALESCE(title_char_count, LENGTH(COALESCE(title, ''))),
+        title_length_flag = COALESCE(title_length_flag, CASE
+          WHEN LENGTH(COALESCE(title, '')) <= 45 THEN 'mobile_safe'
+          WHEN LENGTH(COALESCE(title, '')) <= 60 THEN 'good'
+          WHEN LENGTH(COALESCE(title, '')) <= 75 THEN 'risky'
+          ELSE 'too_long'
+        END)
+    WHERE title_char_count IS NULL OR title_length_flag IS NULL
+  ")
+
+  db_execute(connection, "
+    UPDATE article_lab_title_candidates
+    SET ready_for_human_rating = 0,
+        status = CASE
+          WHEN candidate_id IN (
+            SELECT DISTINCT candidate_id
+            FROM article_lab_title_api_scores
+          ) THEN 'api_scored'
+          ELSE 'generated'
+        END
+    WHERE ready_for_human_rating = 1
+      AND status = 'ready_for_human_rating'
+      AND archived = 0
+  ")
+
+  db_execute(connection, "
+    UPDATE article_lab_title_candidates
+    SET status = 'approved_for_subtitle',
+        promoted = 1,
+        ready_for_human_rating = 0,
+        archived = 0
+    WHERE promoted = 1
+       OR status IN ('promoted', 'approved', 'approved_for_subtitle')
+  ")
+
+  db_execute(connection, "
+    UPDATE article_lab_title_candidates
+    SET status = 'archived',
+        ready_for_human_rating = 0
+    WHERE archived = 1
   ")
 }))
 

@@ -5,6 +5,7 @@ This folder contains small writing helpers for article projects.
 ## Current status
 
 - `generate_titles.mjs`: implemented for Article Lab title generation from the OpenAI API.
+- `score_article_lab_titles.py`: implemented for Article Lab title-only API scoring with the v2_2 rubric.
 - `reroll_sentence.mjs`: implemented for rewriting one selected sentence or paragraph.
 - `draft_section.mjs`: placeholder only.
 - `critique_draft.mjs`: placeholder only.
@@ -54,6 +55,33 @@ The request JSON should include:
 ```
 
 The helper prints JSON to stdout with a `titles` array and API metadata. The Shiny app uses this helper behind the Article Lab Generate button.
+
+## Score generated Article Lab titles
+
+Run from the repository root:
+
+```sh
+python3 scripts/writing_api/score_article_lab_titles.py /path/to/request.json
+```
+
+The request JSON should include:
+
+```json
+{
+  "model": "gpt-5-mini",
+  "prompt_version": "v2_2",
+  "scope": "title_only",
+  "candidates": [
+    {
+      "candidate_id": "alc_batch_01",
+      "batch_id": "alb_batch",
+      "title": "Index Fund Mistakes Beginners Make"
+    }
+  ]
+}
+```
+
+The helper prints JSON to stdout with per-candidate title scores and raw response payloads. The Shiny app uses this helper behind the Article Lab API score tab.
 
 ## Reroll a sentence or paragraph
 

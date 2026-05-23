@@ -315,6 +315,22 @@ ensure_rating_schema <- function(con) {
     )
   ")
 
+  queue_columns <- c(
+    source_type = "TEXT",
+    article_lab_candidate_id = "TEXT"
+  )
+  for (column_name in names(queue_columns)) {
+    db_add_column_if_missing(con, "human_preview_rating_queue", column_name, queue_columns[[column_name]])
+  }
+
+  rating_columns <- c(
+    source_type = "TEXT",
+    article_lab_candidate_id = "TEXT"
+  )
+  for (column_name in names(rating_columns)) {
+    db_add_column_if_missing(con, "human_preview_ratings", column_name, rating_columns[[column_name]])
+  }
+
   dbExecute(con, "
     CREATE TABLE IF NOT EXISTS human_preview_dimension_rating_queue (
       rating_session_id TEXT,
@@ -427,6 +443,16 @@ ensure_rating_schema <- function(con) {
   ")
 
   dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_human_preview_queue_source
+    ON human_preview_rating_queue (rating_session_id, source_type, article_lab_candidate_id, status)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_human_preview_ratings_source
+    ON human_preview_ratings (source_type, article_lab_candidate_id, rated_at, id)
+  ")
+
+  dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_human_preview_dimension_queue_status
     ON human_preview_dimension_rating_queue (rating_session_id, status, queue_position)
   ")
@@ -498,6 +524,138 @@ article_lab_default_model <- local({
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
+article_lab_default_score_model <- local({
+  configured <- Sys.getenv("OPENAI_TITLE_SCORING_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5-mini"
+  configured
+})
+article_lab_default_score_prompt_version <- "v2_2"
+article_lab_default_score_scope <- "title_only"
+article_lab_all_batches_value <- "__all_article_lab_batches__"
+article_lab_title_max_chars <- 45L
+article_lab_candidate_status_values <- c(
+  "generated",
+  "disqualified",
+  "ready_for_api_scoring",
+  "api_pending",
+  "api_scored",
+  "approved_for_subtitle",
+  "archived",
+  "rejected"
+)
+article_lab_candidate_status_labels <- c(
+  generated = "New",
+  disqualified = "Disqualified",
+  ready_for_api_scoring = "API queue",
+  api_pending = "API scoring",
+  api_scored = "API scored",
+  approved_for_subtitle = "Approved",
+  archived = "Archived",
+  rejected = "Rejected",
+  draft = "Draft"
+)
+article_lab_score_fields <- c(
+  "clarity",
+  "curiosity",
+  "specificity",
+  "beginner_appeal",
+  "credibility",
+  "emotional_pull",
+  "promise_strength",
+  "trust_risk",
+  "medium_clap_potential",
+  "medium_comment_potential",
+  "overall_article_potential"
+)
+
+article_lab_title_length_flag <- function(char_count) {
+  count <- suppressWarnings(as.integer(char_count))
+  ifelse(
+    is.na(count),
+    NA_character_,
+    ifelse(
+      count <= 45L,
+      "mobile_safe",
+      ifelse(count <= 60L, "good", ifelse(count <= 75L, "risky", "too_long"))
+    )
+  )
+}
+
+article_lab_normalize_score <- function(x) {
+  value <- suppressWarnings(as.numeric(x))
+  normalized <- ((value - 1) / 4) * 100
+  normalized[is.na(value)] <- NA_real_
+  pmax(0, pmin(100, normalized))
+}
+
+article_lab_combined_title_score <- function(curiosity, emotional_pull, medium_comment_potential, overall_article_potential, trust_risk, title_char_count = NA_integer_) {
+  curiosity_norm <- article_lab_normalize_score(curiosity)
+  emotional_norm <- article_lab_normalize_score(emotional_pull)
+  comment_norm <- article_lab_normalize_score(medium_comment_potential)
+  overall_norm <- article_lab_normalize_score(overall_article_potential)
+  trust_norm <- article_lab_normalize_score(trust_risk)
+  char_count <- suppressWarnings(as.integer(title_char_count))
+  trust_penalty <- ifelse(is.na(trust_norm), 0, 0.18 * trust_norm)
+  length_penalty <- ifelse(
+    is.na(char_count),
+    0,
+    ifelse(char_count > 75L, 20, ifelse(char_count > 60L, 8, 0))
+  )
+  raw_score <- (0.25 * curiosity_norm) +
+    (0.30 * emotional_norm) +
+    (0.25 * comment_norm) +
+    (0.20 * overall_norm) -
+    trust_penalty -
+    length_penalty
+  round(pmax(0, pmin(100, raw_score)), 1)
+}
+
+article_lab_normalize_candidate_status <- function(status, ready_for_human_rating = 0, promoted = 0, archived = 0) {
+  status_value <- clean_text(status)
+  status_value <- if (length(status_value) == 0 || is.na(status_value[[1]])) NA_character_ else status_value[[1]]
+  ready_value <- suppressWarnings(as.integer(ready_for_human_rating))
+  promoted_value <- suppressWarnings(as.integer(promoted))
+  archived_value <- suppressWarnings(as.integer(archived))
+
+  if (!is.na(archived_value) && archived_value == 1L) return("archived")
+  if (!is.na(promoted_value) && promoted_value == 1L) return("approved_for_subtitle")
+  if (!is.na(status_value) && identical(status_value, "draft")) return("draft")
+  if (!is.na(status_value) && status_value %in% c("promoted", "approved", "approved_for_subtitle")) return("approved_for_subtitle")
+  if (!is.na(status_value) && identical(status_value, "ready_for_human_rating")) return("api_scored")
+  if (!is.na(ready_value) && ready_value == 1L) return("api_scored")
+  if (!is.na(status_value) && status_value %in% article_lab_candidate_status_values) return(status_value)
+  "generated"
+}
+
+article_lab_status_label <- function(status) {
+  label <- article_lab_candidate_status_labels[[status]]
+  if (is.null(label) || is.na(label) || !nzchar(label)) status else label
+}
+
+article_lab_status_choices <- function(values) {
+  setNames(values, vapply(values, article_lab_status_label, character(1)))
+}
+
+article_lab_row_input_id <- function(prefix, candidate_id) {
+  paste0(prefix, "_", gsub("[^A-Za-z0-9]+", "_", candidate_id))
+}
+
+article_lab_normalize_candidate_rows <- function(rows) {
+  if (nrow(rows) == 0) return(rows)
+  ready_column <- if ("ready_for_human_rating" %in% names(rows)) rows$ready_for_human_rating else rep(0L, nrow(rows))
+  promoted_column <- if ("promoted" %in% names(rows)) rows$promoted else rep(0L, nrow(rows))
+  archived_column <- if ("archived" %in% names(rows)) rows$archived else rep(0L, nrow(rows))
+  rows$normalized_status <- vapply(seq_len(nrow(rows)), function(i) {
+    article_lab_normalize_candidate_status(
+      status = rows$status[[i]],
+      ready_for_human_rating = ready_column[[i]],
+      promoted = promoted_column[[i]],
+      archived = archived_column[[i]]
+    )
+  }, character(1))
+  rows$status_label <- vapply(rows$normalized_status, article_lab_status_label, character(1))
+  rows
+}
 
 ensure_article_lab_schema <- function(con) {
   dbExecute(con, "
@@ -520,12 +678,49 @@ ensure_article_lab_schema <- function(con) {
       batch_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
       title TEXT NOT NULL,
+      title_char_count INTEGER,
+      title_length_flag TEXT,
       status TEXT NOT NULL DEFAULT 'generated',
       source TEXT NOT NULL DEFAULT 'article_lab',
       ready_for_human_rating INTEGER NOT NULL DEFAULT 0,
       promoted INTEGER NOT NULL DEFAULT 0,
       archived INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
       raw_json TEXT,
+      FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
+    )
+  ")
+
+  db_add_column_if_missing(con, "article_lab_title_candidates", "title_char_count", "INTEGER")
+  db_add_column_if_missing(con, "article_lab_title_candidates", "title_length_flag", "TEXT")
+  db_add_column_if_missing(con, "article_lab_title_candidates", "notes", "TEXT")
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_title_api_scores (
+      score_id TEXT PRIMARY KEY,
+      candidate_id TEXT NOT NULL,
+      batch_id TEXT NOT NULL,
+      scored_at TEXT NOT NULL,
+      model TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      clarity REAL,
+      curiosity REAL,
+      specificity REAL,
+      beginner_appeal REAL,
+      credibility REAL,
+      emotional_pull REAL,
+      promise_strength REAL,
+      trust_risk REAL,
+      medium_clap_potential REAL,
+      medium_comment_potential REAL,
+      overall_article_potential REAL,
+      combined_title_score REAL,
+      predicted_success_bucket TEXT,
+      short_reason TEXT,
+      raw_json TEXT,
+      error TEXT,
+      FOREIGN KEY(candidate_id) REFERENCES article_lab_title_candidates(candidate_id),
       FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
     )
   ")
@@ -544,6 +739,65 @@ ensure_article_lab_schema <- function(con) {
     CREATE INDEX IF NOT EXISTS idx_article_lab_title_candidates_status
     ON article_lab_title_candidates (status, ready_for_human_rating, archived, promoted)
   ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_title_api_scores_batch
+    ON article_lab_title_api_scores (batch_id, scored_at, candidate_id)
+  ")
+
+  dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_article_lab_title_api_scores_cache
+    ON article_lab_title_api_scores (candidate_id, model, prompt_version, scope)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_title_api_scores_prompt
+    ON article_lab_title_api_scores (prompt_version, model, scope)
+  ")
+
+  dbExecute(con, "
+    UPDATE article_lab_title_candidates
+    SET title_char_count = COALESCE(title_char_count, LENGTH(COALESCE(title, ''))),
+        title_length_flag = COALESCE(title_length_flag, CASE
+          WHEN LENGTH(COALESCE(title, '')) <= 45 THEN 'mobile_safe'
+          WHEN LENGTH(COALESCE(title, '')) <= 60 THEN 'good'
+          WHEN LENGTH(COALESCE(title, '')) <= 75 THEN 'risky'
+          ELSE 'too_long'
+        END)
+    WHERE title_char_count IS NULL OR title_length_flag IS NULL
+  ")
+
+  dbExecute(con, "
+    UPDATE article_lab_title_candidates
+    SET ready_for_human_rating = 0,
+        status = CASE
+          WHEN candidate_id IN (
+            SELECT DISTINCT candidate_id
+            FROM article_lab_title_api_scores
+          ) THEN 'api_scored'
+          ELSE 'generated'
+        END
+    WHERE ready_for_human_rating = 1
+      AND status = 'ready_for_human_rating'
+      AND archived = 0
+  ")
+
+  dbExecute(con, "
+    UPDATE article_lab_title_candidates
+    SET status = 'approved_for_subtitle',
+        promoted = 1,
+        ready_for_human_rating = 0,
+        archived = 0
+    WHERE promoted = 1
+       OR status IN ('promoted', 'approved', 'approved_for_subtitle')
+  ")
+
+  dbExecute(con, "
+    UPDATE article_lab_title_candidates
+    SET status = 'archived',
+        ready_for_human_rating = 0
+    WHERE archived = 1
+  ")
 }
 
 article_lab_batch_id <- function() {
@@ -552,6 +806,23 @@ article_lab_batch_id <- function() {
 
 article_lab_candidate_id <- function(batch_id, index) {
   paste0("alc_", batch_id, "_", sprintf("%02d", as.integer(index)))
+}
+
+article_lab_title_length <- function(x) {
+  nchar(enc2utf8(as.character(x)), type = "chars", allowNA = TRUE, keepNA = TRUE)
+}
+
+article_lab_validate_titles <- function(titles, max_chars = article_lab_title_max_chars) {
+  title_values <- clean_text(titles)
+  lengths <- article_lab_title_length(title_values)
+  valid <- !is.na(title_values) & !is.na(lengths) & lengths <= max_chars
+  valid[is.na(valid)] <- FALSE
+  list(
+    titles = title_values[valid],
+    dropped_titles = title_values[!valid & !is.na(title_values)],
+    kept_n = sum(valid, na.rm = TRUE),
+    dropped_n = sum(!valid & !is.na(title_values), na.rm = TRUE)
+  )
 }
 
 stub_title_candidates <- function(prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_) {
@@ -634,9 +905,10 @@ stub_title_candidates <- function(prompt, batch_size, seed_topic = NA_character_
     titles <- c(titles, filler)
   }
 
+  validated <- article_lab_validate_titles(titles[seq_len(n)], max_chars = article_lab_title_max_chars)
   data.frame(
-    row_number = seq_len(n),
-    title = titles[seq_len(n)],
+    row_number = seq_along(validated$titles),
+    title = validated$titles,
     stringsAsFactors = FALSE,
     check.names = FALSE
   )
@@ -726,7 +998,10 @@ article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_characte
     model = article_lab_input_string(parsed$model) %||% request_payload$model,
     raw_json = stdout_text,
     example_titles_used = as.integer(length(example_titles)),
-    response_id = article_lab_input_string(parsed$response_id)
+    response_id = article_lab_input_string(parsed$response_id),
+    retry_used = isTRUE(parsed$retry_used),
+    dropped_n = as.integer(parsed$dropped_count %||% 0L),
+    dropped_titles = unname(unlist(parsed$dropped_titles %||% list(), use.names = FALSE))
   )
 }
 
@@ -744,28 +1019,480 @@ generate_title_candidates <- function(con, prompt, batch_size, seed_topic = NA_c
       example_titles = example_titles
     )
     api_result$fallback_reason <- NULL
+    api_result$validated <- article_lab_validate_titles(api_result$titles$title, max_chars = article_lab_title_max_chars)
+    api_result$titles <- data.frame(
+      row_number = seq_along(api_result$validated$titles),
+      title = api_result$validated$titles,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+    if (is.null(api_result$dropped_n) || is.na(api_result$dropped_n)) api_result$dropped_n <- api_result$validated$dropped_n
     api_result
   }, error = function(e) {
+    stub_rows <- stub_title_candidates(
+      prompt = prompt,
+      batch_size = batch_size,
+      seed_topic = seed_topic,
+      inspiration_source = inspiration_source,
+      model = model
+    )
     list(
-      titles = stub_title_candidates(
-        prompt = prompt,
-        batch_size = batch_size,
-        seed_topic = seed_topic,
-        inspiration_source = inspiration_source,
-        model = model
-      ),
+      titles = stub_rows,
       mode = "stub",
       model = article_lab_input_string(model) %||% article_lab_default_model,
       raw_json = NULL,
       example_titles_used = as.integer(length(example_titles)),
       response_id = NULL,
-      fallback_reason = conditionMessage(e)
+      fallback_reason = conditionMessage(e),
+      dropped_n = 0L
     )
   })
 }
 
+article_lab_score_id <- function(candidate_id) {
+  paste0("als_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", gsub("[^A-Za-z0-9]+", "_", candidate_id))
+}
+
+article_lab_score_api_request <- function(candidates, model = NA_character_, prompt_version = NA_character_, scope = NA_character_) {
+  helper_path <- file.path("scripts", "writing_api", "score_article_lab_titles.py")
+  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/score_article_lab_titles.py", call. = FALSE)
+  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+  if (nrow(candidates) == 0) return(list(scores = data.frame(), errors = list()))
+
+  request_payload <- list(
+    model = article_lab_input_string(model) %||% article_lab_default_score_model,
+    prompt_version = article_lab_input_string(prompt_version) %||% article_lab_default_score_prompt_version,
+    scope = article_lab_input_string(scope) %||% article_lab_default_score_scope,
+    candidates = unname(lapply(seq_len(nrow(candidates)), function(i) {
+      list(
+        candidate_id = candidates$candidate_id[[i]],
+        batch_id = candidates$batch_id[[i]],
+        title = candidates$title[[i]],
+        title_char_count = suppressWarnings(as.integer(candidates$title_char_count[[i]])),
+        title_length_flag = candidates$title_length_flag[[i]]
+      )
+    }))
+  )
+
+  request_file <- tempfile(pattern = "article_lab_score_request_", fileext = ".json")
+  stdout_file <- tempfile(pattern = "article_lab_score_stdout_", fileext = ".json")
+  stderr_file <- tempfile(pattern = "article_lab_score_stderr_", fileext = ".log")
+  on.exit(unlink(c(request_file, stdout_file, stderr_file), force = TRUE), add = TRUE)
+
+  write_json(request_payload, request_file, auto_unbox = TRUE, pretty = FALSE, null = "null")
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2(
+    "python3",
+    args = c(helper_path, request_file),
+    stdout = stdout_file,
+    stderr = stderr_file
+  )
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
+    stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Article Lab scoring helper failed.", call. = FALSE)
+  }
+  if (!nzchar(trimws(stdout_text))) stop("Article Lab scoring helper returned no output.", call. = FALSE)
+
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  raw_scores <- parsed$scores %||% list()
+  raw_errors <- parsed$errors %||% list()
+  if (!is.list(raw_scores)) raw_scores <- list()
+  if (!is.list(raw_errors)) raw_errors <- list()
+
+  score_rows <- lapply(raw_scores, function(entry) {
+    row <- data.frame(
+      candidate_id = article_lab_input_string(entry$candidate_id),
+      batch_id = article_lab_input_string(entry$batch_id),
+      scored_at = article_lab_input_string(entry$scored_at),
+      model = article_lab_input_string(entry$model) %||% request_payload$model,
+      prompt_version = article_lab_input_string(entry$prompt_version) %||% request_payload$prompt_version,
+      scope = article_lab_input_string(entry$scope) %||% request_payload$scope,
+      predicted_success_bucket = article_lab_input_string(entry$predicted_success_bucket),
+      short_reason = article_lab_input_string(entry$short_reason),
+      raw_json = if (is.null(entry$raw_json)) NA_character_ else toJSON(entry$raw_json, auto_unbox = TRUE, null = "null"),
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+    for (field in article_lab_score_fields) {
+      row[[field]] <- suppressWarnings(as.numeric(entry[[field]]))
+    }
+    row
+  })
+  score_frame <- if (length(score_rows) == 0) data.frame() else do.call(rbind, score_rows)
+  if (nrow(score_frame) > 0) {
+    for (field in article_lab_score_fields) score_frame[[field]] <- suppressWarnings(as.numeric(score_frame[[field]]))
+  }
+
+  list(
+    scores = score_frame,
+    errors = raw_errors,
+    model = article_lab_input_string(parsed$model) %||% request_payload$model,
+    prompt_version = article_lab_input_string(parsed$prompt_version) %||% request_payload$prompt_version,
+    scope = article_lab_input_string(parsed$scope) %||% request_payload$scope,
+    raw_json = stdout_text
+  )
+}
+
+article_lab_unscored_candidates <- function(con, batch_id, model, prompt_version, scope) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+  all_batches <- identical(batch_id, article_lab_all_batches_value)
+  dbGetQuery(
+    con,
+    if (all_batches) "
+    SELECT c.candidate_id, c.batch_id, c.title, c.status, c.title_char_count, c.title_length_flag
+    FROM article_lab_title_candidates c
+    LEFT JOIN article_lab_title_api_scores s
+      ON s.candidate_id = c.candidate_id
+     AND s.model = ?
+     AND s.prompt_version = ?
+     AND s.scope = ?
+    WHERE c.archived = 0
+      AND c.promoted = 0
+      AND c.status = 'ready_for_api_scoring'
+      AND s.candidate_id IS NULL
+    ORDER BY c.created_at, c.candidate_id
+    " else "
+    SELECT c.candidate_id, c.batch_id, c.title, c.status, c.title_char_count, c.title_length_flag
+    FROM article_lab_title_candidates c
+    LEFT JOIN article_lab_title_api_scores s
+      ON s.candidate_id = c.candidate_id
+     AND s.model = ?
+     AND s.prompt_version = ?
+     AND s.scope = ?
+    WHERE c.batch_id = ?
+      AND c.archived = 0
+      AND c.promoted = 0
+      AND c.status = 'ready_for_api_scoring'
+      AND s.candidate_id IS NULL
+    ORDER BY c.created_at, c.candidate_id
+    ",
+    params = if (all_batches) list(
+      article_lab_input_string(model) %||% article_lab_default_score_model,
+      article_lab_input_string(prompt_version) %||% article_lab_default_score_prompt_version,
+      article_lab_input_string(scope) %||% article_lab_default_score_scope
+    ) else list(
+      article_lab_input_string(model) %||% article_lab_default_score_model,
+      article_lab_input_string(prompt_version) %||% article_lab_default_score_prompt_version,
+      article_lab_input_string(scope) %||% article_lab_default_score_scope,
+      batch_id
+    )
+  )
+}
+
+article_lab_update_batch_status <- function(con, batch_id) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id)) return(invisible(NULL))
+  status_rows <- dbGetQuery(
+    con,
+    "
+    SELECT
+      COALESCE(SUM(CASE WHEN status = 'ready_for_api_scoring' THEN 1 ELSE 0 END), 0) AS ready_n,
+      COALESCE(SUM(CASE WHEN status = 'api_scored' THEN 1 ELSE 0 END), 0) AS scored_n,
+      COALESCE(SUM(CASE WHEN status = 'approved_for_subtitle' OR promoted = 1 THEN 1 ELSE 0 END), 0) AS approved_n,
+      COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) AS archived_n,
+      COUNT(*) AS total_n
+    FROM article_lab_title_candidates
+    WHERE batch_id = ?
+    ",
+    params = list(batch_id)
+  )
+  if (nrow(status_rows) == 0) return(invisible(NULL))
+  row <- status_rows[1, , drop = FALSE]
+  batch_status <- if (row$approved_n[[1]] > 0) {
+    "approved_for_subtitle"
+  } else if (row$ready_n[[1]] > 0) {
+    "ready_for_api_scoring"
+  } else if (row$scored_n[[1]] > 0) {
+    "api_scored"
+  } else if (row$archived_n[[1]] >= row$total_n[[1]] && row$total_n[[1]] > 0) {
+    "archived"
+  } else {
+    "generated"
+  }
+  dbExecute(
+    con,
+    "UPDATE article_lab_title_batches SET status = ? WHERE batch_id = ?",
+    params = list(batch_status, batch_id)
+  )
+  invisible(batch_status)
+}
+
+article_lab_upsert_score <- function(con, score_row) {
+  combined_score <- article_lab_combined_title_score(
+    curiosity = score_row$curiosity[[1]],
+    emotional_pull = score_row$emotional_pull[[1]],
+    medium_comment_potential = score_row$medium_comment_potential[[1]],
+    overall_article_potential = score_row$overall_article_potential[[1]],
+    trust_risk = score_row$trust_risk[[1]],
+    title_char_count = score_row$title_char_count[[1]]
+  )
+  dbExecute(
+    con,
+    "
+    INSERT OR REPLACE INTO article_lab_title_api_scores
+    (score_id, candidate_id, batch_id, scored_at, model, prompt_version, scope,
+     clarity, curiosity, specificity, beginner_appeal, credibility, emotional_pull,
+     promise_strength, trust_risk, medium_clap_potential, medium_comment_potential,
+     overall_article_potential, combined_title_score, predicted_success_bucket,
+     short_reason, raw_json, error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ",
+    params = list(
+      article_lab_score_id(score_row$candidate_id[[1]]),
+      score_row$candidate_id[[1]],
+      score_row$batch_id[[1]],
+      score_row$scored_at[[1]] %||% now_utc(),
+      score_row$model[[1]] %||% article_lab_default_score_model,
+      score_row$prompt_version[[1]] %||% article_lab_default_score_prompt_version,
+      score_row$scope[[1]] %||% article_lab_default_score_scope,
+      score_row$clarity[[1]],
+      score_row$curiosity[[1]],
+      score_row$specificity[[1]],
+      score_row$beginner_appeal[[1]],
+      score_row$credibility[[1]],
+      score_row$emotional_pull[[1]],
+      score_row$promise_strength[[1]],
+      score_row$trust_risk[[1]],
+      score_row$medium_clap_potential[[1]],
+      score_row$medium_comment_potential[[1]],
+      score_row$overall_article_potential[[1]],
+      combined_score,
+      score_row$predicted_success_bucket[[1]],
+      score_row$short_reason[[1]],
+      score_row$raw_json[[1]],
+      NA_character_
+    )
+  )
+  combined_score
+}
+
+article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope) {
+  candidates <- article_lab_unscored_candidates(con, batch_id, model, prompt_version, scope)
+  batch_label <- if (identical(batch_id, article_lab_all_batches_value)) "all titles" else paste("batch", batch_id)
+  if (nrow(candidates) == 0) {
+    return(list(scored_n = 0L, failed_n = 0L, failed_ids = character(), batch_label = batch_label, message = sprintf("No titles in %s are currently waiting in ready_for_api_scoring for the selected model/prompt/scope.", batch_label)))
+  }
+
+  previous_status <- setNames(candidates$status, candidates$candidate_id)
+  placeholders <- paste(rep("?", nrow(candidates)), collapse = ", ")
+  dbExecute(
+    con,
+    sprintf("UPDATE article_lab_title_candidates SET status = 'api_pending' WHERE candidate_id IN (%s)", placeholders),
+    params = as.list(candidates$candidate_id)
+  )
+
+  result <- tryCatch(
+    article_lab_score_api_request(candidates, model = model, prompt_version = prompt_version, scope = scope),
+    error = function(e) e
+  )
+  if (inherits(result, "error")) {
+    for (candidate_id in names(previous_status)) {
+      dbExecute(
+        con,
+        "UPDATE article_lab_title_candidates SET status = ? WHERE candidate_id = ?",
+        params = list(previous_status[[candidate_id]], candidate_id)
+      )
+    }
+    stop(result)
+  }
+
+  scored_ids <- character()
+  failed_ids <- character()
+  dbBegin(con)
+  tryCatch({
+    if (nrow(result$scores) > 0) {
+      for (i in seq_len(nrow(result$scores))) {
+        score_row <- result$scores[i, , drop = FALSE]
+        match_index <- match(score_row$candidate_id[[1]], candidates$candidate_id)
+        score_row$title_char_count <- candidates$title_char_count[[match_index]]
+        article_lab_upsert_score(con, score_row)
+        dbExecute(
+          con,
+          "
+          UPDATE article_lab_title_candidates
+          SET status = CASE
+            WHEN status = 'archived' OR archived = 1 THEN 'archived'
+            WHEN status = 'approved_for_subtitle' OR promoted = 1 THEN 'approved_for_subtitle'
+            ELSE 'api_scored'
+          END
+          WHERE candidate_id = ?
+          ",
+          params = list(score_row$candidate_id[[1]])
+        )
+        scored_ids <- c(scored_ids, score_row$candidate_id[[1]])
+      }
+    }
+
+    if (length(result$errors) > 0) {
+      failed_ids <- vapply(result$errors, function(entry) article_lab_input_string(entry$candidate_id) %||% NA_character_, character(1))
+      failed_ids <- failed_ids[!is.na(failed_ids)]
+    }
+    untouched_ids <- setdiff(candidates$candidate_id, union(scored_ids, failed_ids))
+    failed_ids <- unique(c(failed_ids, untouched_ids))
+
+    for (candidate_id in failed_ids) {
+      dbExecute(
+        con,
+        "UPDATE article_lab_title_candidates SET status = ? WHERE candidate_id = ?",
+        params = list(previous_status[[candidate_id]] %||% "generated", candidate_id)
+      )
+    }
+
+    batch_ids_to_update <- if (identical(batch_id, article_lab_all_batches_value)) unique(candidates$batch_id) else batch_id
+    for (batch_id_value in batch_ids_to_update) {
+      article_lab_update_batch_status(con, batch_id_value)
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(
+    scored_n = length(scored_ids),
+    failed_n = length(failed_ids),
+    failed_ids = failed_ids,
+    model = result$model,
+    prompt_version = result$prompt_version,
+    scope = result$scope,
+    batch_label = batch_label,
+    message = if (length(scored_ids) == 0 && length(failed_ids) > 0) {
+      sprintf("Scoring failed for %s title%s. No titles were updated.", length(failed_ids), ifelse(length(failed_ids) == 1, "", "s"))
+    } else {
+      NULL
+    }
+  )
+}
+
+article_lab_save_generate_triage <- function(con, updates) {
+  if (length(updates) == 0) return(character())
+  batch_ids <- character()
+  dbBegin(con)
+  tryCatch({
+    for (update in updates) {
+      status_value <- article_lab_normalize_candidate_status(update$status)
+      if (!(status_value %in% c("generated", "disqualified"))) status_value <- "generated"
+      dbExecute(
+        con,
+        "
+        UPDATE article_lab_title_candidates
+        SET status = ?,
+            notes = ?,
+            ready_for_human_rating = 0,
+            promoted = 0,
+            archived = 0
+        WHERE candidate_id = ?
+        ",
+        params = list(status_value, clean_text(update$notes), update$candidate_id)
+      )
+      batch_row <- dbGetQuery(
+        con,
+        "SELECT batch_id FROM article_lab_title_candidates WHERE candidate_id = ? LIMIT 1",
+        params = list(update$candidate_id)
+      )
+      if (nrow(batch_row) > 0) batch_ids <- c(batch_ids, batch_row$batch_id[[1]])
+    }
+    for (batch_id in unique(batch_ids)) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  unique(batch_ids)
+}
+
+article_lab_move_candidates_to_api_queue <- function(con, candidate_ids) {
+  candidate_ids <- clean_text(candidate_ids)
+  candidate_ids <- unique(candidate_ids[!is.na(candidate_ids)])
+  if (length(candidate_ids) == 0) return(list(moved_n = 0L, skipped_n = 0L, batch_ids = character()))
+
+  placeholders <- paste(rep("?", length(candidate_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf(
+      "SELECT candidate_id, batch_id, status, ready_for_human_rating, promoted, archived FROM article_lab_title_candidates WHERE candidate_id IN (%s)",
+      placeholders
+    ),
+    params = as.list(candidate_ids)
+  )
+  if (nrow(rows) == 0) return(list(moved_n = 0L, skipped_n = length(candidate_ids), batch_ids = character()))
+  rows <- article_lab_normalize_candidate_rows(rows)
+  eligible_ids <- rows$candidate_id[rows$normalized_status == "generated"]
+  skipped_n <- length(candidate_ids) - length(eligible_ids)
+  batch_ids <- unique(rows$batch_id)
+
+  dbBegin(con)
+  tryCatch({
+    if (length(eligible_ids) > 0) {
+      dbExecute(
+        con,
+        sprintf(
+          "UPDATE article_lab_title_candidates SET status = 'ready_for_api_scoring', ready_for_human_rating = 0, promoted = 0, archived = 0 WHERE candidate_id IN (%s)",
+          paste(rep("?", length(eligible_ids)), collapse = ", ")
+        ),
+        params = as.list(eligible_ids)
+      )
+    }
+    for (batch_id in batch_ids) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(moved_n = length(eligible_ids), skipped_n = skipped_n, batch_ids = batch_ids)
+}
+
+article_lab_approve_candidates_for_subtitle <- function(con, candidate_ids) {
+  candidate_ids <- clean_text(candidate_ids)
+  candidate_ids <- unique(candidate_ids[!is.na(candidate_ids)])
+  if (length(candidate_ids) == 0) return(list(approved_n = 0L, skipped_n = 0L, batch_ids = character()))
+
+  placeholders <- paste(rep("?", length(candidate_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf(
+      "SELECT candidate_id, batch_id, status, ready_for_human_rating, promoted, archived FROM article_lab_title_candidates WHERE candidate_id IN (%s)",
+      placeholders
+    ),
+    params = as.list(candidate_ids)
+  )
+  if (nrow(rows) == 0) return(list(approved_n = 0L, skipped_n = length(candidate_ids), batch_ids = character()))
+  rows <- article_lab_normalize_candidate_rows(rows)
+  eligible_ids <- rows$candidate_id[rows$normalized_status == "api_scored"]
+  skipped_n <- length(candidate_ids) - length(eligible_ids)
+  batch_ids <- unique(rows$batch_id)
+
+  dbBegin(con)
+  tryCatch({
+    if (length(eligible_ids) > 0) {
+      dbExecute(
+        con,
+        sprintf(
+          "UPDATE article_lab_title_candidates SET status = 'approved_for_subtitle', promoted = 1, ready_for_human_rating = 0, archived = 0 WHERE candidate_id IN (%s)",
+          paste(rep("?", length(eligible_ids)), collapse = ", ")
+        ),
+        params = as.list(eligible_ids)
+      )
+    }
+    for (batch_id in batch_ids) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(approved_n = length(eligible_ids), skipped_n = skipped_n, batch_ids = batch_ids)
+}
+
 save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, raw_json = NA_character_, generation_mode = "generated") {
   if (length(titles) == 0) return(invisible(NULL))
+  validated <- article_lab_validate_titles(titles, max_chars = article_lab_title_max_chars)
+  if (length(validated$titles) == 0) {
+    stop(sprintf("No titles met the %s-character maximum.", article_lab_title_max_chars), call. = FALSE)
+  }
   batch_id <- article_lab_batch_id()
   created_at <- now_utc()
   prompt_value <- clean_text(prompt)
@@ -775,7 +1502,7 @@ save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, 
   model_value <- clean_text(model)
   if (length(model_value) == 0 || is.na(model_value[[1]])) model_value <- article_lab_default_model
   requested_size <- suppressWarnings(as.integer(requested_batch_size))
-  if (is.na(requested_size) || requested_size < 1L) requested_size <- length(titles)
+  if (is.na(requested_size) || requested_size < 1L) requested_size <- length(validated$titles)
 
   dbBegin(con)
   tryCatch({
@@ -795,29 +1522,34 @@ save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, 
         "generated",
         paste(
           sprintf("Generation mode: %s.", generation_mode),
-          "Queue integration TODO: stored as ready_for_human_rating for later title-only workflow ingestion."
+          "Article Lab candidates stay generated until manual triage moves selected titles into ready_for_api_scoring."
         )
       )
     )
 
-    for (i in seq_along(titles)) {
-      title_value <- clean_text(titles[[i]])
+    for (i in seq_along(validated$titles)) {
+      title_value <- clean_text(validated$titles[[i]])
       if (length(title_value) == 0 || is.na(title_value[[1]])) next
+      title_char_count <- article_lab_title_length(title_value[[1]])
+      title_length_flag <- article_lab_title_length_flag(title_char_count)
       dbExecute(
         con,
         "INSERT INTO article_lab_title_candidates
-         (candidate_id, batch_id, created_at, title, status, source, ready_for_human_rating, promoted, archived, raw_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (candidate_id, batch_id, created_at, title, title_char_count, title_length_flag, status, source, ready_for_human_rating, promoted, archived, notes, raw_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params = list(
           article_lab_candidate_id(batch_id, i),
           batch_id,
           created_at,
           title_value[[1]],
-          "ready_for_human_rating",
+          title_char_count,
+          title_length_flag,
+          "generated",
           "article_lab",
-          1L,
           0L,
           0L,
+          0L,
+          NA_character_,
           raw_json
         )
       )
@@ -847,9 +1579,19 @@ load_article_lab_candidates_for_batch <- function(con, batch_id) {
   if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_title_candidates")) {
     return(data.frame())
   }
+  if (identical(batch_id, article_lab_all_batches_value)) {
+    return(dbGetQuery(
+      con,
+      "SELECT candidate_id, title, title_char_count, title_length_flag, status, created_at, batch_id,
+         ready_for_human_rating, archived, promoted, notes
+       FROM article_lab_title_candidates
+       ORDER BY created_at DESC, candidate_id DESC"
+    ))
+  }
   dbGetQuery(
     con,
-    "SELECT candidate_id, title, status, created_at, batch_id
+    "SELECT candidate_id, title, title_char_count, title_length_flag, status, created_at, batch_id,
+       ready_for_human_rating, archived, promoted, notes
      FROM article_lab_title_candidates
      WHERE batch_id = ?
      ORDER BY candidate_id",
@@ -857,13 +1599,149 @@ load_article_lab_candidates_for_batch <- function(con, batch_id) {
   )
 }
 
+load_article_lab_batches <- function(con) {
+  if (!dbExistsTable(con, "article_lab_title_batches")) return(data.frame())
+  dbGetQuery(con, "
+    SELECT batch_id, created_at, requested_batch_size, model, status, seed_topic, inspiration_source
+    FROM article_lab_title_batches
+    ORDER BY created_at DESC, batch_id DESC
+  ")
+}
+
+load_article_lab_scoring_rows <- function(con, batch_id, model, prompt_version, scope) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_title_candidates")) {
+    return(data.frame())
+  }
+  all_batches <- identical(batch_id, article_lab_all_batches_value)
+  rows <- dbGetQuery(
+    con,
+    if (all_batches) "
+    SELECT
+      c.candidate_id,
+      c.batch_id,
+      c.created_at,
+      c.title,
+      c.title_char_count,
+      c.title_length_flag,
+      c.status,
+      c.ready_for_human_rating,
+      c.promoted,
+      c.archived,
+      c.notes,
+      s.scored_at,
+      s.model,
+      s.prompt_version,
+      s.scope,
+      s.clarity,
+      s.curiosity,
+      s.specificity,
+      s.beginner_appeal,
+      s.credibility,
+      s.emotional_pull,
+      s.promise_strength,
+      s.trust_risk,
+      s.medium_clap_potential,
+      s.medium_comment_potential,
+      s.overall_article_potential,
+      s.combined_title_score,
+      s.predicted_success_bucket,
+      s.short_reason,
+      s.error
+    FROM article_lab_title_candidates c
+    LEFT JOIN article_lab_title_api_scores s
+      ON s.candidate_id = c.candidate_id
+     AND s.model = ?
+     AND s.prompt_version = ?
+     AND s.scope = ?
+    ORDER BY c.created_at DESC, c.candidate_id DESC
+    " else "
+    SELECT
+      c.candidate_id,
+      c.batch_id,
+      c.created_at,
+      c.title,
+      c.title_char_count,
+      c.title_length_flag,
+      c.status,
+      c.ready_for_human_rating,
+      c.promoted,
+      c.archived,
+      c.notes,
+      s.scored_at,
+      s.model,
+      s.prompt_version,
+      s.scope,
+      s.clarity,
+      s.curiosity,
+      s.specificity,
+      s.beginner_appeal,
+      s.credibility,
+      s.emotional_pull,
+      s.promise_strength,
+      s.trust_risk,
+      s.medium_clap_potential,
+      s.medium_comment_potential,
+      s.overall_article_potential,
+      s.combined_title_score,
+      s.predicted_success_bucket,
+      s.short_reason,
+      s.error
+    FROM article_lab_title_candidates c
+    LEFT JOIN article_lab_title_api_scores s
+      ON s.candidate_id = c.candidate_id
+     AND s.model = ?
+     AND s.prompt_version = ?
+     AND s.scope = ?
+    WHERE c.batch_id = ?
+    ORDER BY c.created_at DESC, c.candidate_id DESC
+    ",
+    params = if (all_batches) list(
+      article_lab_input_string(model) %||% article_lab_default_score_model,
+      article_lab_input_string(prompt_version) %||% article_lab_default_score_prompt_version,
+      article_lab_input_string(scope) %||% article_lab_default_score_scope
+    ) else list(
+      article_lab_input_string(model) %||% article_lab_default_score_model,
+      article_lab_input_string(prompt_version) %||% article_lab_default_score_prompt_version,
+      article_lab_input_string(scope) %||% article_lab_default_score_scope,
+      batch_id
+    )
+  )
+  if (nrow(rows) == 0) return(rows)
+  rows$title_char_count <- ifelse(
+    is.na(rows$title_char_count),
+    article_lab_title_length(rows$title),
+    suppressWarnings(as.integer(rows$title_char_count))
+  )
+  rows$title_length_flag <- ifelse(
+    is.na(rows$title_length_flag),
+    article_lab_title_length_flag(rows$title_char_count),
+    rows$title_length_flag
+  )
+  if (!("combined_title_score" %in% names(rows))) rows$combined_title_score <- NA_real_
+  missing_combined <- is.na(rows$combined_title_score) & !is.na(rows$curiosity) & !is.na(rows$emotional_pull) &
+    !is.na(rows$medium_comment_potential) & !is.na(rows$overall_article_potential)
+  rows$combined_title_score[missing_combined] <- article_lab_combined_title_score(
+    curiosity = rows$curiosity[missing_combined],
+    emotional_pull = rows$emotional_pull[missing_combined],
+    medium_comment_potential = rows$medium_comment_potential[missing_combined],
+    overall_article_potential = rows$overall_article_potential[missing_combined],
+    trust_risk = rows$trust_risk[missing_combined],
+    title_char_count = rows$title_char_count[missing_combined]
+  )
+  rows
+}
+
 article_lab_overview <- function(con) {
   if (!dbExistsTable(con, "article_lab_title_candidates")) {
     return(data.frame(
       saved_batches = 0L,
       saved_candidates = 0L,
-      ready_for_human_rating = 0L,
-      promoted = 0L,
+      generated = 0L,
+      disqualified = 0L,
+      ready_for_api_scoring = 0L,
+      api_scored = 0L,
+      approved_for_subtitle = 0L,
+      rejected = 0L,
       archived = 0L
     ))
   }
@@ -872,31 +1750,115 @@ article_lab_overview <- function(con) {
     SELECT
       (SELECT COUNT(*) FROM article_lab_title_batches) AS saved_batches,
       COUNT(*) AS saved_candidates,
-      COALESCE(SUM(CASE WHEN ready_for_human_rating = 1 THEN 1 ELSE 0 END), 0) AS ready_for_human_rating,
-      COALESCE(SUM(CASE WHEN promoted = 1 THEN 1 ELSE 0 END), 0) AS promoted,
+      COALESCE(SUM(CASE WHEN status = 'generated' THEN 1 ELSE 0 END), 0) AS generated,
+      COALESCE(SUM(CASE WHEN status = 'disqualified' THEN 1 ELSE 0 END), 0) AS disqualified,
+      COALESCE(SUM(CASE WHEN status = 'ready_for_api_scoring' THEN 1 ELSE 0 END), 0) AS ready_for_api_scoring,
+      COALESCE(SUM(CASE WHEN status = 'api_scored' THEN 1 ELSE 0 END), 0) AS api_scored,
+      COALESCE(SUM(CASE WHEN status = 'approved_for_subtitle' OR promoted = 1 THEN 1 ELSE 0 END), 0) AS approved_for_subtitle,
+      COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected,
       COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) AS archived
     FROM article_lab_title_candidates
   ")
 }
 
-article_lab_table_ui <- function(rows) {
+article_lab_generate_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
-    return(div(class = "empty-state", "No generated title batch yet. Generate a draft or save a batch to populate this table."))
+    return(div(class = "empty-state", "No current titles need triage. Generate and save a new batch, or show disqualified titles to review earlier skips."))
   }
 
-  headers <- c("Candidate", "Title", "Status", "Created", "Batch")
+  rows <- article_lab_normalize_candidate_rows(rows)
+  headers <- c("Select", "Title", "Status", "Notes")
   tagList(
     tags$table(
       class = "lab-table",
       tags$thead(tags$tr(lapply(headers, tags$th))),
       tags$tbody(
         lapply(seq_len(nrow(rows)), function(i) {
+          row <- rows[i, , drop = FALSE]
+          candidate_id <- row$candidate_id[[1]]
+          is_draft <- identical(row$normalized_status[[1]], "draft") || identical(row$batch_id[[1]], "(draft)")
+          select_id <- article_lab_row_input_id("article_lab_generate_select", candidate_id)
+          status_id <- article_lab_row_input_id("article_lab_generate_status", candidate_id)
+          notes_id <- article_lab_row_input_id("article_lab_generate_notes", candidate_id)
           tags$tr(
-            tags$td(rows$candidate_id[[i]]),
-            tags$td(rows$title[[i]]),
-            tags$td(rows$status[[i]]),
-            tags$td(rows$created_at[[i]]),
-            tags$td(rows$batch_id[[i]])
+            tags$td(
+              class = "select-cell",
+              checkboxInput(select_id, label = NULL, value = FALSE, width = NULL)
+            ),
+            tags$td(row$title[[1]]),
+            tags$td(
+              if (is_draft) {
+                article_lab_badge("draft")
+              } else {
+                selectInput(
+                  status_id,
+                  label = NULL,
+                  choices = article_lab_status_choices(c("generated", "disqualified")),
+                  selected = if (row$normalized_status[[1]] %in% c("generated", "disqualified")) row$normalized_status[[1]] else "generated",
+                  width = "100%"
+                )
+              }
+            ),
+            tags$td(
+              if (is_draft) {
+                span(class = "lab-status-copy", "Save the batch to start triage.")
+              } else {
+                textInput(notes_id, label = NULL, value = row$notes[[1]] %||% "", width = "100%", placeholder = "Optional note")
+              }
+            )
+          )
+        })
+      )
+    )
+  )
+}
+
+article_lab_badge <- function(value) {
+  label <- clean_text(value)
+  if (length(label) == 0 || is.na(label[[1]])) label <- "n/a"
+  status_key <- tolower(label[[1]])
+  class_name <- gsub("[^A-Za-z0-9_]+", "_", status_key)
+  tags$span(class = paste("lab-badge", class_name), article_lab_status_label(status_key))
+}
+
+article_lab_score_table_ui <- function(rows) {
+  if (nrow(rows) == 0) {
+    return(div(class = "empty-state", "No titles are in the API queue or scored for this selection yet."))
+  }
+
+  rows <- article_lab_normalize_candidate_rows(rows)
+  score_value <- function(x) {
+    value <- suppressWarnings(as.numeric(x))
+    ifelse(is.na(value), "—", format(round(value, 1), nsmall = 1, trim = TRUE))
+  }
+
+  tagList(
+    tags$table(
+      class = "lab-table",
+      tags$thead(tags$tr(lapply(
+        c("Select", "Batch", "Title", "Curiosity", "Emotional pull", "Comment potential", "Overall", "Trust risk", "Combined score", "Status", "Notes"),
+        tags$th
+      ))),
+      tags$tbody(
+        lapply(seq_len(nrow(rows)), function(i) {
+          row <- rows[i, , drop = FALSE]
+          select_id <- article_lab_row_input_id("article_lab_score_select", row$candidate_id[[1]])
+
+          tags$tr(
+            tags$td(
+              class = "select-cell",
+              checkboxInput(select_id, label = NULL, value = FALSE, width = NULL)
+            ),
+            tags$td(row$batch_id[[1]]),
+            tags$td(row$title[[1]]),
+            tags$td(class = "score-cell", score_value(row$curiosity[[1]])),
+            tags$td(class = "score-cell", score_value(row$emotional_pull[[1]])),
+            tags$td(class = "score-cell", score_value(row$medium_comment_potential[[1]])),
+            tags$td(class = "score-cell", score_value(row$overall_article_potential[[1]])),
+            tags$td(class = "score-cell", score_value(row$trust_risk[[1]])),
+            tags$td(class = "score-cell", score_value(row$combined_title_score[[1]])),
+            tags$td(article_lab_badge(row$normalized_status[[1]])),
+            tags$td(row$notes[[1]] %||% "")
           )
         })
       )
@@ -1004,28 +1966,30 @@ lookup_local_thumbnail <- function(article_id, medium_post_id, thumbnail_url, lo
 
 get_rated_keys <- function(con) {
   if (!dbExistsTable(con, "human_preview_ratings")) {
-    return(list(article_ids = character(), post_ids = character()))
+    return(list(article_ids = character(), post_ids = character(), article_lab_candidate_ids = character()))
   }
 
   rated <- dbGetQuery(con, "
-    SELECT DISTINCT article_id, medium_post_id
+    SELECT DISTINCT article_id, medium_post_id, article_lab_candidate_id
     FROM human_preview_ratings
   ")
 
   article_ids <- clean_text(rated$article_id)
   post_ids <- clean_text(rated$medium_post_id)
+  article_lab_candidate_ids <- clean_text(rated$article_lab_candidate_id)
   list(
     article_ids = unique(article_ids[!is.na(article_ids)]),
-    post_ids = unique(post_ids[!is.na(post_ids)])
+    post_ids = unique(post_ids[!is.na(post_ids)]),
+    article_lab_candidate_ids = unique(article_lab_candidate_ids[!is.na(article_lab_candidate_ids)])
   )
 }
 
 mark_duplicate_pending_queue_items <- function(con) {
   rated_keys <- get_rated_keys(con)
-  if (length(rated_keys$article_ids) == 0 && length(rated_keys$post_ids) == 0) return(0L)
+  if (length(rated_keys$article_ids) == 0 && length(rated_keys$post_ids) == 0 && length(rated_keys$article_lab_candidate_ids) == 0) return(0L)
 
   pending <- dbGetQuery(con, "
-    SELECT rating_session_id, queue_position, article_id, medium_post_id
+    SELECT rating_session_id, queue_position, article_id, medium_post_id, source_type, article_lab_candidate_id
     FROM human_preview_rating_queue
     WHERE status = 'pending'
   ")
@@ -1033,8 +1997,10 @@ mark_duplicate_pending_queue_items <- function(con) {
 
   article_keys <- clean_text(pending$article_id)
   post_keys <- clean_text(pending$medium_post_id)
+  article_lab_keys <- clean_text(pending$article_lab_candidate_id)
   duplicate <- (!is.na(article_keys) & article_keys %in% rated_keys$article_ids) |
-    (!is.na(post_keys) & post_keys %in% rated_keys$post_ids)
+    (!is.na(post_keys) & post_keys %in% rated_keys$post_ids) |
+    (!is.na(article_lab_keys) & article_lab_keys %in% rated_keys$article_lab_candidate_ids)
   duplicate[is.na(duplicate)] <- FALSE
   duplicate_rows <- pending[duplicate, , drop = FALSE]
   if (nrow(duplicate_rows) == 0) return(0L)
@@ -1090,6 +2056,9 @@ load_candidates <- function(con, exclude_rated = TRUE) {
   }, character(1))
   rows$has_local_thumbnail <- !is.na(rows$local_thumbnail_path) & file.exists(rows$local_thumbnail_path)
   rows <- rows[rows$has_local_thumbnail, , drop = FALSE]
+  rows$source_type <- "dataset"
+  rows$article_lab_candidate_id <- NA_character_
+  rows$candidate_created_at <- NA_character_
 
   rated_keys <- get_rated_keys(con)
   article_keys <- clean_text(rows$article_id)
@@ -1098,11 +2067,61 @@ load_candidates <- function(con, exclude_rated = TRUE) {
     (!is.na(post_keys) & post_keys %in% rated_keys$post_ids)
   rows$already_rated[is.na(rows$already_rated)] <- FALSE
 
-  if (isTRUE(exclude_rated)) {
-    rows <- rows[!rows$already_rated, , drop = FALSE]
+  article_lab_rows <- if (dbExistsTable(con, "article_lab_title_candidates")) {
+    lab <- dbGetQuery(con, "
+      SELECT c.candidate_id AS article_lab_candidate_id,
+        c.batch_id,
+        c.created_at AS candidate_created_at,
+        c.title,
+        c.status,
+        c.ready_for_human_rating
+      FROM article_lab_title_candidates c
+      WHERE c.archived = 0
+        AND c.promoted = 0
+        AND c.ready_for_human_rating = 1
+        AND c.status = 'ready_for_human_rating'
+      ORDER BY c.created_at DESC, c.candidate_id
+    ")
+    if (nrow(lab) > 0) {
+      lab$title <- clean_text(lab$title)
+      lab$already_rated <- clean_text(lab$article_lab_candidate_id) %in% rated_keys$article_lab_candidate_ids
+      lab$already_rated[is.na(lab$already_rated)] <- FALSE
+      data.frame(
+        canonical_article_key = NA_character_,
+        article_id = NA_integer_,
+        medium_post_id = NA_character_,
+        url = NA_character_,
+        title = lab$title,
+        subtitle = NA_character_,
+        thumbnail_url = NA_character_,
+        local_thumbnail_path = NA_character_,
+        has_local_thumbnail = FALSE,
+        source_type = "article_lab_generated",
+        article_lab_candidate_id = lab$article_lab_candidate_id,
+        candidate_created_at = lab$candidate_created_at,
+        already_rated = lab$already_rated,
+        stringsAsFactors = FALSE,
+        check.names = FALSE
+      )
+    } else {
+      data.frame()
+    }
+  } else {
+    data.frame()
   }
 
-  rows
+  if (isTRUE(exclude_rated)) {
+    rows <- rows[!rows$already_rated, , drop = FALSE]
+    if (nrow(article_lab_rows) > 0) {
+      article_lab_rows <- article_lab_rows[!article_lab_rows$already_rated, , drop = FALSE]
+    }
+  }
+
+  if (nrow(article_lab_rows) == 0) return(rows)
+  if (nrow(rows) == 0) return(article_lab_rows)
+
+  combined <- rbind(article_lab_rows[, names(rows)], rows)
+  combined
 }
 
 candidate_counts <- function(con) {
@@ -1112,6 +2131,107 @@ candidate_counts <- function(con) {
     already_rated = sum(candidates$already_rated, na.rm = TRUE),
     remaining_unrated = sum(!candidates$already_rated, na.rm = TRUE)
   )
+}
+
+append_article_lab_candidates_to_session <- function(con, session_id) {
+  candidates <- load_candidates(con, exclude_rated = TRUE)
+  candidates <- candidates[candidates$source_type == "article_lab_generated", , drop = FALSE]
+  if (nrow(candidates) == 0) return(0L)
+
+  existing <- dbGetQuery(con, "
+    SELECT article_lab_candidate_id, queue_position
+    FROM human_preview_rating_queue
+    WHERE rating_session_id = ?
+      AND COALESCE(status, 'pending') != 'removed_article_lab'
+  ", params = list(session_id))
+  existing_ids <- clean_text(existing$article_lab_candidate_id)
+  keep <- !(clean_text(candidates$article_lab_candidate_id) %in% existing_ids)
+  keep[is.na(keep)] <- TRUE
+  additions <- candidates[keep, , drop = FALSE]
+  if (nrow(additions) == 0) return(0L)
+
+  existing_positions <- dbGetQuery(con, "
+    SELECT MIN(queue_position) AS min_position
+    FROM human_preview_rating_queue
+    WHERE rating_session_id = ?
+  ", params = list(session_id))
+  min_position <- if (nrow(existing_positions) == 0 || is.na(existing_positions$min_position[[1]])) 1L else as.integer(existing_positions$min_position[[1]])
+  start_position <- min_position - nrow(additions)
+
+  additions <- additions[order(additions$candidate_created_at, additions$article_lab_candidate_id, decreasing = FALSE), , drop = FALSE]
+
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_len(nrow(additions))) {
+      dbExecute(
+        con,
+        "INSERT INTO human_preview_rating_queue
+         (rating_session_id, queue_position, article_id, medium_post_id, status, source_type, article_lab_candidate_id)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?)",
+        params = list(
+          session_id,
+          start_position + i - 1L,
+          NA_integer_,
+          NA_character_,
+          "article_lab_generated",
+          additions$article_lab_candidate_id[[i]]
+        )
+      )
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  nrow(additions)
+}
+
+prune_article_lab_candidates_from_session <- function(con, session_id) {
+  if (is.null(session_id) || is.na(session_id) || !nzchar(session_id)) return(0L)
+  rows <- dbGetQuery(
+    con,
+    "
+    SELECT COUNT(*) AS n
+    FROM human_preview_rating_queue q
+    WHERE q.rating_session_id = ?
+      AND q.source_type = 'article_lab_generated'
+      AND q.status = 'pending'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM article_lab_title_candidates c
+        WHERE c.candidate_id = q.article_lab_candidate_id
+          AND c.ready_for_human_rating = 1
+          AND c.archived = 0
+          AND c.promoted = 0
+          AND c.status = 'ready_for_human_rating'
+      )
+    ",
+    params = list(session_id)
+  )
+  removed_n <- if (nrow(rows) == 0 || is.na(rows$n[[1]])) 0L else as.integer(rows$n[[1]])
+  if (removed_n < 1L) return(0L)
+  dbExecute(
+    con,
+    "
+    UPDATE human_preview_rating_queue
+    SET status = 'removed_article_lab', completed_at = COALESCE(completed_at, ?)
+    WHERE rating_session_id = ?
+      AND source_type = 'article_lab_generated'
+      AND status = 'pending'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM article_lab_title_candidates c
+        WHERE c.candidate_id = human_preview_rating_queue.article_lab_candidate_id
+          AND c.ready_for_human_rating = 1
+          AND c.archived = 0
+          AND c.promoted = 0
+          AND c.status = 'ready_for_human_rating'
+      )
+    ",
+    params = list(now_utc(), session_id)
+  )
+  removed_n
 }
 
 get_dimension_rated_keys <- function(con) {
@@ -1432,7 +2552,13 @@ create_new_session <- function(con, target_n = Inf) {
   if (nrow(candidates) == 0) stop("No unrated candidate articles with local thumbnails were found.", call. = FALSE)
 
   set.seed(seed)
-  shuffled <- candidates[sample.int(nrow(candidates)), , drop = FALSE]
+  article_lab_candidates <- candidates[candidates$source_type == "article_lab_generated", , drop = FALSE]
+  dataset_candidates <- candidates[candidates$source_type != "article_lab_generated", , drop = FALSE]
+  if (nrow(article_lab_candidates) > 0) {
+    article_lab_candidates <- article_lab_candidates[order(article_lab_candidates$candidate_created_at, article_lab_candidates$article_lab_candidate_id, decreasing = FALSE), , drop = FALSE]
+  }
+  shuffled_dataset <- if (nrow(dataset_candidates) > 0) dataset_candidates[sample.int(nrow(dataset_candidates)), , drop = FALSE] else dataset_candidates
+  shuffled <- if (nrow(article_lab_candidates) > 0) rbind(article_lab_candidates, shuffled_dataset) else shuffled_dataset
   selected_n <- min(target_n, nrow(shuffled))
   selected_n <- as.integer(selected_n)
   selected <- head(shuffled, selected_n)
@@ -1451,13 +2577,15 @@ create_new_session <- function(con, target_n = Inf) {
       dbExecute(
         con,
         "INSERT INTO human_preview_rating_queue
-         (rating_session_id, queue_position, article_id, medium_post_id, status)
-         VALUES (?, ?, ?, ?, 'pending')",
+         (rating_session_id, queue_position, article_id, medium_post_id, status, source_type, article_lab_candidate_id)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?)",
         params = list(
           session_id,
           i,
           selected$article_id[[i]],
-          selected$medium_post_id[[i]]
+          selected$medium_post_id[[i]],
+          selected$source_type[[i]],
+          selected$article_lab_candidate_id[[i]]
         )
       )
     }
@@ -1488,12 +2616,19 @@ resume_or_create_session <- function(con, target_n = Inf) {
     LIMIT 1
   ", params = list(interface_version, rating_mode))
 
-  if (nrow(existing) > 0) existing$rating_session_id[[1]] else create_new_session(con, target_n)
+  if (nrow(existing) > 0) {
+    session_id <- existing$rating_session_id[[1]]
+    prune_article_lab_candidates_from_session(con, session_id)
+    append_article_lab_candidates_to_session(con, session_id)
+    session_id
+  } else {
+    create_new_session(con, target_n)
+  }
 }
 
 load_current_item <- function(con, session_id) {
   item <- dbGetQuery(con, "
-    SELECT rating_session_id, queue_position, article_id, medium_post_id, status, shown_at, completed_at
+    SELECT rating_session_id, queue_position, article_id, medium_post_id, status, shown_at, completed_at, source_type, article_lab_candidate_id
     FROM human_preview_rating_queue
     WHERE rating_session_id = ?
       AND status = 'pending'
@@ -1511,6 +2646,28 @@ load_current_item <- function(con, session_id) {
        WHERE rating_session_id = ? AND queue_position = ?",
       params = list(item$shown_at[[1]], session_id, item$queue_position[[1]])
     )
+  }
+
+  source_type <- first_value(item, "source_type", "dataset")
+  if (identical(source_type, "article_lab_generated")) {
+    details <- dbGetQuery(con, "
+      SELECT candidate_id AS article_lab_candidate_id, batch_id, created_at, title, status
+      FROM article_lab_title_candidates
+      WHERE candidate_id = ?
+      LIMIT 1
+    ", params = list(item$article_lab_candidate_id[[1]]))
+    if (nrow(details) == 0) return(NULL)
+
+    details$title <- clean_text(details$title)
+    details$subtitle <- NA_character_
+    details$thumbnail_url <- NA_character_
+    details$local_thumbnail_path <- NA_character_
+    details$url <- NA_character_
+    details$canonical_article_key <- NA_character_
+    details$article_id <- NA_integer_
+    details$medium_post_id <- NA_character_
+    details$thumbnail_status <- "article_lab_title_only"
+    return(cbind(item, details[1, , drop = FALSE]))
   }
 
   details <- dbGetQuery(con, "
@@ -1587,9 +2744,9 @@ save_current_rating <- function(con, item, score = NULL, note = "", skipped = FA
       "INSERT INTO human_preview_ratings
        (rating_session_id, queue_position, article_id, medium_post_id, interface_version,
         rating_prompt, shown_title, shown_subtitle, shown_thumbnail_path,
-        human_feed_success_potential, human_feed_success_note, skipped,
+        human_feed_success_potential, human_feed_success_note, skipped, source_type, article_lab_candidate_id,
         shown_at, rated_at, seconds_spent)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       params = list(
         item$rating_session_id[[1]],
         item$queue_position[[1]],
@@ -1603,6 +2760,8 @@ save_current_rating <- function(con, item, score = NULL, note = "", skipped = FA
         score_value,
         note_value[[1]],
         if (isTRUE(skipped)) 1L else 0L,
+        first_value(item, "source_type", "dataset"),
+        first_value(item, "article_lab_candidate_id"),
         item$shown_at[[1]],
         rated_at,
         seconds_spent
@@ -1621,6 +2780,19 @@ save_current_rating <- function(con, item, score = NULL, note = "", skipped = FA
         item$queue_position[[1]]
       )
     )
+
+    if (identical(first_value(item, "source_type", "dataset"), "article_lab_generated")) {
+      dbExecute(
+        con,
+        "UPDATE article_lab_title_candidates
+         SET status = ?, ready_for_human_rating = 0
+         WHERE candidate_id = ?",
+        params = list(
+          if (isTRUE(skipped)) "human_skipped" else "human_rated",
+          first_value(item, "article_lab_candidate_id")
+        )
+      )
+    }
     dbCommit(con)
   }, error = function(e) {
     dbRollback(con)
@@ -1631,7 +2803,7 @@ save_current_rating <- function(con, item, score = NULL, note = "", skipped = FA
 
 undo_previous_rating <- function(con, session_id) {
   previous <- dbGetQuery(con, "
-    SELECT id, queue_position
+    SELECT id, queue_position, source_type, article_lab_candidate_id
     FROM human_preview_ratings
     WHERE rating_session_id = ?
     ORDER BY rated_at DESC, id DESC
@@ -1649,6 +2821,15 @@ undo_previous_rating <- function(con, session_id) {
        WHERE rating_session_id = ? AND queue_position = ?",
       params = list(session_id, previous$queue_position[[1]])
     )
+    if (identical(first_value(previous, "source_type", "dataset"), "article_lab_generated")) {
+      dbExecute(
+        con,
+        "UPDATE article_lab_title_candidates
+         SET status = 'ready_for_human_rating', ready_for_human_rating = 1
+         WHERE candidate_id = ?",
+        params = list(first_value(previous, "article_lab_candidate_id"))
+      )
+    }
     dbCommit(con)
   }, error = function(e) {
     dbRollback(con)
@@ -2502,6 +3683,7 @@ ui <- fluidPage(
         color: var(--muted);
         font-size: 15px;
         font-weight: 500;
+        cursor: pointer;
       }
       .section-tab.active {
         color: var(--ink);
@@ -2588,6 +3770,32 @@ ui <- fluidPage(
         background: #fafafa;
         color: var(--ink);
       }
+      .lab-actions .btn.lab-primary.loading,
+      .lab-actions .btn.lab-primary.loading:hover,
+      .lab-actions .btn.lab-primary.loading:focus {
+        border-color: #166f14;
+        background: #166f14;
+        color: #fff;
+        cursor: wait;
+      }
+      .lab-actions .btn.lab-primary.loading[disabled] {
+        opacity: 1;
+      }
+      .button-spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        margin-right: 8px;
+        border: 2px solid rgba(255,255,255,.34);
+        border-top-color: #fff;
+        border-radius: 50%;
+        vertical-align: -2px;
+        animation: lab-spin .75s linear infinite;
+      }
+      @keyframes lab-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
       .lab-table {
         width: 100%;
         border-collapse: collapse;
@@ -2609,6 +3817,48 @@ ui <- fluidPage(
         text-transform: uppercase;
         letter-spacing: .01em;
       }
+      .lab-table td.score-cell {
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .lab-table td.select-cell {
+        width: 56px;
+      }
+      .lab-table .shiny-input-container {
+        width: 100%;
+        margin-bottom: 0;
+      }
+      .lab-table .checkbox {
+        margin: 0;
+      }
+      .lab-table .form-control {
+        min-height: 34px;
+      }
+      .lab-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 650;
+        line-height: 1;
+        background: #f4f6f4;
+        color: #35523b;
+      }
+      .lab-badge.mobile_safe,
+      .lab-badge.good { background: #edf8ef; color: #1a6d27; }
+      .lab-badge.risky { background: #fff6e6; color: #8a5a00; }
+      .lab-badge.too_long { background: #fdecec; color: #9b2727; }
+      .lab-badge.ready_for_api_scoring { background: #edf8ef; color: #1a6d27; }
+      .lab-badge.api_scored { background: #eef4ff; color: #2757a3; }
+      .lab-badge.approved_for_subtitle { background: #f0ebff; color: #5a33a2; }
+      .lab-badge.disqualified,
+      .lab-badge.rejected { background: #fff3e6; color: #8a5200; }
+      .lab-badge.generated,
+      .lab-badge.api_pending,
+      .lab-badge.draft { background: #f5f5f5; color: #666; }
+      .lab-badge.archived { background: #f3f3f3; color: #777; }
       .lab-status-copy {
         margin-top: 12px;
         color: var(--muted);
@@ -2945,13 +4195,24 @@ server <- function(input, output, session) {
     draft = NULL,
     draft_created_at = NULL,
     draft_meta = NULL,
+    is_generating = FALSE,
+    is_scoring = FALSE,
     notice = NULL
   )
+  article_lab_active_tab <- reactiveVal("generate")
   article_lab_refresh <- reactiveVal(0L)
 
   observeEvent(input$sidebar_nav, {
     if (is.character(input$sidebar_nav) && input$sidebar_nav %in% c("home", "article_lab")) {
       active_section(input$sidebar_nav)
+      if (identical(input$sidebar_nav, "home")) refresh_current()
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_tab, {
+    tab_value <- clean_text(input$article_lab_tab)
+    if (length(tab_value) > 0 && !is.na(tab_value[[1]]) && tab_value[[1]] %in% c("generate", "api_score")) {
+      article_lab_active_tab(tab_value[[1]])
     }
   }, ignoreInit = TRUE)
 
@@ -2972,6 +4233,8 @@ server <- function(input, output, session) {
         loaded_item
       }
     } else {
+      prune_article_lab_candidates_from_session(con, rating_session_id)
+      append_article_lab_candidates_to_session(con, rating_session_id)
       load_current_item(con, rating_session_id)
     }
     current(item)
@@ -3032,8 +4295,8 @@ server <- function(input, output, session) {
       return(div(
         class = "daily-goal static-card",
         strong("Article Lab"),
-        p("Generate tab MVP only."),
-        p(class = "shortcut-copy", "Human rating stays in the normal workflow.")
+        p("Generate, queue, score, and approve titles."),
+        p(class = "shortcut-copy", "This pass keeps Article Lab title approvals out of the Home rating flow.")
       ))
     }
 
@@ -3048,16 +4311,18 @@ server <- function(input, output, session) {
 
   output$main_panel <- renderUI({
     if (identical(active_section(), "article_lab")) {
-      return(tagList(
-        h1("Article Lab"),
-        div(class = "page-subtitle", "Generate, save, and review new title candidates."),
-        div(
-          class = "section-tabs",
-          div(class = "section-tab active", "Generate"),
-          div(class = "section-tab disabled", "API score"),
-          div(class = "section-tab disabled", "Compare"),
-          div(class = "section-tab disabled", "Promote")
-        ),
+      active_tab <- article_lab_active_tab()
+      tab_button <- function(tab_id, label, enabled = TRUE) {
+        tags$button(
+          type = "button",
+          class = paste("section-tab", if (identical(active_tab, tab_id)) "active" else "", if (!enabled) "disabled" else ""),
+          onclick = if (enabled) sprintf("Shiny.setInputValue('article_lab_tab', '%s', {priority: 'event'})", tab_id) else NULL,
+          disabled = if (!enabled) "disabled" else NULL,
+          label
+        )
+      }
+
+      generate_panel <- tagList(
         div(
           class = "lab-card",
           h2("Generation prompt"),
@@ -3098,7 +4363,7 @@ server <- function(input, output, session) {
           ),
           div(
             class = "lab-actions",
-            actionButton("article_lab_generate", "Generate titles", class = "lab-primary"),
+            uiOutput("article_lab_generate_button"),
             actionButton("article_lab_save", "Save batch", class = "lab-secondary"),
             actionButton("article_lab_clear", "Clear draft", class = "lab-secondary")
           ),
@@ -3106,9 +4371,49 @@ server <- function(input, output, session) {
         ),
         div(
           class = "lab-card",
-          h3("Latest generated titles"),
+          h3("Current batch triage"),
+          div(
+            class = "lab-actions",
+            checkboxInput("article_lab_generate_select_all", "Select all", value = FALSE),
+            checkboxInput("article_lab_show_disqualified", "Show disqualified titles", value = FALSE),
+            actionButton("article_lab_save_triage", "Save triage changes", class = "lab-secondary"),
+            actionButton("article_lab_move_to_api_queue", "Move selected to API queue", class = "lab-primary")
+          ),
           uiOutput("article_lab_latest_titles")
         )
+      )
+
+      api_score_panel <- tagList(
+        div(
+          class = "lab-card",
+          h2("API scoring controls"),
+          div(class = "page-subtitle", "Score only titles in the API queue, then manually approve which scored titles should move to subtitle generation."),
+          div(class = "lab-grid", uiOutput("article_lab_batch_selector"), div(class = "lab-field", textInput("article_lab_score_model", "Model", value = article_lab_default_score_model, width = "100%")), div(class = "lab-field", textInput("article_lab_score_prompt_version", "Prompt version", value = article_lab_default_score_prompt_version, width = "100%")), div(class = "lab-field", textInput("article_lab_score_scope", "Scope", value = article_lab_default_score_scope, width = "100%"))),
+          div(
+            class = "lab-actions",
+            uiOutput("article_lab_score_button"),
+            actionButton("article_lab_approve_for_subtitle", "Approve selected for subtitle generation", class = "lab-secondary")
+          ),
+          uiOutput("article_lab_notice")
+        ),
+        div(
+          class = "lab-card",
+          h3("API queue and scored titles"),
+          uiOutput("article_lab_score_table")
+        )
+      )
+
+      return(tagList(
+        h1("Article Lab"),
+        div(class = "page-subtitle", "Generate, triage, score, and manually approve title candidates."),
+        div(
+          class = "section-tabs",
+          tab_button("generate", "Generate"),
+          tab_button("api_score", "API score"),
+          tab_button("compare", "Compare", enabled = FALSE),
+          tab_button("promote", "Promote", enabled = FALSE)
+        ),
+        if (identical(active_tab, "api_score")) api_score_panel else generate_panel
       ))
     }
 
@@ -3282,11 +4587,51 @@ server <- function(input, output, session) {
     load_latest_article_lab_batch(con)
   })
 
+  article_lab_batches <- reactive({
+    article_lab_refresh()
+    load_article_lab_batches(con)
+  })
+
+  observe({
+    batches <- article_lab_batches()
+    batch_choices <- if (nrow(batches) == 0) character() else setNames(
+      batches$batch_id,
+      sprintf("%s · %s", batches$batch_id, batches$created_at)
+    )
+    choices <- c("All titles" = article_lab_all_batches_value, batch_choices)
+    selected <- isolate(input$article_lab_selected_batch)
+    valid_values <- c(article_lab_all_batches_value, batches$batch_id)
+    if (is.null(selected) || !nzchar(selected) || !(selected %in% valid_values)) {
+      selected <- article_lab_all_batches_value
+    }
+    updateSelectInput(session, "article_lab_selected_batch", choices = choices, selected = selected)
+  })
+
+  article_lab_selected_batch_id <- reactive({
+    selected <- clean_text(input$article_lab_selected_batch)
+    if (length(selected) > 0 && !is.na(selected[[1]])) return(selected[[1]])
+    batch <- article_lab_saved_batch()
+    if (is.null(batch)) return(NA_character_)
+    batch$batch_id[[1]]
+  })
+
   article_lab_saved_candidates <- reactive({
     article_lab_refresh()
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+    load_article_lab_candidates_for_batch(con, batch_id)
+  })
+
+  article_lab_generate_candidates <- reactive({
+    article_lab_refresh()
     batch <- article_lab_saved_batch()
-    if (is.null(batch)) return(data.frame())
-    load_article_lab_candidates_for_batch(con, batch$batch_id[[1]])
+    if (is.null(batch) || nrow(batch) == 0) return(data.frame())
+    rows <- load_article_lab_candidates_for_batch(con, batch$batch_id[[1]])
+    rows <- article_lab_normalize_candidate_rows(rows)
+    show_disqualified <- isTRUE(input$article_lab_show_disqualified %||% FALSE)
+    keep_statuses <- if (show_disqualified) c("generated", "disqualified") else "generated"
+    rows <- rows[rows$normalized_status %in% keep_statuses, , drop = FALSE]
+    rows[order(rows$created_at, rows$candidate_id, decreasing = TRUE), , drop = FALSE]
   })
 
   article_lab_overview_stats <- reactive({
@@ -3294,22 +4639,137 @@ server <- function(input, output, session) {
     article_lab_overview(con)
   })
 
+  article_lab_scoring_rows <- reactive({
+    article_lab_refresh()
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+    rows <- load_article_lab_scoring_rows(
+      con,
+      batch_id = batch_id,
+      model = input$article_lab_score_model %||% article_lab_default_score_model,
+      prompt_version = input$article_lab_score_prompt_version %||% article_lab_default_score_prompt_version,
+      scope = input$article_lab_score_scope %||% article_lab_default_score_scope
+    )
+    rows <- article_lab_normalize_candidate_rows(rows)
+    rows <- rows[rows$normalized_status %in% c("ready_for_api_scoring", "api_pending", "api_scored", "approved_for_subtitle"), , drop = FALSE]
+    rows[order(rows$created_at, rows$candidate_id, decreasing = TRUE), , drop = FALSE]
+  })
+
+  collect_generate_triage_updates <- function(rows) {
+    if (nrow(rows) == 0) return(list(updates = list(), selected_ids = character()))
+    updates <- lapply(seq_len(nrow(rows)), function(i) {
+      candidate_id <- rows$candidate_id[[i]]
+      list(
+        candidate_id = candidate_id,
+        status = input[[article_lab_row_input_id("article_lab_generate_status", candidate_id)]] %||% rows$normalized_status[[i]],
+        notes = input[[article_lab_row_input_id("article_lab_generate_notes", candidate_id)]] %||% rows$notes[[i]],
+        selected = isTRUE(input[[article_lab_row_input_id("article_lab_generate_select", candidate_id)]])
+      )
+    })
+    list(
+      updates = updates,
+      selected_ids = vapply(updates[vapply(updates, function(x) isTRUE(x$selected), logical(1))], `[[`, character(1), "candidate_id")
+    )
+  }
+
+  collect_score_selected_ids <- function(rows) {
+    if (nrow(rows) == 0) return(character())
+    selected <- vapply(seq_len(nrow(rows)), function(i) {
+      candidate_id <- rows$candidate_id[[i]]
+      isTRUE(input[[article_lab_row_input_id("article_lab_score_select", candidate_id)]])
+    }, logical(1))
+    rows$candidate_id[selected]
+  }
+
+  article_lab_apply_select_all <- function(rows, value) {
+    for (cid in rows$candidate_id) {
+      updateCheckboxInput(
+        session,
+        inputId = article_lab_row_input_id("article_lab_generate_select", cid),
+        value = value
+      )
+    }
+  }
+
+  observe({
+    article_lab_generate_candidates()
+    updateCheckboxInput(session, inputId = "article_lab_generate_select_all", value = FALSE)
+  })
+
+  observeEvent(input$article_lab_generate_select_all, {
+    rows <- article_lab_generate_candidates()
+    if (nrow(rows) == 0) return()
+    article_lab_apply_select_all(rows, isTRUE(input$article_lab_generate_select_all))
+  }, ignoreInit = TRUE)
+
   output$article_lab_notice <- renderUI({
     notice <- article_lab_state$notice
     if (is.null(notice) || !nzchar(notice)) return(NULL)
     div(class = "lab-status-copy", notice)
   })
 
+  output$article_lab_generate_button <- renderUI({
+    if (isTRUE(article_lab_state$is_generating)) {
+      tags$button(
+        id = "article_lab_generate",
+        type = "button",
+        class = "btn btn-default action-button lab-primary loading",
+        disabled = "disabled",
+        span(class = "button-spinner"),
+        "Generating..."
+      )
+    } else {
+      actionButton("article_lab_generate", "Generate titles", class = "lab-primary")
+    }
+  })
+
+  output$article_lab_batch_selector <- renderUI({
+    batches <- article_lab_batches()
+    batch_choices <- if (nrow(batches) == 0) character() else setNames(
+      batches$batch_id,
+      sprintf("%s · %s", batches$batch_id, batches$created_at)
+    )
+    choices <- c("All titles" = article_lab_all_batches_value, batch_choices)
+    div(
+      class = "lab-field",
+      selectInput(
+        "article_lab_selected_batch",
+        "Batch selector",
+        choices = choices,
+        selected = article_lab_all_batches_value,
+        width = "100%"
+      )
+    )
+  })
+
+  output$article_lab_score_button <- renderUI({
+    if (isTRUE(article_lab_state$is_scoring)) {
+      tags$button(
+        id = "article_lab_score_titles",
+        type = "button",
+        class = "btn btn-default action-button lab-primary loading",
+        disabled = "disabled",
+        span(class = "button-spinner"),
+        "Scoring..."
+      )
+    } else {
+      actionButton("article_lab_score_titles", "Score API queue", class = "lab-primary")
+    }
+  })
+
   output$article_lab_latest_titles <- renderUI({
-    saved <- article_lab_saved_candidates()
+    saved <- article_lab_generate_candidates()
     draft <- article_lab_state$draft
     if (!is.null(draft) && nrow(draft) > 0) {
       draft_rows <- data.frame(
         candidate_id = sprintf("draft_%02d", seq_len(nrow(draft))),
         title = draft$title,
+        title_char_count = article_lab_title_length(draft$title),
+        title_length_flag = article_lab_title_length_flag(article_lab_title_length(draft$title)),
         status = rep("draft", nrow(draft)),
         created_at = rep(article_lab_state$draft_created_at %||% now_utc(), nrow(draft)),
         batch_id = rep("(draft)", nrow(draft)),
+        notes = rep(NA_character_, nrow(draft)),
         stringsAsFactors = FALSE,
         check.names = FALSE
       )
@@ -3317,10 +4777,19 @@ server <- function(input, output, session) {
     } else {
       rows <- saved
     }
-    article_lab_table_ui(rows)
+    article_lab_generate_table_ui(rows)
+  })
+
+  output$article_lab_score_table <- renderUI({
+    article_lab_score_table_ui(article_lab_scoring_rows())
   })
 
   observeEvent(input$article_lab_generate, {
+    article_lab_state$is_generating <- TRUE
+    on.exit({
+      article_lab_state$is_generating <- FALSE
+    }, add = TRUE)
+
     generated <- generate_title_candidates(
       con = con,
       prompt = input$article_lab_prompt,
@@ -3338,16 +4807,34 @@ server <- function(input, output, session) {
       } else {
         ""
       }
+      retry_copy <- if (isTRUE(generated$retry_used)) {
+        " Strict mode triggered one automatic retry to shorten long titles."
+      } else {
+        ""
+      }
+      dropped_copy <- if (isTRUE(generated$dropped_n > 0)) {
+        sprintf(" Dropped %s title%s over %s characters after strict validation.", generated$dropped_n, ifelse(generated$dropped_n == 1, "", "s"), article_lab_title_max_chars)
+      } else {
+        ""
+      }
       article_lab_state$notice <- sprintf(
-        "Generated %s draft titles with the OpenAI API using model %s.%s Save the batch to persist it to SQLite.",
+        "Generated %s draft titles with the OpenAI API using model %s.%s%s%s Save the batch to persist it to SQLite.",
         nrow(generated$titles),
         generated$model %||% article_lab_default_model,
-        example_copy
+        example_copy,
+        retry_copy,
+        dropped_copy
       )
     } else {
+      dropped_copy <- if (isTRUE(generated$dropped_n > 0)) {
+        sprintf(" Dropped %s title%s over %s characters after strict validation.", generated$dropped_n, ifelse(generated$dropped_n == 1, "", "s"), article_lab_title_max_chars)
+      } else {
+        ""
+      }
       article_lab_state$notice <- sprintf(
-        "API generation was unavailable, so the local stub helper generated %s draft titles instead. Reason: %s",
+        "API generation was unavailable, so the local stub helper generated %s draft titles instead.%s Reason: %s",
         nrow(generated$titles),
+        dropped_copy,
         generated$fallback_reason %||% "unknown error"
       )
     }
@@ -3376,9 +4863,10 @@ server <- function(input, output, session) {
     article_lab_state$draft_created_at <- NULL
     article_lab_state$draft_meta <- NULL
     article_lab_state$notice <- sprintf(
-      "Saved batch %s. Candidates are stored with status ready_for_human_rating. Generation mode: %s.",
+      "Saved batch %s. Candidates start as New and stay in Generate until you manually move selected titles to the API queue. Generation mode: %s. Max title length enforced: %s characters.",
       batch_id,
-      draft_meta$mode %||% "generated"
+      draft_meta$mode %||% "generated",
+      article_lab_title_max_chars
     )
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
@@ -3390,46 +4878,194 @@ server <- function(input, output, session) {
     article_lab_state$notice <- "Cleared the unsaved draft."
   }, ignoreInit = TRUE)
 
+  observeEvent(input$article_lab_save_triage, {
+    if (!is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
+      article_lab_state$notice <- "Save the current draft batch before editing statuses or notes."
+      return(invisible(NULL))
+    }
+    rows <- article_lab_generate_candidates()
+    payload <- collect_generate_triage_updates(rows)
+    if (length(payload$updates) == 0) {
+      article_lab_state$notice <- "No saved titles are visible in the current triage view."
+      return(invisible(NULL))
+    }
+    article_lab_save_generate_triage(con, payload$updates)
+    article_lab_state$notice <- sprintf("Saved triage updates for %s title%s.", length(payload$updates), ifelse(length(payload$updates) == 1, "", "s"))
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_move_to_api_queue, {
+    if (!is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
+      article_lab_state$notice <- "Save the current draft batch before moving titles to the API queue."
+      return(invisible(NULL))
+    }
+    rows <- article_lab_generate_candidates()
+    payload <- collect_generate_triage_updates(rows)
+    article_lab_save_generate_triage(con, payload$updates)
+    result <- article_lab_move_candidates_to_api_queue(con, payload$selected_ids)
+    article_lab_state$notice <- sprintf(
+      "Moved %s selected title%s to API queue. %s selected title%s were skipped because they were disqualified or not eligible.",
+      result$moved_n,
+      ifelse(result$moved_n == 1, "", "s"),
+      result$skipped_n,
+      ifelse(result$skipped_n == 1, "", "s")
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
+    if (result$moved_n > 0) {
+      if (length(result$batch_ids) == 1 && nzchar(result$batch_ids[[1]])) {
+        updateSelectInput(session, "article_lab_selected_batch", selected = result$batch_ids[[1]])
+      }
+      article_lab_active_tab("api_score")
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_score_titles, {
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) {
+      article_lab_state$notice <- "Select a saved batch before scoring."
+      return(invisible(NULL))
+    }
+    article_lab_state$is_scoring <- TRUE
+    on.exit({
+      article_lab_state$is_scoring <- FALSE
+    }, add = TRUE)
+
+    result <- tryCatch(
+      article_lab_score_batch(
+        con,
+        batch_id = batch_id,
+        model = input$article_lab_score_model,
+        prompt_version = input$article_lab_score_prompt_version,
+        scope = input$article_lab_score_scope
+      ),
+      error = function(e) e
+    )
+    if (inherits(result, "error")) {
+      article_lab_state$notice <- paste("API scoring failed:", conditionMessage(result))
+    } else {
+      article_lab_state$notice <- if (result$scored_n > 0) {
+        sprintf(
+          "Scored %s API-queued title%s for %s using model %s, prompt %s, scope %s.%s",
+          result$scored_n,
+          ifelse(result$scored_n == 1, "", "s"),
+          result$batch_label %||% paste("batch", batch_id),
+          result$model %||% article_lab_default_score_model,
+          result$prompt_version %||% article_lab_default_score_prompt_version,
+          result$scope %||% article_lab_default_score_scope,
+          if (result$failed_n > 0) sprintf(" %s failed and stayed in their previous status.", result$failed_n) else ""
+        )
+      } else {
+        result$message %||% "No titles are currently waiting in the API queue for this selection."
+      }
+      article_lab_refresh(article_lab_refresh() + 1L)
+      if (!is_dimension_mode && !is.null(rating_session_id) && !is.na(rating_session_id)) {
+        prune_article_lab_candidates_from_session(con, rating_session_id)
+      }
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_approve_for_subtitle, {
+    rows <- article_lab_scoring_rows()
+    selected_ids <- collect_score_selected_ids(rows)
+    result <- article_lab_approve_candidates_for_subtitle(con, selected_ids)
+    article_lab_state$notice <- if (result$approved_n > 0 || result$skipped_n == 0) {
+      sprintf("Approved %s selected title%s for subtitle generation.", result$approved_n, ifelse(result$approved_n == 1, "", "s"))
+    } else {
+      sprintf(
+        "Approved %s selected title%s for subtitle generation. %s selected title%s were skipped because they were not API scored.",
+        result$approved_n,
+        ifelse(result$approved_n == 1, "", "s"),
+        result$skipped_n,
+        ifelse(result$skipped_n == 1, "", "s")
+      )
+    }
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
   output$guide_content <- renderUI({
     if (identical(active_section(), "article_lab")) {
       overview <- article_lab_overview_stats()
-      saved_batch <- article_lab_saved_batch()
-      draft <- article_lab_state$draft
-      draft_n <- if (is.null(draft)) 0L else nrow(draft)
-      current_batch_label <- if (draft_n > 0) {
-        sprintf("Unsaved draft with %s titles", draft_n)
-      } else if (!is.null(saved_batch)) {
-        sprintf("Saved batch %s", saved_batch$batch_id[[1]])
+      batches <- article_lab_batches()
+      latest_saved_batch <- article_lab_saved_batch()
+      selected_batch_id <- article_lab_selected_batch_id()
+      selected_batch <- if (nrow(batches) > 0 && !is.na(selected_batch_id) && nzchar(selected_batch_id)) {
+        batches[batches$batch_id == selected_batch_id, , drop = FALSE]
+      } else {
+        data.frame()
+      }
+      scoring_rows <- article_lab_scoring_rows()
+      active_tab <- article_lab_active_tab()
+      current_batch_label <- if (identical(active_tab, "generate") && !is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
+        sprintf("Unsaved draft with %s titles", nrow(article_lab_state$draft))
+      } else if (identical(active_tab, "generate") && !is.null(latest_saved_batch) && nrow(latest_saved_batch) > 0) {
+        sprintf("Latest saved batch %s", latest_saved_batch$batch_id[[1]])
+      } else if (identical(selected_batch_id, article_lab_all_batches_value)) {
+        "All saved titles across batches"
+      } else if (nrow(selected_batch) > 0) {
+        sprintf("Saved batch %s", selected_batch$batch_id[[1]])
       } else {
         "No batch saved yet"
       }
-      current_batch_meta <- if (draft_n > 0) {
+      current_batch_meta <- if (identical(active_tab, "generate") && !is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
         paste("Draft created at", article_lab_state$draft_created_at %||% now_utc())
-      } else if (!is.null(saved_batch)) {
-        paste("Created", saved_batch$created_at[[1]], "\u00b7 model", first_value(saved_batch, "model", article_lab_default_model))
+      } else if (identical(active_tab, "generate") && !is.null(latest_saved_batch) && nrow(latest_saved_batch) > 0) {
+        paste("Created", latest_saved_batch$created_at[[1]], "\u00b7 model", first_value(latest_saved_batch, "model", article_lab_default_model))
+      } else if (identical(selected_batch_id, article_lab_all_batches_value)) {
+        "The API tab can review all batches together. The Generate tab stays focused on the newest saved batch."
+      } else if (nrow(selected_batch) > 0) {
+        paste("Created", selected_batch$created_at[[1]], "\u00b7 model", first_value(selected_batch, "model", article_lab_default_model))
       } else {
         "Generate first, then save to persist candidates."
       }
+      scored_n <- if (nrow(scoring_rows) == 0) 0L else sum(!is.na(scoring_rows$combined_title_score))
+      total_n <- nrow(scoring_rows)
+      approved_n <- if (nrow(scoring_rows) == 0) 0L else sum(scoring_rows$normalized_status == "approved_for_subtitle", na.rm = TRUE)
 
       return(tagList(
         div(
           class = "status-card",
-          h3("Article Lab status"),
-          div(class = "status-metric", overview$ready_for_human_rating[[1]]),
-          p(sprintf("%s saved candidates marked ready for later human rating.", overview$ready_for_human_rating[[1]])),
-          p(class = "lab-status-copy", sprintf("%s saved batches total.", overview$saved_batches[[1]]))
+          h3(if (identical(active_tab, "api_score")) "Run status" else "Article Lab status"),
+          div(class = "status-metric", if (identical(active_tab, "api_score")) sprintf("%s / %s", scored_n, total_n) else overview$saved_candidates[[1]]),
+          p(if (identical(active_tab, "api_score")) {
+            if (identical(selected_batch_id, article_lab_all_batches_value)) {
+              sprintf("%s of %s titles across all batches are scored for the current API config.", scored_n, total_n)
+            } else {
+              sprintf("%s of %s titles in the selected batch are scored for the current API config.", scored_n, total_n)
+            }
+          } else {
+            sprintf("%s saved candidates across %s batches.", overview$saved_candidates[[1]], overview$saved_batches[[1]])
+          }),
+          p(class = "lab-status-copy", if (identical(active_tab, "api_score")) {
+            sprintf("%s titles are in the API queue and %s are already approved.", overview$ready_for_api_scoring[[1]], overview$approved_for_subtitle[[1]])
+          } else {
+            sprintf("%s remain new, %s are disqualified, and %s are waiting in the API queue.", overview$generated[[1]], overview$disqualified[[1]], overview$ready_for_api_scoring[[1]])
+          })
         ),
         div(
           class = "status-card",
-          h3("Current batch"),
-          p(current_batch_label),
-          p(class = "lab-status-copy", current_batch_meta)
+          h3(if (identical(active_tab, "api_score")) "Approvals" else "Current batch"),
+          if (identical(active_tab, "api_score")) {
+            tagList(
+              div(class = "status-metric", approved_n),
+              p(if (identical(selected_batch_id, article_lab_all_batches_value)) {
+                sprintf("%s title%s across all batches are approved for subtitle generation.", approved_n, ifelse(approved_n == 1, "", "s"))
+              } else {
+                sprintf("%s title%s in this selection are approved for subtitle generation.", approved_n, ifelse(approved_n == 1, "", "s"))
+              }),
+              p(class = "lab-status-copy", "Only manually selected API-scored titles move forward.")
+            )
+          } else {
+            tagList(
+              p(current_batch_label),
+              p(class = "lab-status-copy", current_batch_meta)
+            )
+          }
         ),
         div(
           class = "status-card",
           h3("Reminder"),
-          p("Human rating happens in the normal rating queue. API scores should stay hidden until human ratings are complete."),
-          p(class = "lab-status-copy", "Queue integration TODO: stored titles are marked ready_for_human_rating only in this MVP.")
+          p("This pass does not use Home, human rating, or automatic top-N promotion."),
+          p(class = "lab-status-copy", "The subtitle generation handoff is now the approved_for_subtitle status.")
         )
       ))
     }
@@ -3458,17 +5094,37 @@ server <- function(input, output, session) {
       ))
     }
 
+    current_item <- current()
+    title_only_home <- !is.null(current_item) && identical(first_value(current_item, "source_type", "dataset"), "article_lab_generated")
+
     tagList(
-      div(class = "guide-section", h3("How it works"), p("Rate each preview using only the visible headline, subtitle, and thumbnail.")),
+      div(
+        class = "guide-section",
+        h3("How it works"),
+        p(if (title_only_home) {
+          "Rate this title-only candidate using only the visible headline."
+        } else {
+          "Rate each preview using only the visible headline, subtitle, and thumbnail."
+        })
+      ),
       div(
         class = "guide-section",
         h3("Focus on"),
-        tags$ul(
-          tags$li("Headline clarity and hook"),
-          tags$li("Topic relevance and appeal"),
-          tags$li("Perceived value to readers"),
-          tags$li("Your gut feeling")
-        )
+        if (title_only_home) {
+          tags$ul(
+            tags$li("Headline clarity and hook"),
+            tags$li("Specificity and credibility"),
+            tags$li("Curiosity without clickbait"),
+            tags$li("Your gut reaction to the title alone")
+          )
+        } else {
+          tags$ul(
+            tags$li("Headline clarity and hook"),
+            tags$li("Topic relevance and appeal"),
+            tags$li("Perceived value to readers"),
+            tags$li("Your gut feeling")
+          )
+        }
       ),
       div(
         class = "guide-section",
@@ -3498,6 +5154,7 @@ server <- function(input, output, session) {
 
     field <- if (is_dimension_mode) active_dimension() else NA_character_
     render_info <- if (is_dimension_v2_mode) v2_render_info(item) else NULL
+    is_article_lab_title_only <- identical(first_value(item, "source_type", "dataset"), "article_lab_generated")
     thumbnail_path <- item$local_thumbnail_path[[1]]
     thumbnail_path_abs <- if (is_dimension_v2_mode) {
       render_info$path_abs
@@ -3512,7 +5169,7 @@ server <- function(input, output, session) {
     } else {
       identical(thumbnail_status, "valid") && !is.na(thumbnail_path_abs) && file.exists(thumbnail_path_abs)
     }
-    isolate_title_field <- is_dimension_mode && !is.na(field) && field %in% title_isolation_dimension_fields
+    isolate_title_field <- is_article_lab_title_only || (is_dimension_mode && !is.na(field) && field %in% title_isolation_dimension_fields)
     thumbnail_ui <- if (isolate_title_field) {
       div(class = "thumbnail-placeholder", div(class = "thumbnail-invalid-label", title_only_placeholder_thumbnail_label))
     } else if (has_thumbnail) {
@@ -3529,9 +5186,9 @@ server <- function(input, output, session) {
       div(class = "thumbnail-placeholder", div(class = "thumbnail-invalid-label", "Invalid or missing thumbnail"))
     }
 
-    subtitle <- displayed_subtitle_for_field(item, field)
+    subtitle <- if (is_article_lab_title_only) title_only_placeholder_subtitle else displayed_subtitle_for_field(item, field)
     thumbnail_only <- is_dimension_mode && !is.na(field) && field %in% thumbnail_only_dimension_fields
-    text_only <- is_dimension_mode && !is.na(field) && field %in% text_only_dimension_fields
+    text_only <- is_article_lab_title_only || (is_dimension_mode && !is.na(field) && field %in% text_only_dimension_fields)
 
     if (text_only) {
       return(div(
@@ -3582,9 +5239,15 @@ server <- function(input, output, session) {
 
   output$rating_panel <- renderUI({
     if (!is_dimension_mode) {
+      current_item <- current()
+      prompt_text <- if (!is.null(current_item) && identical(first_value(current_item, "source_type", "dataset"), "article_lab_generated")) {
+        "Based only on the title, how likely is this article to perform well on Medium?"
+      } else {
+        rating_prompt
+      }
       return(div(
         class = "rating-panel",
-        div(class = "prompt", rating_prompt),
+        div(class = "prompt", prompt_text),
         div(
           class = "note-row",
           textInput(

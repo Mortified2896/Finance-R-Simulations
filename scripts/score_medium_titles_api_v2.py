@@ -26,7 +26,7 @@ from typing import Any
 
 DEFAULT_DB = Path("data/db/medium_articles.sqlite")
 DEFAULT_MODEL = os.environ.get("OPENAI_TITLE_SCORING_MODEL", "gpt-5-mini")
-DEFAULT_PROMPT_VERSION = "v2_2"
+DEFAULT_PROMPT_VERSION = "v2_3"
 DEFAULT_SCOPE = "title_subtitle"
 VALID_SCOPES = {"subtitle_only", "title_only", "title_subtitle"}
 DEFAULT_SAMPLE_MODE = "default"
@@ -34,14 +34,8 @@ VALID_SAMPLE_MODES = {"default", "thumbnail_first", "thumbnail_only", "random"}
 API_URL = "https://api.openai.com/v1/responses"
 
 SCORE_FIELDS = [
-    "clarity",
     "curiosity",
-    "specificity",
-    "beginner_appeal",
-    "credibility",
     "emotional_pull",
-    "promise_strength",
-    "medium_clap_potential",
     "medium_comment_potential",
     "overall_article_potential",
     "trust_risk",
@@ -187,7 +181,7 @@ def scope_label(scope: str) -> str:
 def prompt_content(prompt_version: str, input_fields: dict[str, str], scope: str) -> str:
     text_label = scope_label(scope)
     scope_note = scope_instruction(scope)
-    if prompt_version == "v2_2":
+    if prompt_version == "v2_3":
         return (
             f"Prompt version: {prompt_version}\n\n"
             f"Score scope: {scope}\n"
@@ -195,9 +189,8 @@ def prompt_content(prompt_version: str, input_fields: dict[str, str], scope: str
             "Important measurement note:\n"
             "Do not estimate click potential. For competitor Medium articles, we do not have impressions, views, reads, or click-through data, so click potential is not directly testable in this dataset.\n\n"
             "Focus instead on outcomes that can be compared against observed public metrics:\n"
-            "- medium_clap_potential: how likely this article is to receive claps after readers open and read it.\n"
             "- medium_comment_potential: how likely this article is to receive written responses/comments, especially because it invites disagreement, personal stories, debate, strong opinions, corrections, or follow-up questions.\n"
-            f"- overall_article_potential: overall expected Medium performance based on {text_label} only, considering likely reader interest, clarity, topic strength, credibility, and engagement potential.\n\n"
+            f"- overall_article_potential: overall expected Medium performance based on {text_label} only, considering likely reader interest, topic strength, emotional pull, trust, and engagement potential.\n\n"
             "Calibrate scores relative to typical Medium personal finance articles, not in isolation.\n\n"
             "Use the full 1-5 scale aggressively:\n"
             "1 = very weak, likely below average\n"
@@ -206,23 +199,17 @@ def prompt_content(prompt_version: str, input_fields: dict[str, str], scope: str
             "4 = clearly above average, likely stronger than most articles\n"
             "5 = exceptional, rare, top-tier potential\n\n"
             "Most normal articles should receive 2 or 3.\n"
-            f"Do not give 4 unless the {text_label} has a clearly strong hook, strong topic demand, clear reader payoff, and enough specificity.\n"
+            f"Do not give 4 unless the {text_label} has a clearly strong hook, strong topic demand, meaningful emotional or discussion pull, and a clear reader payoff.\n"
             f"Do not give 5 unless the {text_label} looks unusually compelling and would plausibly belong among the strongest articles in the dataset.\n"
             "Avoid defaulting to 4 for merely competent, useful, or credible articles.\n\n"
             "Input fields, and no other article data:\n"
             f"{json.dumps(input_fields, ensure_ascii=False, indent=2)}\n\n"
             "Rubric:\n"
-            f"- clarity: How clear and immediately understandable the {text_label} is.\n"
             f"- curiosity: How much the {text_label} creates a genuine desire to know more.\n"
-            "- specificity: How concrete, focused, and non-generic the promise is.\n"
-            "- beginner_appeal: How appealing and accessible the topic sounds for beginner or mainstream personal finance readers.\n"
-            f"- credibility: How trustworthy, grounded, and non-hypey the {text_label} feels.\n"
             f"- emotional_pull: How much the {text_label} creates emotional interest, concern, excitement, surprise, or urgency.\n"
-            "- promise_strength: How strong and valuable the implied benefit or insight seems.\n"
-            f"- medium_clap_potential: Estimate how likely readers would be to clap after reading. Do not reward generic usefulness alone. A high score requires {text_label} wording that suggests unusually satisfying, insightful, emotionally resonant, practical, or share-worthy content. Use 5 only for rare titles that strongly promise a memorable payoff.\n"
             f"- medium_comment_potential: Estimate how likely the article is to generate written Medium responses/comments. Higher scores should go to {text_label} wording that invites disagreement, debate, personal experiences, corrections, strong opinions, or nuanced discussion. A useful but straightforward article can have high clap potential but low comment potential. Use the full scale.\n"
-            f"- overall_article_potential: Estimate overall Medium performance potential from {text_label} only. This should be a relative ranking judgment, not a quality compliment. Consider topic demand, clarity, emotional stakes, specificity, credibility, likely engagement, and whether the {text_label} feels meaningfully differentiated from generic finance content. Use 5 sparingly for likely top-decile potential.\n"
-            f"- trust_risk: Risk that the {text_label} feels exaggerated, misleading, too clickbaity, or credibility-damaging. Higher means more risk. This is not the same as low credibility: wording can be credible but still boring, or emotionally sharp but somewhat risky.\n\n"
+            f"- overall_article_potential: Estimate overall Medium performance potential from {text_label} only. This should be a relative ranking judgment, not a quality compliment. Consider topic demand, emotional stakes, trust, likely engagement, and whether the {text_label} feels meaningfully differentiated from generic finance content. Use 5 sparingly for likely top-decile potential.\n"
+            f"- trust_risk: Risk that the {text_label} feels exaggerated, misleading, too clickbaity, or credibility-damaging. Higher means more risk. A title can create curiosity or emotion while still carrying trust risk.\n\n"
             "predicted_success_bucket:\n"
             "- low = likely below median or weak relative to typical Medium finance articles.\n"
             "- medium = around median to moderately above average.\n"
