@@ -35,6 +35,28 @@ Required R packages:
 install.packages(c("shiny", "DBI", "RSQLite"))
 ```
 
+Article Lab API scoring uses a separate Python helper. By default the app uses the first available `python3`/`python` on `PATH`. If that is not the interpreter where `openai` is installed, start the app with an explicit override such as:
+
+```sh
+ARTICLE_LAB_PYTHON="/opt/homebrew/bin/python3" HUMAN_RATING_MODE=dimensions_v2 MEDIUM_PROJECT_ROOT="$PWD" Rscript -e 'shiny::runApp("apps/human_preview_rating_app", launch.browser = TRUE, host = "127.0.0.1", port = 3838)'
+```
+
+Install the package into that interpreter with:
+
+```sh
+"/opt/homebrew/bin/python3" -m pip install openai
+```
+
+## Article Lab Subtitle Stage
+
+In the Article Lab subtitle workflow, the Subtitle Generation controls now include a manual entry path for subtitle ideas. Choose a title from the batch-aware picker, enter one subtitle idea per line, and add them directly into the same candidate queue used by generated subtitles.
+
+Manual subtitle ideas are saved into the normal subtitle-candidate table and then appear under:
+
+- `2. Subtitle candidates awaiting approval`
+
+That keeps manual and API-generated subtitle variants in the same approval flow for rejection, approval, and downstream thumbnail work.
+
 ## Modes
 
 `feed_preview_1_5` is the original one-score workflow. It writes to `human_preview_ratings` and excludes articles that already have a row in that table.

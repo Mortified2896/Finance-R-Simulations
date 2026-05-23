@@ -54,6 +54,8 @@ For the Python scoring scripts, install the runtime packages in your local Pytho
 python3 -m pip install openai langfuse
 ```
 
+If the Shiny Article Lab app is using the wrong interpreter, set `ARTICLE_LAB_PYTHON` before launch so the API scoring tab uses the Python executable where `openai` is installed.
+
 ## Generate article titles
 
 Run from the repository root:

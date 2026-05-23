@@ -164,8 +164,8 @@ def extract_response_text(response: dict[str, Any]) -> str:
     if isinstance(response.get("output_text"), str):
         return response["output_text"]
     chunks: list[str] = []
-    for item in response.get("output", []):
-        for content in item.get("content", []):
+    for item in response.get("output") or []:
+        for content in item.get("content") or []:
             if content.get("type") in {"output_text", "text"} and isinstance(content.get("text"), str):
                 chunks.append(content["text"])
     if not chunks:

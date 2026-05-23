@@ -56,12 +56,12 @@ function parseResults(rawText, variantsPerTitle) {
   }));
 }
 
-function buildPrompt({ candidates, variantsPerTitle }) {
+function buildPrompt({ prompt, candidates, variantsPerTitle }) {
   const titleList = candidates
     .map((entry, index) => `${index + 1}. candidate_id=${entry.candidate_id} | batch_id=${entry.batch_id} | title=${entry.title}`)
     .join("\n");
 
-  return [
+  const basePrompt = cleanText(prompt) || [
     "You generate subtitle candidates for Medium-style personal finance and investing articles.",
     "Return valid JSON only.",
     "Use this exact shape:",
@@ -70,7 +70,13 @@ function buildPrompt({ candidates, variantsPerTitle }) {
     `Every subtitle must be at most ${MAX_SUBTITLE_CHARS} characters, including spaces.`,
     "Keep subtitles clear, credible, useful, and not sensational.",
     "Do not repeat the title verbatim.",
-    "Do not include numbering, markdown, or explanations.",
+    "Do not include numbering, markdown, or explanations."
+  ].join("\n");
+
+  return [
+    basePrompt,
+    `Return exactly ${variantsPerTitle} subtitle candidates per title.`,
+    `Every subtitle must be at most ${MAX_SUBTITLE_CHARS} characters, including spaces.`,
     "Titles:",
     titleList
   ].join("\n\n");
@@ -94,6 +100,7 @@ async function main() {
   const payload = JSON.parse(await fs.readFile(requestPath, "utf8"));
   const model = cleanText(payload.model) ?? "gpt-5-mini";
   const variantsPerTitle = Math.max(1, Math.min(8, Number.parseInt(payload.variants_per_title, 10) || 4));
+  const prompt = cleanText(payload.prompt);
   const candidates = Array.isArray(payload.candidates)
     ? payload.candidates
         .map((entry) => ({
@@ -117,7 +124,8 @@ async function main() {
         input: {
           requestPath,
           candidateCount: candidates.length,
-          variantsPerTitle
+          variantsPerTitle,
+          hasPrompt: Boolean(prompt)
         },
         metadata: {
           script: "generateSubtitles",
@@ -136,14 +144,15 @@ async function main() {
             generationName: "generate-medium-subtitles",
             generationMetadata: {
               candidateCount: candidates.length,
-              variantsPerTitle
+              variantsPerTitle,
+              hasPrompt: Boolean(prompt)
             },
             tags: ["writing-api", "subtitle-generation"],
             sessionId: requestPath
           });
           response = await client.responses.create({
             model,
-            input: buildPrompt({ candidates, variantsPerTitle })
+            input: buildPrompt({ prompt, candidates, variantsPerTitle })
           });
         } catch (error) {
           console.error(`OpenAI API failure: ${error.message}`);

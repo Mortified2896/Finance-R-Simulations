@@ -253,7 +253,9 @@ normalize_image_url <- function(url) {
 }
 
 connect_db <- function() {
-  dbConnect(SQLite(), db_path)
+  con <- dbConnect(SQLite(), db_path)
+  dbExecute(con, "PRAGMA busy_timeout = 5000")
+  con
 }
 
 db_add_column_if_missing <- function(con, table, column, definition) {
@@ -529,10 +531,44 @@ article_lab_default_score_model <- local({
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
+article_lab_default_subtitle_model <- local({
+  configured <- Sys.getenv("OPENAI_SUBTITLE_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5-mini"
+  configured
+})
+article_lab_default_thumbnail_model <- local({
+  configured <- Sys.getenv("OPENAI_THUMBNAIL_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_SUBTITLE_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5-mini"
+  configured
+})
+article_lab_default_subtitle_prompt <- paste(
+  "Generate Medium-style subtitle candidates for approved personal finance and investing article titles.",
+  "Return valid JSON only.",
+  "Use this exact shape:",
+  "{\"results\":[{\"candidate_id\":\"...\",\"batch_id\":\"...\",\"subtitles\":[\"...\",\"...\"]}]}",
+  "Return exactly the requested number of subtitle candidates per title.",
+  "Every subtitle must be at most 90 characters, including spaces.",
+  "Keep subtitles clear, credible, useful, and not sensational.",
+  "Do not repeat the title verbatim.",
+  "Do not include numbering, markdown, or explanations.",
+  sep = "\n"
+)
+article_lab_default_thumbnail_prompt <- paste(
+  "Generate Medium-style thumbnail candidate concepts for approved title and subtitle packages.",
+  "Keep the visual direction clear, editorial, credible, and readable at a glance.",
+  "Return data that can be rendered into preview-card style thumbnail concepts.",
+  "Keep the concept aligned with the title and subtitle without adding clickbait or clutter.",
+  sep = "\n"
+)
 article_lab_default_score_prompt_version <- "v2_2"
 article_lab_default_score_scope <- "title_only"
 article_lab_all_batches_value <- "__all_article_lab_batches__"
 article_lab_title_max_chars <- 45L
+article_lab_subtitle_max_chars <- 90L
+article_lab_default_thumbnail_variants <- 3L
 article_lab_candidate_status_values <- c(
   "generated",
   "disqualified",
@@ -540,6 +576,8 @@ article_lab_candidate_status_values <- c(
   "api_pending",
   "api_scored",
   "approved_for_subtitle",
+  "ready_for_thumbnail",
+  "ready_for_outline",
   "archived",
   "rejected"
 )
@@ -550,9 +588,82 @@ article_lab_candidate_status_labels <- c(
   api_pending = "API scoring",
   api_scored = "API scored",
   approved_for_subtitle = "Approved",
+  ready_for_thumbnail = "Ready for thumbnail",
+  ready_for_outline = "Ready for outline",
   archived = "Archived",
   rejected = "Rejected",
   draft = "Draft"
+)
+article_lab_subtitle_status_labels <- c(
+  generated = "Generated",
+  approved = "Approved",
+  rejected = "Rejected"
+)
+article_lab_thumbnail_status_labels <- c(
+  generated = "Generated",
+  approved = "Approved",
+  rejected = "Rejected"
+)
+article_lab_workflow_sections <- c(
+  "generate",
+  "api_scoring",
+  "subtitle_generation",
+  "thumbnails",
+  "outline",
+  "full_text",
+  "review_publish"
+)
+article_lab_page_meta <- list(
+  home = list(
+    nav_title = "Home",
+    nav_subtitle = "Current rating workflow"
+  ),
+  generate = list(
+    nav_title = "Generate",
+    nav_subtitle = "Generate & triage titles",
+    title = "Article Lab \u2013 Generate",
+    subtitle = "Generate title candidates, disqualify bad-fit ideas, and move selected titles to the API queue."
+  ),
+  api_scoring = list(
+    nav_title = "API Scoring",
+    nav_subtitle = "Score with API & approve",
+    title = "Article Lab \u2013 API Scoring",
+    subtitle = "Score queued titles with the API and manually approve selected titles for subtitle generation."
+  ),
+  subtitle_generation = list(
+    nav_title = "Subtitle Generation",
+    nav_subtitle = "Generate subtitles",
+    title = "Article Lab \u2013 Subtitle Generation",
+    subtitle = "Generate subtitle candidates for approved titles."
+  ),
+  thumbnails = list(
+    nav_title = "Thumbnails",
+    nav_subtitle = "Generate thumbnails",
+    title = "Article Lab \u2013 Thumbnails",
+    subtitle = "Create and evaluate thumbnail candidates."
+  ),
+  outline = list(
+    nav_title = "Outline",
+    nav_subtitle = "Create article outline",
+    title = "Article Lab \u2013 Outline",
+    subtitle = "Build the article structure before drafting."
+  ),
+  full_text = list(
+    nav_title = "Full Text",
+    nav_subtitle = "Write full article",
+    title = "Article Lab \u2013 Full Text",
+    subtitle = "Draft the full article."
+  ),
+  review_publish = list(
+    nav_title = "Review & Publish",
+    nav_subtitle = "Review and publish",
+    title = "Article Lab \u2013 Review & Publish",
+    subtitle = "Review the final article package before publishing."
+  ),
+  settings = list(
+    nav_title = "Settings",
+    nav_subtitle = "App settings"
+  )
 )
 article_lab_score_fields <- c(
   "clarity",
@@ -632,8 +743,31 @@ article_lab_status_label <- function(status) {
   if (is.null(label) || is.na(label) || !nzchar(label)) status else label
 }
 
+article_lab_subtitle_status_label <- function(status) {
+  label <- article_lab_subtitle_status_labels[[status]]
+  if (is.null(label) || is.na(label) || !nzchar(label)) status else label
+}
+
+article_lab_thumbnail_status_label <- function(status) {
+  label <- article_lab_thumbnail_status_labels[[status]]
+  if (is.null(label) || is.na(label) || !nzchar(label)) status else label
+}
+
 article_lab_status_choices <- function(values) {
   setNames(values, vapply(values, article_lab_status_label, character(1)))
+}
+
+article_lab_nav_meta <- function(section) {
+  meta <- article_lab_page_meta[[section]]
+  if (is.null(meta)) {
+    list(nav_title = section, nav_subtitle = "")
+  } else {
+    meta
+  }
+}
+
+article_lab_is_workflow_section <- function(section) {
+  !is.na(section) && identical(length(section), 1L) && section %in% article_lab_workflow_sections
 }
 
 article_lab_row_input_id <- function(prefix, candidate_id) {
@@ -726,6 +860,62 @@ ensure_article_lab_schema <- function(con) {
   ")
 
   dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_subtitle_candidates (
+      subtitle_id TEXT PRIMARY KEY,
+      candidate_id TEXT NOT NULL,
+      batch_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      subtitle TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'generated',
+      notes TEXT,
+      model TEXT,
+      generation_mode TEXT NOT NULL DEFAULT 'generated',
+      raw_json TEXT,
+      approved_at TEXT,
+      rejected_at TEXT,
+      FOREIGN KEY(candidate_id) REFERENCES article_lab_title_candidates(candidate_id),
+      FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
+    )
+  ")
+
+  db_add_column_if_missing(con, "article_lab_subtitle_candidates", "notes", "TEXT")
+  db_add_column_if_missing(con, "article_lab_subtitle_candidates", "model", "TEXT")
+  db_add_column_if_missing(con, "article_lab_subtitle_candidates", "generation_mode", "TEXT")
+  db_add_column_if_missing(con, "article_lab_subtitle_candidates", "raw_json", "TEXT")
+  db_add_column_if_missing(con, "article_lab_subtitle_candidates", "approved_at", "TEXT")
+  db_add_column_if_missing(con, "article_lab_subtitle_candidates", "rejected_at", "TEXT")
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_thumbnail_candidates (
+      thumbnail_id TEXT PRIMARY KEY,
+      subtitle_id TEXT NOT NULL,
+      candidate_id TEXT NOT NULL,
+      batch_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      thumbnail_label TEXT,
+      thumbnail_data_uri TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'generated',
+      notes TEXT,
+      model TEXT,
+      generation_mode TEXT NOT NULL DEFAULT 'generated',
+      raw_json TEXT,
+      approved_at TEXT,
+      rejected_at TEXT,
+      FOREIGN KEY(subtitle_id) REFERENCES article_lab_subtitle_candidates(subtitle_id),
+      FOREIGN KEY(candidate_id) REFERENCES article_lab_title_candidates(candidate_id),
+      FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
+    )
+  ")
+
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "thumbnail_label", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "notes", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "model", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "generation_mode", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "raw_json", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "approved_at", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "rejected_at", "TEXT")
+
+  dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_article_lab_title_batches_created_at
     ON article_lab_title_batches (created_at, batch_id)
   ")
@@ -753,6 +943,32 @@ ensure_article_lab_schema <- function(con) {
   dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_article_lab_title_api_scores_prompt
     ON article_lab_title_api_scores (prompt_version, model, scope)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_subtitle_candidates_batch
+    ON article_lab_subtitle_candidates (batch_id, candidate_id, created_at)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_subtitle_candidates_status
+    ON article_lab_subtitle_candidates (status, candidate_id, created_at)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_thumbnail_candidates_batch
+    ON article_lab_thumbnail_candidates (batch_id, subtitle_id, created_at)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_thumbnail_candidates_status
+    ON article_lab_thumbnail_candidates (status, subtitle_id, created_at)
+  ")
+
+  dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_article_lab_thumbnail_candidates_one_approved_per_package
+    ON article_lab_thumbnail_candidates (subtitle_id)
+    WHERE status = 'approved'
   ")
 
   dbExecute(con, "
@@ -794,6 +1010,32 @@ ensure_article_lab_schema <- function(con) {
 
   dbExecute(con, "
     UPDATE article_lab_title_candidates
+    SET status = 'ready_for_thumbnail',
+        promoted = 0,
+        ready_for_human_rating = 0,
+        archived = 0
+    WHERE candidate_id IN (
+      SELECT DISTINCT candidate_id
+      FROM article_lab_subtitle_candidates
+      WHERE status = 'approved'
+    )
+  ")
+
+  dbExecute(con, "
+    UPDATE article_lab_title_candidates
+    SET status = 'ready_for_outline',
+        promoted = 0,
+        ready_for_human_rating = 0,
+        archived = 0
+    WHERE candidate_id IN (
+      SELECT DISTINCT candidate_id
+      FROM article_lab_thumbnail_candidates
+      WHERE status = 'approved'
+    )
+  ")
+
+  dbExecute(con, "
+    UPDATE article_lab_title_candidates
     SET status = 'archived',
         ready_for_human_rating = 0
     WHERE archived = 1
@@ -823,6 +1065,20 @@ article_lab_validate_titles <- function(titles, max_chars = article_lab_title_ma
     kept_n = sum(valid, na.rm = TRUE),
     dropped_n = sum(!valid & !is.na(title_values), na.rm = TRUE)
   )
+}
+
+article_lab_parse_manual_titles <- function(value) {
+  text_value <- as.character(value %||% "")
+  if (length(text_value) == 0 || is.na(text_value[[1]]) || !nzchar(text_value[[1]])) return(character())
+  pieces <- unlist(strsplit(text_value[[1]], "\n", fixed = TRUE), use.names = FALSE)
+  pieces <- clean_text(pieces)
+  pieces <- pieces[!is.na(pieces)]
+  unique(pieces[nzchar(pieces)])
+}
+
+article_lab_normalize_titles <- function(titles) {
+  title_values <- clean_text(titles)
+  unique(title_values[!is.na(title_values)])
 }
 
 stub_title_candidates <- function(prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_) {
@@ -926,6 +1182,59 @@ article_lab_has_api_key <- function() {
   if (!file.exists(env_path)) return(FALSE)
   lines <- tryCatch(readLines(env_path, warn = FALSE), error = function(e) character())
   any(grepl("^\\s*OPENAI_API_KEY\\s*=\\s*.+", lines))
+}
+
+article_lab_python_candidates <- function() {
+  env_candidates <- clean_text(c(
+    Sys.getenv("ARTICLE_LAB_PYTHON", unset = ""),
+    Sys.getenv("WRITING_API_PYTHON", unset = "")
+  ))
+  path_candidates <- clean_text(c(Sys.which("python3"), Sys.which("python")))
+  unique(c(env_candidates[!is.na(env_candidates)], path_candidates[!is.na(path_candidates)]))
+}
+
+article_lab_resolve_python <- function() {
+  candidates <- article_lab_python_candidates()
+  if (length(candidates) == 0) {
+    stop(
+      "No Python interpreter found for Article Lab API scoring. ",
+      "Set ARTICLE_LAB_PYTHON to the Python executable that has the OpenAI package installed.",
+      call. = FALSE
+    )
+  }
+  candidates[[1]]
+}
+
+article_lab_python_package_check <- function(python_bin) {
+  stdout_file <- tempfile(pattern = "article_lab_python_check_stdout_", fileext = ".log")
+  stderr_file <- tempfile(pattern = "article_lab_python_check_stderr_", fileext = ".log")
+  on.exit(unlink(c(stdout_file, stderr_file), force = TRUE), add = TRUE)
+
+  # system2() does not preserve spaces inside -c code unless the argument is quoted explicitly.
+  status <- suppressWarnings(system2(
+    python_bin,
+    args = c("-c", shQuote("import openai")),
+    stdout = stdout_file,
+    stderr = stderr_file
+  ))
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  list(
+    ok = is.numeric(status) && length(status) == 1 && !is.na(status) && status == 0,
+    status = status,
+    stdout = stdout_text,
+    stderr = stderr_text
+  )
+}
+
+article_lab_python_setup_message <- function(python_bin) {
+  python_label <- shQuote(python_bin)
+  paste0(
+    "Article Lab API scoring is using Python interpreter ", python_label, ". ",
+    "Install the required package(s) into that interpreter with: ",
+    python_label, " -m pip install openai",
+    ". If you want the app to use a different interpreter or virtualenv, set ARTICLE_LAB_PYTHON before starting the Shiny app."
+  )
 }
 
 article_lab_top_title_examples <- function(con, limit = 8L) {
@@ -1058,6 +1367,18 @@ article_lab_score_api_request <- function(candidates, model = NA_character_, pro
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/score_article_lab_titles.py", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
   if (nrow(candidates) == 0) return(list(scores = data.frame(), errors = list()))
+  python_bin <- article_lab_resolve_python()
+  package_check <- article_lab_python_package_check(python_bin)
+  if (!isTRUE(package_check$ok)) {
+    detail <- clean_text(package_check$stderr) %||% clean_text(package_check$stdout)
+    stop(
+      paste0(
+        article_lab_python_setup_message(python_bin),
+        if (!is.null(detail)) paste0(" Python reported: ", detail) else ""
+      ),
+      call. = FALSE
+    )
+  }
 
   request_payload <- list(
     model = article_lab_input_string(model) %||% article_lab_default_score_model,
@@ -1084,7 +1405,7 @@ article_lab_score_api_request <- function(candidates, model = NA_character_, pro
   on.exit(setwd(original_wd), add = TRUE)
   setwd(project_root)
   status <- system2(
-    "python3",
+    python_bin,
     args = c(helper_path, request_file),
     stdout = stdout_file,
     stderr = stderr_file
@@ -1092,7 +1413,11 @@ article_lab_score_api_request <- function(candidates, model = NA_character_, pro
   stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
   stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
   if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
-    stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Article Lab scoring helper failed.", call. = FALSE)
+    failure_text <- clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Article Lab scoring helper failed."
+    if (grepl("Missing Python package", failure_text, fixed = TRUE) || grepl("No module named 'openai'", failure_text, fixed = TRUE)) {
+      failure_text <- paste(failure_text, article_lab_python_setup_message(python_bin))
+    }
+    stop(failure_text, call. = FALSE)
   }
   if (!nzchar(trimws(stdout_text))) stop("Article Lab scoring helper returned no output.", call. = FALSE)
 
@@ -1117,7 +1442,12 @@ article_lab_score_api_request <- function(candidates, model = NA_character_, pro
       check.names = FALSE
     )
     for (field in article_lab_score_fields) {
-      row[[field]] <- suppressWarnings(as.numeric(entry[[field]]))
+      field_value <- entry[[field]]
+      row[[field]] <- if (is.null(field_value) || length(field_value) == 0) {
+        NA_real_
+      } else {
+        suppressWarnings(as.numeric(field_value[[1]]))
+      }
     }
     row
   })
@@ -1134,6 +1464,1333 @@ article_lab_score_api_request <- function(candidates, model = NA_character_, pro
     scope = article_lab_input_string(parsed$scope) %||% request_payload$scope,
     raw_json = stdout_text
   )
+}
+
+article_lab_subtitle_id <- function(candidate_id, index = 1L) {
+  paste0(
+    "alsub_",
+    format(Sys.time(), "%Y%m%d_%H%M%S"),
+    "_",
+    gsub("[^A-Za-z0-9]+", "_", candidate_id),
+    "_",
+    sprintf("%02d", suppressWarnings(as.integer(index)) %||% 1L),
+    "_",
+    sample.int(99999L, 1)
+  )
+}
+
+article_lab_normalize_subtitle <- function(values, max_chars = article_lab_subtitle_max_chars) {
+  unique_values <- unique(clean_text(values))
+  unique_values <- unique_values[!is.na(unique_values)]
+  char_counts <- nchar(enc2utf8(unique_values), type = "chars", allowNA = TRUE, keepNA = TRUE)
+  unique_values[!is.na(char_counts) & char_counts <= max_chars]
+}
+
+article_lab_manual_subtitle_choice_map <- function(target_rows, pending_rows) {
+  target_rows <- if (is.null(target_rows)) data.frame() else target_rows
+  pending_rows <- if (is.null(pending_rows)) data.frame() else pending_rows
+
+  target_titles <- if (nrow(target_rows) > 0) {
+    target_rows[, intersect(c("candidate_id", "batch_id", "title", "created_at"), names(target_rows)), drop = FALSE]
+  } else {
+    data.frame()
+  }
+  pending_titles <- if (nrow(pending_rows) > 0) {
+    pending_rows[, intersect(c("candidate_id", "batch_id", "title", "created_at"), names(pending_rows)), drop = FALSE]
+  } else {
+    data.frame()
+  }
+  rows <- unique(rbind(target_titles, pending_titles))
+  if (nrow(rows) == 0) return(character())
+
+  rows$title <- clean_text(rows$title)
+  rows$candidate_id <- clean_text(rows$candidate_id)
+  rows$batch_id <- clean_text(rows$batch_id)
+  rows$created_at <- clean_text(rows$created_at)
+  rows <- rows[!is.na(rows$candidate_id) & nzchar(rows$candidate_id) & !is.na(rows$title) & nzchar(rows$title), , drop = FALSE]
+  if (nrow(rows) == 0) return(character())
+
+  duplicate_title <- ave(rows$title, rows$title, FUN = length) > 1L
+  labels <- rows$title
+  if (any(duplicate_title)) {
+    labels[duplicate_title] <- paste0(
+      rows$title[duplicate_title],
+      " (",
+      substr(rows$candidate_id[duplicate_title], 1L, 12L),
+      ")"
+    )
+  }
+  choices <- as.list(rows$candidate_id)
+  names(choices) <- labels
+  choices
+}
+
+article_lab_thumbnail_id <- function(subtitle_id, index = 1L) {
+  paste0(
+    "alth_",
+    format(Sys.time(), "%Y%m%d_%H%M%S"),
+    "_",
+    gsub("[^A-Za-z0-9]+", "_", subtitle_id),
+    "_",
+    sprintf("%02d", suppressWarnings(as.integer(index)) %||% 1L),
+    "_",
+    sample.int(99999L, 1)
+  )
+}
+
+article_lab_xml_escape <- function(text) {
+  value <- enc2utf8(as.character(text %||% ""))
+  value <- gsub("&", "&amp;", value, fixed = TRUE)
+  value <- gsub("<", "&lt;", value, fixed = TRUE)
+  value <- gsub(">", "&gt;", value, fixed = TRUE)
+  value <- gsub("\"", "&quot;", value, fixed = TRUE)
+  value <- gsub("'", "&apos;", value, fixed = TRUE)
+  value
+}
+
+article_lab_thumbnail_text_lines <- function(text, width = 22L, max_lines = 3L) {
+  value <- article_lab_input_string(text) %||% ""
+  if (!nzchar(value)) return(rep("", max_lines))
+  wrapped <- strwrap(value, width = max(10L, suppressWarnings(as.integer(width)) %||% 22L))
+  wrapped <- wrapped[seq_len(min(length(wrapped), max_lines))]
+  if (length(wrapped) < max_lines) wrapped <- c(wrapped, rep("", max_lines - length(wrapped)))
+  wrapped
+}
+
+article_lab_thumbnail_data_uri <- function(title, subtitle, label, variant_index = 1L) {
+  variant_index <- suppressWarnings(as.integer(variant_index))
+  if (is.na(variant_index) || variant_index < 1L) variant_index <- 1L
+  palettes <- list(
+    list(bg1 = "#f3efe3", bg2 = "#e6dcc0", accent = "#1d5c4d", accent2 = "#183a36", text = "#1c1d21", chip = "#ffffff"),
+    list(bg1 = "#eef4f7", bg2 = "#d6e7ee", accent = "#205b7a", accent2 = "#163b50", text = "#17202a", chip = "#ffffff"),
+    list(bg1 = "#f6eee8", bg2 = "#eed7ca", accent = "#b24f30", accent2 = "#6f2f1e", text = "#211c19", chip = "#fffaf5"),
+    list(bg1 = "#eef6ee", bg2 = "#d7ebd6", accent = "#2d6d47", accent2 = "#18402a", text = "#172117", chip = "#ffffff")
+  )
+  palette <- palettes[[((variant_index - 1L) %% length(palettes)) + 1L]]
+  title_lines <- article_lab_thumbnail_text_lines(title, width = 19L, max_lines = 3L)
+  subtitle_lines <- article_lab_thumbnail_text_lines(subtitle, width = 28L, max_lines = 2L)
+  kicker <- article_lab_xml_escape(label %||% paste("Concept", variant_index))
+
+  svg <- paste0(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='720' viewBox='0 0 1200 720'>",
+    "<defs><linearGradient id='bg' x1='0%' y1='0%' x2='100%' y2='100%'>",
+    "<stop offset='0%' stop-color='", palette$bg1, "'/>",
+    "<stop offset='100%' stop-color='", palette$bg2, "'/></linearGradient></defs>",
+    "<rect width='1200' height='720' rx='44' fill='url(#bg)'/>",
+    "<circle cx='1010' cy='112' r='180' fill='", palette$accent, "' opacity='0.15'/>",
+    "<rect x='70' y='78' width='160' height='40' rx='18' fill='", palette$chip, "' opacity='0.92'/>",
+    "<text x='95' y='104' font-family='Georgia, serif' font-size='24' font-weight='700' fill='", palette$accent2, "'>Medium-style</text>",
+    "<rect x='72' y='156' width='500' height='410' rx='38' fill='#ffffff' opacity='0.95'/>",
+    "<rect x='72' y='156' width='500' height='14' fill='", palette$accent, "' opacity='0.92'/>",
+    "<text x='112' y='248' font-family='Georgia, serif' font-size='56' font-weight='700' fill='", palette$text, "'>", article_lab_xml_escape(title_lines[[1]]), "</text>",
+    "<text x='112' y='318' font-family='Georgia, serif' font-size='56' font-weight='700' fill='", palette$text, "'>", article_lab_xml_escape(title_lines[[2]]), "</text>",
+    "<text x='112' y='388' font-family='Georgia, serif' font-size='56' font-weight='700' fill='", palette$text, "'>", article_lab_xml_escape(title_lines[[3]]), "</text>",
+    "<text x='112' y='468' font-family='Helvetica, Arial, sans-serif' font-size='26' fill='", palette$accent2, "' opacity='0.88'>", article_lab_xml_escape(subtitle_lines[[1]]), "</text>",
+    "<text x='112' y='505' font-family='Helvetica, Arial, sans-serif' font-size='26' fill='", palette$accent2, "' opacity='0.88'>", article_lab_xml_escape(subtitle_lines[[2]]), "</text>",
+    "<rect x='640' y='108' width='490' height='504' rx='40' fill='", palette$accent, "'/>",
+    "<rect x='684' y='156' width='402' height='122' rx='30' fill='", palette$chip, "' opacity='0.95'/>",
+    "<text x='724' y='230' font-family='Helvetica, Arial, sans-serif' font-size='40' font-weight='700' fill='", palette$accent2, "'>", kicker, "</text>",
+    "<rect x='700' y='324' width='338' height='30' rx='15' fill='#ffffff' opacity='0.92'/>",
+    "<rect x='700' y='374' width='278' height='30' rx='15' fill='#ffffff' opacity='0.72'/>",
+    "<rect x='700' y='424' width='360' height='30' rx='15' fill='#ffffff' opacity='0.5'/>",
+    "<circle cx='976' cy='544' r='84' fill='", palette$accent2, "' opacity='0.2'/>",
+    "<text x='698' y='540' font-family='Helvetica, Arial, sans-serif' font-size='28' fill='#ffffff'>Clear finance thumbnail concept</text>",
+    "<text x='698' y='580' font-family='Helvetica, Arial, sans-serif' font-size='28' fill='#ffffff'>designed for title + subtitle pairing</text>",
+    "</svg>"
+  )
+
+  paste0("data:image/svg+xml;charset=UTF-8,", utils::URLencode(svg, reserved = TRUE))
+}
+
+stub_thumbnail_candidates_for_package <- function(title, subtitle, prompt = NA_character_, count = article_lab_default_thumbnail_variants) {
+  count <- suppressWarnings(as.integer(count))
+  if (is.na(count) || count < 1L) count <- article_lab_default_thumbnail_variants
+  count <- min(count, 4L)
+  labels <- c(
+    "Stat-led hero",
+    "Calm editorial graphic",
+    "Decision-path visual",
+    "Human habit concept"
+  )
+  data.frame(
+    thumbnail_label = labels[seq_len(count)],
+    thumbnail_data_uri = vapply(seq_len(count), function(i) {
+      article_lab_thumbnail_data_uri(title, subtitle, labels[[i]], variant_index = i)
+    }, character(1)),
+    created_at = rep(now_utc(), count),
+    generation_mode = rep("stub", count),
+    raw_json = rep(
+      toJSON(
+        list(
+          prompt = article_lab_input_string(prompt) %||% article_lab_default_thumbnail_prompt,
+          mode = "stub",
+          title = article_lab_input_string(title),
+          subtitle = article_lab_input_string(subtitle)
+        ),
+        auto_unbox = TRUE,
+        null = "null"
+      ),
+      count
+    ),
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+}
+
+generate_thumbnail_candidates <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, prompt = NA_character_) {
+  rows <- lapply(seq_len(nrow(packages)), function(i) {
+    variants <- stub_thumbnail_candidates_for_package(
+      title = packages$title[[i]],
+      subtitle = packages$subtitle[[i]],
+      prompt = prompt,
+      count = variants_per_package
+    )
+    if (nrow(variants) == 0) return(NULL)
+    data.frame(
+      subtitle_id = rep(packages$subtitle_id[[i]], nrow(variants)),
+      candidate_id = rep(packages$candidate_id[[i]], nrow(variants)),
+      batch_id = rep(packages$batch_id[[i]], nrow(variants)),
+      title = rep(packages$title[[i]], nrow(variants)),
+      subtitle = rep(packages$subtitle[[i]], nrow(variants)),
+      thumbnail_label = variants$thumbnail_label,
+      thumbnail_data_uri = variants$thumbnail_data_uri,
+      created_at = variants$created_at,
+      model = rep(article_lab_input_string(model) %||% article_lab_default_thumbnail_model, nrow(variants)),
+      generation_mode = variants$generation_mode,
+      raw_json = variants$raw_json,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+  })
+  rows <- Filter(Negate(is.null), rows)
+  list(
+    rows = if (length(rows) == 0) data.frame() else do.call(rbind, rows),
+    model = article_lab_input_string(model) %||% article_lab_default_thumbnail_model,
+    mode = "stub"
+  )
+}
+
+stub_subtitle_candidates_for_title <- function(title, count = 4L) {
+  base_title <- article_lab_input_string(title) %||% "this article"
+  count <- suppressWarnings(as.integer(count))
+  if (is.na(count) || count < 1L) count <- 4L
+  count <- min(count, 8L)
+
+  lead_ins <- c(
+    "A calmer look at what actually works",
+    "A practical breakdown without hype",
+    "What the evidence suggests for beginners",
+    "A realistic guide for long-term investors",
+    "Clear, credible takeaways you can use"
+  )
+  angles <- c(
+    "before your next financial decision",
+    "if you want progress without prediction",
+    "for steadier investing habits",
+    "without turning finance into a full-time job",
+    "with fewer mistakes and less noise"
+  )
+
+  seed_key <- sum(utf8ToInt(base_title)) %% .Machine$integer.max
+  set.seed(seed_key)
+  subtitles <- vapply(seq_len(count), function(i) {
+    if (i %% 2L == 1L) {
+      paste(sample(lead_ins, 1), sample(angles, 1))
+    } else {
+      paste("For", sub(":.*$", "", base_title), sample(angles, 1))
+    }
+  }, character(1))
+  article_lab_normalize_subtitle(subtitles)
+}
+
+article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L, model = NA_character_, prompt = NA_character_) {
+  helper_path <- file.path("scripts", "writing_api", "generate_subtitles.mjs")
+  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_subtitles.mjs", call. = FALSE)
+  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+  if (nrow(candidates) == 0) return(list(rows = data.frame(), model = article_lab_default_subtitle_model, mode = "api", raw_json = NULL))
+
+  request_payload <- list(
+    model = article_lab_input_string(model) %||% article_lab_default_subtitle_model,
+    prompt = article_lab_input_string(prompt) %||% article_lab_default_subtitle_prompt,
+    variants_per_title = max(1L, min(8L, suppressWarnings(as.integer(variants_per_title)) %||% 4L)),
+    candidates = unname(lapply(seq_len(nrow(candidates)), function(i) {
+      list(
+        candidate_id = candidates$candidate_id[[i]],
+        batch_id = candidates$batch_id[[i]],
+        title = candidates$title[[i]]
+      )
+    }))
+  )
+
+  request_file <- tempfile(pattern = "article_lab_subtitle_request_", fileext = ".json")
+  stdout_file <- tempfile(pattern = "article_lab_subtitle_stdout_", fileext = ".json")
+  stderr_file <- tempfile(pattern = "article_lab_subtitle_stderr_", fileext = ".log")
+  on.exit(unlink(c(request_file, stdout_file, stderr_file), force = TRUE), add = TRUE)
+
+  write_json(request_payload, request_file, auto_unbox = TRUE, pretty = FALSE, null = "null")
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2(
+    "node",
+    args = c(helper_path, request_file),
+    stdout = stdout_file,
+    stderr = stderr_file
+  )
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
+    stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Subtitle generation helper failed.", call. = FALSE)
+  }
+  if (!nzchar(trimws(stdout_text))) stop("Subtitle generation helper returned no output.", call. = FALSE)
+
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  result_rows <- lapply(parsed$results %||% list(), function(entry) {
+    subtitles <- article_lab_normalize_subtitle(unname(unlist(entry$subtitles %||% list(), use.names = FALSE)))
+    if (length(subtitles) == 0) return(NULL)
+    data.frame(
+      candidate_id = rep(article_lab_input_string(entry$candidate_id), length(subtitles)),
+      batch_id = rep(article_lab_input_string(entry$batch_id), length(subtitles)),
+      subtitle = subtitles,
+      created_at = rep(article_lab_input_string(entry$created_at) %||% now_utc(), length(subtitles)),
+      model = rep(article_lab_input_string(entry$model) %||% request_payload$model, length(subtitles)),
+      generation_mode = rep(article_lab_input_string(entry$generation_mode) %||% "api", length(subtitles)),
+      raw_json = rep(if (is.null(entry$raw_json)) stdout_text else toJSON(entry$raw_json, auto_unbox = TRUE, null = "null"), length(subtitles)),
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+  })
+  result_rows <- Filter(Negate(is.null), result_rows)
+
+  list(
+    rows = if (length(result_rows) == 0) data.frame() else do.call(rbind, result_rows),
+    model = article_lab_input_string(parsed$model) %||% request_payload$model,
+    mode = article_lab_input_string(parsed$mode) %||% "api",
+    raw_json = stdout_text
+  )
+}
+
+generate_subtitle_candidates <- function(candidates, variants_per_title = 4L, model = NA_character_, prompt = NA_character_) {
+  tryCatch(
+    article_lab_subtitle_api_request(candidates, variants_per_title = variants_per_title, model = model, prompt = prompt),
+    error = function(e) {
+      rows <- lapply(seq_len(nrow(candidates)), function(i) {
+        subtitles <- stub_subtitle_candidates_for_title(candidates$title[[i]], count = variants_per_title)
+        if (length(subtitles) == 0) return(NULL)
+        data.frame(
+          candidate_id = rep(candidates$candidate_id[[i]], length(subtitles)),
+          batch_id = rep(candidates$batch_id[[i]], length(subtitles)),
+          subtitle = subtitles,
+          created_at = rep(now_utc(), length(subtitles)),
+          model = rep(article_lab_input_string(model) %||% article_lab_default_subtitle_model, length(subtitles)),
+          generation_mode = rep("stub", length(subtitles)),
+          raw_json = rep(
+            toJSON(
+              list(
+                prompt = article_lab_input_string(prompt) %||% article_lab_default_subtitle_prompt,
+                mode = "stub"
+              ),
+              auto_unbox = TRUE,
+              null = "null"
+            ),
+            length(subtitles)
+          ),
+          stringsAsFactors = FALSE,
+          check.names = FALSE
+        )
+      })
+      rows <- Filter(Negate(is.null), rows)
+      list(
+        rows = if (length(rows) == 0) data.frame() else do.call(rbind, rows),
+        model = article_lab_input_string(model) %||% article_lab_default_subtitle_model,
+        mode = "stub",
+        raw_json = article_lab_input_string(prompt) %||% article_lab_default_subtitle_prompt,
+        fallback_reason = conditionMessage(e)
+      )
+    }
+  )
+}
+
+load_article_lab_subtitle_targets <- function(con, batch_id) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_title_candidates")) {
+    return(data.frame())
+  }
+  all_batches <- identical(batch_id, article_lab_all_batches_value)
+  query <- if (all_batches) "
+    SELECT
+      c.candidate_id,
+      c.batch_id,
+      c.created_at,
+      c.title,
+      c.status,
+      c.ready_for_human_rating,
+      c.promoted,
+      c.archived,
+      c.notes,
+      COALESCE(s.generated_n, 0) AS generated_subtitle_n,
+      COALESCE(s.approved_n, 0) AS approved_subtitle_n,
+      COALESCE(s.rejected_n, 0) AS rejected_subtitle_n
+    FROM article_lab_title_candidates c
+    LEFT JOIN (
+      SELECT
+        candidate_id,
+        COALESCE(SUM(CASE WHEN status = 'generated' THEN 1 ELSE 0 END), 0) AS generated_n,
+        COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved_n,
+        COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected_n
+      FROM article_lab_subtitle_candidates
+      GROUP BY candidate_id
+    ) s
+      ON s.candidate_id = c.candidate_id
+    WHERE c.archived = 0
+    ORDER BY c.created_at DESC, c.candidate_id DESC
+    " else "
+    SELECT
+      c.candidate_id,
+      c.batch_id,
+      c.created_at,
+      c.title,
+      c.status,
+      c.ready_for_human_rating,
+      c.promoted,
+      c.archived,
+      c.notes,
+      COALESCE(s.generated_n, 0) AS generated_subtitle_n,
+      COALESCE(s.approved_n, 0) AS approved_subtitle_n,
+      COALESCE(s.rejected_n, 0) AS rejected_subtitle_n
+    FROM article_lab_title_candidates c
+    LEFT JOIN (
+      SELECT
+        candidate_id,
+        COALESCE(SUM(CASE WHEN status = 'generated' THEN 1 ELSE 0 END), 0) AS generated_n,
+        COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved_n,
+        COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected_n
+      FROM article_lab_subtitle_candidates
+      GROUP BY candidate_id
+    ) s
+      ON s.candidate_id = c.candidate_id
+    WHERE c.batch_id = ?
+      AND c.archived = 0
+    ORDER BY c.created_at DESC, c.candidate_id DESC
+    "
+  if (all_batches) {
+    dbGetQuery(con, query)
+  } else {
+    dbGetQuery(con, query, params = list(batch_id))
+  }
+}
+
+load_article_lab_subtitle_rows <- function(con, batch_id) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_subtitle_candidates")) {
+    return(data.frame())
+  }
+  all_batches <- identical(batch_id, article_lab_all_batches_value)
+  query <- if (all_batches) "
+    SELECT
+      s.subtitle_id,
+      s.candidate_id,
+      s.batch_id,
+      s.created_at,
+      s.subtitle,
+      s.status AS subtitle_status,
+      s.notes,
+      s.model,
+      s.generation_mode,
+      s.approved_at,
+      s.rejected_at,
+      c.title,
+      c.status AS parent_status,
+      c.ready_for_human_rating,
+      c.promoted,
+      c.archived
+    FROM article_lab_subtitle_candidates s
+    INNER JOIN article_lab_title_candidates c
+      ON c.candidate_id = s.candidate_id
+    ORDER BY s.created_at DESC, s.subtitle_id DESC
+    " else "
+    SELECT
+      s.subtitle_id,
+      s.candidate_id,
+      s.batch_id,
+      s.created_at,
+      s.subtitle,
+      s.status AS subtitle_status,
+      s.notes,
+      s.model,
+      s.generation_mode,
+      s.approved_at,
+      s.rejected_at,
+      c.title,
+      c.status AS parent_status,
+      c.ready_for_human_rating,
+      c.promoted,
+      c.archived
+    FROM article_lab_subtitle_candidates s
+    INNER JOIN article_lab_title_candidates c
+      ON c.candidate_id = s.candidate_id
+    WHERE s.batch_id = ?
+    ORDER BY s.created_at DESC, s.subtitle_id DESC
+    "
+  if (all_batches) {
+    dbGetQuery(con, query)
+  } else {
+    dbGetQuery(con, query, params = list(batch_id))
+  }
+}
+
+load_article_lab_ready_for_thumbnail_rows <- function(con, batch_id) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_subtitle_candidates")) {
+    return(data.frame())
+  }
+  all_batches <- identical(batch_id, article_lab_all_batches_value)
+  query <- if (all_batches) "
+    SELECT
+      c.candidate_id,
+      c.batch_id,
+      c.title,
+      c.status,
+      c.notes,
+      GROUP_CONCAT(s.subtitle, '\n') AS approved_subtitles,
+      COUNT(*) AS approved_subtitle_n
+    FROM article_lab_title_candidates c
+    INNER JOIN article_lab_subtitle_candidates s
+      ON s.candidate_id = c.candidate_id
+     AND s.status = 'approved'
+    WHERE c.archived = 0
+      AND c.status = 'ready_for_thumbnail'
+    GROUP BY c.candidate_id, c.batch_id, c.title, c.status, c.notes
+    ORDER BY c.batch_id DESC, c.candidate_id DESC
+    " else "
+    SELECT
+      c.candidate_id,
+      c.batch_id,
+      c.title,
+      c.status,
+      c.notes,
+      GROUP_CONCAT(s.subtitle, '\n') AS approved_subtitles,
+      COUNT(*) AS approved_subtitle_n
+    FROM article_lab_title_candidates c
+    INNER JOIN article_lab_subtitle_candidates s
+      ON s.candidate_id = c.candidate_id
+     AND s.status = 'approved'
+    WHERE c.archived = 0
+      AND c.status = 'ready_for_thumbnail'
+      AND c.batch_id = ?
+    GROUP BY c.candidate_id, c.batch_id, c.title, c.status, c.notes
+    ORDER BY c.batch_id DESC, c.candidate_id DESC
+    "
+  if (all_batches) {
+    dbGetQuery(con, query)
+  } else {
+    dbGetQuery(con, query, params = list(batch_id))
+  }
+}
+
+load_article_lab_thumbnail_packages <- function(con, batch_id) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_subtitle_candidates")) {
+    return(data.frame())
+  }
+  all_batches <- identical(batch_id, article_lab_all_batches_value)
+  query <- if (all_batches) "
+    SELECT
+      s.subtitle_id,
+      s.candidate_id,
+      s.batch_id,
+      s.created_at AS subtitle_created_at,
+      s.subtitle,
+      s.notes,
+      c.title,
+      c.status,
+      c.ready_for_human_rating,
+      c.promoted,
+      c.archived,
+      COALESCE(t.generated_n, 0) AS generated_thumbnail_n,
+      COALESCE(t.approved_n, 0) AS approved_thumbnail_n,
+      COALESCE(t.rejected_n, 0) AS rejected_thumbnail_n
+    FROM article_lab_subtitle_candidates s
+    INNER JOIN article_lab_title_candidates c
+      ON c.candidate_id = s.candidate_id
+    LEFT JOIN (
+      SELECT
+        subtitle_id,
+        COALESCE(SUM(CASE WHEN status = 'generated' THEN 1 ELSE 0 END), 0) AS generated_n,
+        COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved_n,
+        COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected_n
+      FROM article_lab_thumbnail_candidates
+      GROUP BY subtitle_id
+    ) t
+      ON t.subtitle_id = s.subtitle_id
+    WHERE s.status = 'approved'
+      AND c.archived = 0
+    ORDER BY s.created_at DESC, s.subtitle_id DESC
+    " else "
+    SELECT
+      s.subtitle_id,
+      s.candidate_id,
+      s.batch_id,
+      s.created_at AS subtitle_created_at,
+      s.subtitle,
+      s.notes,
+      c.title,
+      c.status,
+      c.ready_for_human_rating,
+      c.promoted,
+      c.archived,
+      COALESCE(t.generated_n, 0) AS generated_thumbnail_n,
+      COALESCE(t.approved_n, 0) AS approved_thumbnail_n,
+      COALESCE(t.rejected_n, 0) AS rejected_thumbnail_n
+    FROM article_lab_subtitle_candidates s
+    INNER JOIN article_lab_title_candidates c
+      ON c.candidate_id = s.candidate_id
+    LEFT JOIN (
+      SELECT
+        subtitle_id,
+        COALESCE(SUM(CASE WHEN status = 'generated' THEN 1 ELSE 0 END), 0) AS generated_n,
+        COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved_n,
+        COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected_n
+      FROM article_lab_thumbnail_candidates
+      GROUP BY subtitle_id
+    ) t
+      ON t.subtitle_id = s.subtitle_id
+    WHERE s.status = 'approved'
+      AND c.archived = 0
+      AND s.batch_id = ?
+    ORDER BY s.created_at DESC, s.subtitle_id DESC
+    "
+  rows <- if (all_batches) dbGetQuery(con, query) else dbGetQuery(con, query, params = list(batch_id))
+  if (nrow(rows) == 0) return(rows)
+  rows <- article_lab_normalize_candidate_rows(rows)
+  rows[rows$approved_thumbnail_n <= 0 & rows$generated_thumbnail_n <= 0, , drop = FALSE]
+}
+
+load_article_lab_thumbnail_rows <- function(con, batch_id) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_thumbnail_candidates")) {
+    return(data.frame())
+  }
+  all_batches <- identical(batch_id, article_lab_all_batches_value)
+  query <- if (all_batches) "
+    SELECT
+      t.thumbnail_id,
+      t.subtitle_id,
+      t.candidate_id,
+      t.batch_id,
+      t.created_at,
+      t.thumbnail_label,
+      t.thumbnail_data_uri,
+      t.status AS thumbnail_status,
+      t.notes,
+      t.model,
+      t.generation_mode,
+      t.approved_at,
+      t.rejected_at,
+      s.subtitle,
+      c.title,
+      c.status AS parent_status,
+      c.ready_for_human_rating,
+      c.promoted,
+      c.archived
+    FROM article_lab_thumbnail_candidates t
+    INNER JOIN article_lab_subtitle_candidates s
+      ON s.subtitle_id = t.subtitle_id
+    INNER JOIN article_lab_title_candidates c
+      ON c.candidate_id = t.candidate_id
+    ORDER BY t.created_at DESC, t.thumbnail_id DESC
+    " else "
+    SELECT
+      t.thumbnail_id,
+      t.subtitle_id,
+      t.candidate_id,
+      t.batch_id,
+      t.created_at,
+      t.thumbnail_label,
+      t.thumbnail_data_uri,
+      t.status AS thumbnail_status,
+      t.notes,
+      t.model,
+      t.generation_mode,
+      t.approved_at,
+      t.rejected_at,
+      s.subtitle,
+      c.title,
+      c.status AS parent_status,
+      c.ready_for_human_rating,
+      c.promoted,
+      c.archived
+    FROM article_lab_thumbnail_candidates t
+    INNER JOIN article_lab_subtitle_candidates s
+      ON s.subtitle_id = t.subtitle_id
+    INNER JOIN article_lab_title_candidates c
+      ON c.candidate_id = t.candidate_id
+    WHERE t.batch_id = ?
+    ORDER BY t.created_at DESC, t.thumbnail_id DESC
+    "
+  rows <- if (all_batches) dbGetQuery(con, query) else dbGetQuery(con, query, params = list(batch_id))
+  if (nrow(rows) == 0) return(rows)
+  approved_packages <- unique(rows$subtitle_id[rows$thumbnail_status == "approved"])
+  rows[rows$thumbnail_status == "generated" & !(rows$subtitle_id %in% approved_packages), , drop = FALSE]
+}
+
+load_article_lab_ready_for_outline_rows <- function(con, batch_id) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_thumbnail_candidates")) {
+    return(data.frame())
+  }
+  all_batches <- identical(batch_id, article_lab_all_batches_value)
+  query <- if (all_batches) "
+    SELECT
+      t.thumbnail_id,
+      t.subtitle_id,
+      t.candidate_id,
+      t.batch_id,
+      t.created_at,
+      t.thumbnail_label,
+      t.thumbnail_data_uri,
+      t.notes,
+      s.subtitle,
+      c.title,
+      c.status
+    FROM article_lab_thumbnail_candidates t
+    INNER JOIN article_lab_subtitle_candidates s
+      ON s.subtitle_id = t.subtitle_id
+    INNER JOIN article_lab_title_candidates c
+      ON c.candidate_id = t.candidate_id
+    WHERE t.status = 'approved'
+      AND c.archived = 0
+    ORDER BY t.created_at DESC, t.thumbnail_id DESC
+    " else "
+    SELECT
+      t.thumbnail_id,
+      t.subtitle_id,
+      t.candidate_id,
+      t.batch_id,
+      t.created_at,
+      t.thumbnail_label,
+      t.thumbnail_data_uri,
+      t.notes,
+      s.subtitle,
+      c.title,
+      c.status
+    FROM article_lab_thumbnail_candidates t
+    INNER JOIN article_lab_subtitle_candidates s
+      ON s.subtitle_id = t.subtitle_id
+    INNER JOIN article_lab_title_candidates c
+      ON c.candidate_id = t.candidate_id
+    WHERE t.status = 'approved'
+      AND c.archived = 0
+      AND t.batch_id = ?
+    ORDER BY t.created_at DESC, t.thumbnail_id DESC
+    "
+  if (all_batches) {
+    dbGetQuery(con, query)
+  } else {
+    dbGetQuery(con, query, params = list(batch_id))
+  }
+}
+
+article_lab_update_subtitle_notes <- function(con, notes_updates) {
+  if (length(notes_updates) == 0) return(0L)
+  updated_n <- 0L
+  dbBegin(con)
+  tryCatch({
+    for (entry in notes_updates) {
+      subtitle_id <- clean_text(entry$subtitle_id)
+      if (length(subtitle_id) == 0 || is.na(subtitle_id[[1]])) next
+      dbExecute(
+        con,
+        "UPDATE article_lab_subtitle_candidates SET notes = ? WHERE subtitle_id = ?",
+        params = list(clean_text(entry$notes), subtitle_id[[1]])
+      )
+      updated_n <- updated_n + 1L
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  updated_n
+}
+
+article_lab_update_thumbnail_notes <- function(con, notes_updates) {
+  if (length(notes_updates) == 0) return(0L)
+  updated_n <- 0L
+  dbBegin(con)
+  tryCatch({
+    for (entry in notes_updates) {
+      thumbnail_id <- clean_text(entry$thumbnail_id)
+      if (length(thumbnail_id) == 0 || is.na(thumbnail_id[[1]])) next
+      dbExecute(
+        con,
+        "UPDATE article_lab_thumbnail_candidates SET notes = ? WHERE thumbnail_id = ?",
+        params = list(clean_text(entry$notes), thumbnail_id[[1]])
+      )
+      updated_n <- updated_n + 1L
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  updated_n
+}
+
+article_lab_sync_title_subtitle_stage <- function(con, candidate_ids) {
+  candidate_ids <- clean_text(candidate_ids)
+  candidate_ids <- unique(candidate_ids[!is.na(candidate_ids)])
+  if (length(candidate_ids) == 0) return(invisible(NULL))
+
+  for (candidate_id in candidate_ids) {
+    approved_n <- dbGetQuery(
+      con,
+      "SELECT COUNT(*) AS approved_n FROM article_lab_subtitle_candidates WHERE candidate_id = ? AND status = 'approved'",
+      params = list(candidate_id)
+    )$approved_n[[1]] %||% 0L
+    if (approved_n > 0) {
+      dbExecute(
+        con,
+        "UPDATE article_lab_title_candidates SET status = 'ready_for_thumbnail', promoted = 0, ready_for_human_rating = 0, archived = 0 WHERE candidate_id = ?",
+        params = list(candidate_id)
+      )
+    } else {
+      dbExecute(
+        con,
+        "UPDATE article_lab_title_candidates SET status = 'approved_for_subtitle', promoted = 1, ready_for_human_rating = 0, archived = 0 WHERE candidate_id = ?",
+        params = list(candidate_id)
+      )
+    }
+  }
+  invisible(NULL)
+}
+
+article_lab_sync_title_thumbnail_stage <- function(con, candidate_ids) {
+  candidate_ids <- clean_text(candidate_ids)
+  candidate_ids <- unique(candidate_ids[!is.na(candidate_ids)])
+  if (length(candidate_ids) == 0) return(invisible(NULL))
+
+  for (candidate_id in candidate_ids) {
+    approved_thumbnail_n <- if (dbExistsTable(con, "article_lab_thumbnail_candidates")) {
+      dbGetQuery(
+        con,
+        "SELECT COUNT(*) AS approved_n FROM article_lab_thumbnail_candidates WHERE candidate_id = ? AND status = 'approved'",
+        params = list(candidate_id)
+      )$approved_n[[1]] %||% 0L
+    } else {
+      0L
+    }
+    approved_subtitle_n <- dbGetQuery(
+      con,
+      "SELECT COUNT(*) AS approved_n FROM article_lab_subtitle_candidates WHERE candidate_id = ? AND status = 'approved'",
+      params = list(candidate_id)
+    )$approved_n[[1]] %||% 0L
+
+    if (approved_thumbnail_n > 0) {
+      dbExecute(
+        con,
+        "UPDATE article_lab_title_candidates SET status = 'ready_for_outline', promoted = 0, ready_for_human_rating = 0, archived = 0 WHERE candidate_id = ?",
+        params = list(candidate_id)
+      )
+    } else if (approved_subtitle_n > 0) {
+      dbExecute(
+        con,
+        "UPDATE article_lab_title_candidates SET status = 'ready_for_thumbnail', promoted = 0, ready_for_human_rating = 0, archived = 0 WHERE candidate_id = ?",
+        params = list(candidate_id)
+      )
+    } else {
+      dbExecute(
+        con,
+        "UPDATE article_lab_title_candidates SET status = 'approved_for_subtitle', promoted = 1, ready_for_human_rating = 0, archived = 0 WHERE candidate_id = ?",
+        params = list(candidate_id)
+      )
+    }
+  }
+  invisible(NULL)
+}
+
+article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model = NA_character_, prompt = NA_character_, variants_per_title = 4L) {
+  candidate_ids <- clean_text(candidate_ids)
+  candidate_ids <- unique(candidate_ids[!is.na(candidate_ids)])
+  if (length(candidate_ids) == 0) {
+    return(list(generated_n = 0L, title_n = 0L, skipped_n = 0L, batch_ids = character(), mode = "none", model = article_lab_default_subtitle_model))
+  }
+
+  placeholders <- paste(rep("?", length(candidate_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf(
+      "SELECT c.candidate_id, c.batch_id, c.title, c.status, c.ready_for_human_rating, c.promoted, c.archived,
+              COALESCE(s.generated_n, 0) AS generated_subtitle_n, COALESCE(s.approved_n, 0) AS approved_subtitle_n
+       FROM article_lab_title_candidates c
+       LEFT JOIN (
+         SELECT candidate_id,
+                COALESCE(SUM(CASE WHEN status = 'generated' THEN 1 ELSE 0 END), 0) AS generated_n,
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved_n
+         FROM article_lab_subtitle_candidates
+         GROUP BY candidate_id
+       ) s
+         ON s.candidate_id = c.candidate_id
+       WHERE c.candidate_id IN (%s)",
+      placeholders
+    ),
+    params = as.list(candidate_ids)
+  )
+  if (nrow(rows) == 0) {
+    return(list(generated_n = 0L, title_n = 0L, skipped_n = length(candidate_ids), batch_ids = character(), mode = "none", model = article_lab_default_subtitle_model))
+  }
+  rows <- article_lab_normalize_candidate_rows(rows)
+  eligible <- rows[
+    rows$normalized_status == "approved_for_subtitle" &
+      rows$generated_subtitle_n <= 0 &
+      rows$approved_subtitle_n <= 0,
+    c("candidate_id", "batch_id", "title"),
+    drop = FALSE
+  ]
+  skipped_n <- length(candidate_ids) - nrow(eligible)
+  if (nrow(eligible) == 0) {
+    return(list(generated_n = 0L, title_n = 0L, skipped_n = skipped_n, batch_ids = unique(rows$batch_id), mode = "none", model = article_lab_default_subtitle_model))
+  }
+
+  existing_rows <- dbGetQuery(
+    con,
+    sprintf("SELECT candidate_id, subtitle FROM article_lab_subtitle_candidates WHERE candidate_id IN (%s)", paste(rep("?", nrow(eligible)), collapse = ", ")),
+    params = as.list(eligible$candidate_id)
+  )
+  generated <- generate_subtitle_candidates(eligible, variants_per_title = variants_per_title, model = model, prompt = prompt)
+  subtitle_rows <- generated$rows
+  if (nrow(subtitle_rows) == 0) {
+    return(list(generated_n = 0L, title_n = 0L, skipped_n = skipped_n + nrow(eligible), batch_ids = unique(rows$batch_id), mode = generated$mode %||% "none", model = generated$model %||% article_lab_default_subtitle_model, fallback_reason = generated$fallback_reason %||% NULL))
+  }
+
+  if (nrow(existing_rows) > 0) {
+    existing_keys <- paste(existing_rows$candidate_id, tolower(existing_rows$subtitle))
+    subtitle_rows <- subtitle_rows[!(paste(subtitle_rows$candidate_id, tolower(subtitle_rows$subtitle)) %in% existing_keys), , drop = FALSE]
+  }
+  if (nrow(subtitle_rows) == 0) {
+    return(list(generated_n = 0L, title_n = 0L, skipped_n = skipped_n + nrow(eligible), batch_ids = unique(rows$batch_id), mode = generated$mode %||% "none", model = generated$model %||% article_lab_default_subtitle_model, fallback_reason = generated$fallback_reason %||% NULL))
+  }
+
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_len(nrow(subtitle_rows))) {
+      row <- subtitle_rows[i, , drop = FALSE]
+      dbExecute(
+        con,
+        "
+        INSERT INTO article_lab_subtitle_candidates
+        (subtitle_id, candidate_id, batch_id, created_at, subtitle, status, notes, model, generation_mode, raw_json, approved_at, rejected_at)
+        VALUES (?, ?, ?, ?, ?, 'generated', NULL, ?, ?, ?, NULL, NULL)
+        ",
+        params = list(
+          article_lab_subtitle_id(row$candidate_id[[1]], i),
+          row$candidate_id[[1]],
+          row$batch_id[[1]],
+          row$created_at[[1]] %||% now_utc(),
+          row$subtitle[[1]],
+          row$model[[1]] %||% article_lab_default_subtitle_model,
+          row$generation_mode[[1]] %||% generated$mode %||% "generated",
+          row$raw_json[[1]]
+        )
+      )
+    }
+    for (batch_id in unique(subtitle_rows$batch_id)) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(
+    generated_n = nrow(subtitle_rows),
+    title_n = length(unique(subtitle_rows$candidate_id)),
+    skipped_n = skipped_n,
+    batch_ids = unique(subtitle_rows$batch_id),
+    mode = generated$mode %||% "generated",
+    model = generated$model %||% article_lab_default_subtitle_model,
+    fallback_reason = generated$fallback_reason %||% NULL
+  )
+}
+
+article_lab_add_manual_subtitles <- function(con, candidate_id, subtitles) {
+  candidate_id <- article_lab_input_string(candidate_id)
+  subtitles <- article_lab_normalize_subtitle(unlist(strsplit(paste(subtitles, collapse = "\n"), "\n", fixed = TRUE)))
+  if (is.na(candidate_id) || !nzchar(candidate_id) || length(subtitles) == 0) {
+    return(list(added_n = 0L, skipped_n = 0L, duplicate_n = 0L, batch_id = NA_character_, title = NA_character_))
+  }
+
+  candidate_row <- dbGetQuery(
+    con,
+    "SELECT candidate_id, batch_id, title, status, ready_for_human_rating, promoted, archived
+     FROM article_lab_title_candidates
+     WHERE candidate_id = ?",
+    params = list(candidate_id)
+  )
+  if (nrow(candidate_row) == 0) {
+    return(list(added_n = 0L, skipped_n = length(subtitles), duplicate_n = 0L, batch_id = NA_character_, title = NA_character_))
+  }
+  candidate_row <- article_lab_normalize_candidate_rows(candidate_row)
+  if (!(candidate_row$normalized_status[[1]] %in% c("approved_for_subtitle", "ready_for_thumbnail")) || isTRUE(candidate_row$archived[[1]] == 1)) {
+    return(list(
+      added_n = 0L,
+      skipped_n = length(subtitles),
+      duplicate_n = 0L,
+      batch_id = candidate_row$batch_id[[1]] %||% NA_character_,
+      title = candidate_row$title[[1]] %||% NA_character_
+    ))
+  }
+
+  existing_rows <- dbGetQuery(
+    con,
+    "SELECT subtitle FROM article_lab_subtitle_candidates WHERE candidate_id = ?",
+    params = list(candidate_id)
+  )
+  existing_keys <- if (nrow(existing_rows) > 0) tolower(clean_text(existing_rows$subtitle)) else character()
+  subtitle_keys <- tolower(subtitles)
+  keep_idx <- !(subtitle_keys %in% existing_keys)
+  duplicate_n <- sum(!keep_idx)
+  subtitles <- subtitles[keep_idx]
+  if (length(subtitles) == 0) {
+    return(list(
+      added_n = 0L,
+      skipped_n = 0L,
+      duplicate_n = duplicate_n,
+      batch_id = candidate_row$batch_id[[1]] %||% NA_character_,
+      title = candidate_row$title[[1]] %||% NA_character_
+    ))
+  }
+
+  created_at <- now_utc()
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_along(subtitles)) {
+      dbExecute(
+        con,
+        "
+        INSERT INTO article_lab_subtitle_candidates
+        (subtitle_id, candidate_id, batch_id, created_at, subtitle, status, notes, model, generation_mode, raw_json, approved_at, rejected_at)
+        VALUES (?, ?, ?, ?, ?, 'generated', NULL, NULL, 'manual', NULL, NULL, NULL)
+        ",
+        params = list(
+          article_lab_subtitle_id(candidate_id, i),
+          candidate_id,
+          candidate_row$batch_id[[1]],
+          created_at,
+          subtitles[[i]]
+        )
+      )
+    }
+    article_lab_update_batch_status(con, candidate_row$batch_id[[1]])
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(
+    added_n = length(subtitles),
+    skipped_n = 0L,
+    duplicate_n = duplicate_n,
+    batch_id = candidate_row$batch_id[[1]] %||% NA_character_,
+    title = candidate_row$title[[1]] %||% NA_character_
+  )
+}
+
+article_lab_approve_subtitles <- function(con, subtitle_ids) {
+  subtitle_ids <- clean_text(subtitle_ids)
+  subtitle_ids <- unique(subtitle_ids[!is.na(subtitle_ids)])
+  if (length(subtitle_ids) == 0) return(list(approved_n = 0L, skipped_n = 0L, candidate_ids = character(), batch_ids = character()))
+
+  placeholders <- paste(rep("?", length(subtitle_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf("SELECT subtitle_id, candidate_id, batch_id, status FROM article_lab_subtitle_candidates WHERE subtitle_id IN (%s)", placeholders),
+    params = as.list(subtitle_ids)
+  )
+  if (nrow(rows) == 0) return(list(approved_n = 0L, skipped_n = length(subtitle_ids), candidate_ids = character(), batch_ids = character()))
+  eligible_ids <- rows$subtitle_id[rows$status == "generated"]
+  skipped_n <- length(subtitle_ids) - length(eligible_ids)
+  candidate_ids <- unique(rows$candidate_id[rows$subtitle_id %in% eligible_ids])
+  batch_ids <- unique(rows$batch_id[rows$subtitle_id %in% eligible_ids])
+
+  dbBegin(con)
+  tryCatch({
+    if (length(eligible_ids) > 0) {
+      dbExecute(
+        con,
+        sprintf("UPDATE article_lab_subtitle_candidates SET status = 'approved', approved_at = ?, rejected_at = NULL WHERE subtitle_id IN (%s)", paste(rep("?", length(eligible_ids)), collapse = ", ")),
+        params = c(list(now_utc()), as.list(eligible_ids))
+      )
+      article_lab_sync_title_subtitle_stage(con, candidate_ids)
+    }
+    for (batch_id in batch_ids) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(approved_n = length(eligible_ids), skipped_n = skipped_n, candidate_ids = candidate_ids, batch_ids = batch_ids)
+}
+
+article_lab_reject_subtitles <- function(con, subtitle_ids) {
+  subtitle_ids <- clean_text(subtitle_ids)
+  subtitle_ids <- unique(subtitle_ids[!is.na(subtitle_ids)])
+  if (length(subtitle_ids) == 0) return(list(rejected_n = 0L, skipped_n = 0L, candidate_ids = character(), batch_ids = character()))
+
+  placeholders <- paste(rep("?", length(subtitle_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf("SELECT subtitle_id, candidate_id, batch_id, status FROM article_lab_subtitle_candidates WHERE subtitle_id IN (%s)", placeholders),
+    params = as.list(subtitle_ids)
+  )
+  if (nrow(rows) == 0) return(list(rejected_n = 0L, skipped_n = length(subtitle_ids), candidate_ids = character(), batch_ids = character()))
+  eligible_ids <- rows$subtitle_id[rows$status == "generated"]
+  skipped_n <- length(subtitle_ids) - length(eligible_ids)
+  candidate_ids <- unique(rows$candidate_id[rows$subtitle_id %in% eligible_ids])
+  batch_ids <- unique(rows$batch_id[rows$subtitle_id %in% eligible_ids])
+
+  dbBegin(con)
+  tryCatch({
+    if (length(eligible_ids) > 0) {
+      dbExecute(
+        con,
+        sprintf("UPDATE article_lab_subtitle_candidates SET status = 'rejected', rejected_at = ? WHERE subtitle_id IN (%s)", paste(rep("?", length(eligible_ids)), collapse = ", ")),
+        params = c(list(now_utc()), as.list(eligible_ids))
+      )
+      article_lab_sync_title_subtitle_stage(con, candidate_ids)
+    }
+    for (batch_id in batch_ids) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(rejected_n = length(eligible_ids), skipped_n = skipped_n, candidate_ids = candidate_ids, batch_ids = batch_ids)
+}
+
+article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, model = NA_character_, prompt = NA_character_, variants_per_package = article_lab_default_thumbnail_variants) {
+  subtitle_ids <- clean_text(subtitle_ids)
+  subtitle_ids <- unique(subtitle_ids[!is.na(subtitle_ids)])
+  if (length(subtitle_ids) == 0) {
+    return(list(generated_n = 0L, package_n = 0L, skipped_n = 0L, batch_ids = character(), mode = "none", model = article_lab_default_thumbnail_model))
+  }
+
+  placeholders <- paste(rep("?", length(subtitle_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf(
+      "SELECT
+         s.subtitle_id,
+         s.candidate_id,
+         s.batch_id,
+         s.subtitle,
+         s.status AS subtitle_status,
+         c.title,
+         c.status,
+         c.ready_for_human_rating,
+         c.promoted,
+         c.archived,
+         COALESCE(t.generated_n, 0) AS generated_thumbnail_n,
+         COALESCE(t.approved_n, 0) AS approved_thumbnail_n
+       FROM article_lab_subtitle_candidates s
+       INNER JOIN article_lab_title_candidates c
+         ON c.candidate_id = s.candidate_id
+       LEFT JOIN (
+         SELECT
+           subtitle_id,
+           COALESCE(SUM(CASE WHEN status = 'generated' THEN 1 ELSE 0 END), 0) AS generated_n,
+           COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved_n
+         FROM article_lab_thumbnail_candidates
+         GROUP BY subtitle_id
+       ) t
+         ON t.subtitle_id = s.subtitle_id
+       WHERE s.subtitle_id IN (%s)",
+      placeholders
+    ),
+    params = as.list(subtitle_ids)
+  )
+  if (nrow(rows) == 0) {
+    return(list(generated_n = 0L, package_n = 0L, skipped_n = length(subtitle_ids), batch_ids = character(), mode = "none", model = article_lab_default_thumbnail_model))
+  }
+  rows <- article_lab_normalize_candidate_rows(rows)
+  eligible <- rows[
+    rows$subtitle_status == "approved" &
+      rows$generated_thumbnail_n <= 0 &
+      rows$approved_thumbnail_n <= 0,
+    c("subtitle_id", "candidate_id", "batch_id", "title", "subtitle"),
+    drop = FALSE
+  ]
+  skipped_n <- length(subtitle_ids) - nrow(eligible)
+  if (nrow(eligible) == 0) {
+    return(list(generated_n = 0L, package_n = 0L, skipped_n = skipped_n, batch_ids = unique(rows$batch_id), mode = "none", model = article_lab_default_thumbnail_model))
+  }
+
+  existing_rows <- if (dbExistsTable(con, "article_lab_thumbnail_candidates")) {
+    dbGetQuery(
+      con,
+      sprintf("SELECT subtitle_id, thumbnail_label FROM article_lab_thumbnail_candidates WHERE subtitle_id IN (%s)", paste(rep("?", nrow(eligible)), collapse = ", ")),
+      params = as.list(eligible$subtitle_id)
+    )
+  } else {
+    data.frame()
+  }
+
+  generated <- generate_thumbnail_candidates(eligible, variants_per_package = variants_per_package, model = model, prompt = prompt)
+  thumbnail_rows <- generated$rows
+  if (nrow(thumbnail_rows) == 0) {
+    return(list(generated_n = 0L, package_n = 0L, skipped_n = skipped_n + nrow(eligible), batch_ids = unique(rows$batch_id), mode = generated$mode %||% "none", model = generated$model %||% article_lab_default_thumbnail_model))
+  }
+
+  if (nrow(existing_rows) > 0) {
+    existing_keys <- paste(existing_rows$subtitle_id, tolower(existing_rows$thumbnail_label))
+    thumbnail_rows <- thumbnail_rows[!(paste(thumbnail_rows$subtitle_id, tolower(thumbnail_rows$thumbnail_label)) %in% existing_keys), , drop = FALSE]
+  }
+  if (nrow(thumbnail_rows) == 0) {
+    return(list(generated_n = 0L, package_n = 0L, skipped_n = skipped_n + nrow(eligible), batch_ids = unique(rows$batch_id), mode = generated$mode %||% "none", model = generated$model %||% article_lab_default_thumbnail_model))
+  }
+
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_len(nrow(thumbnail_rows))) {
+      row <- thumbnail_rows[i, , drop = FALSE]
+      dbExecute(
+        con,
+        "
+        INSERT INTO article_lab_thumbnail_candidates
+        (thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, thumbnail_label, thumbnail_data_uri, status, notes, model, generation_mode, raw_json, approved_at, rejected_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', NULL, ?, ?, ?, NULL, NULL)
+        ",
+        params = list(
+          article_lab_thumbnail_id(row$subtitle_id[[1]], i),
+          row$subtitle_id[[1]],
+          row$candidate_id[[1]],
+          row$batch_id[[1]],
+          row$created_at[[1]] %||% now_utc(),
+          row$thumbnail_label[[1]],
+          row$thumbnail_data_uri[[1]],
+          row$model[[1]] %||% article_lab_default_thumbnail_model,
+          row$generation_mode[[1]] %||% generated$mode %||% "generated",
+          row$raw_json[[1]]
+        )
+      )
+    }
+    for (batch_id in unique(thumbnail_rows$batch_id)) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(
+    generated_n = nrow(thumbnail_rows),
+    package_n = length(unique(thumbnail_rows$subtitle_id)),
+    skipped_n = skipped_n,
+    batch_ids = unique(thumbnail_rows$batch_id),
+    mode = generated$mode %||% "generated",
+    model = generated$model %||% article_lab_default_thumbnail_model
+  )
+}
+
+article_lab_approve_thumbnails <- function(con, thumbnail_ids) {
+  thumbnail_ids <- clean_text(thumbnail_ids)
+  thumbnail_ids <- unique(thumbnail_ids[!is.na(thumbnail_ids)])
+  if (length(thumbnail_ids) == 0) return(list(approved_n = 0L, skipped_n = 0L, candidate_ids = character(), batch_ids = character(), subtitle_ids = character(), duplicate_subtitle_ids = character(), message = NULL))
+
+  placeholders <- paste(rep("?", length(thumbnail_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf("SELECT thumbnail_id, subtitle_id, candidate_id, batch_id, status FROM article_lab_thumbnail_candidates WHERE thumbnail_id IN (%s)", placeholders),
+    params = as.list(thumbnail_ids)
+  )
+  if (nrow(rows) == 0) return(list(approved_n = 0L, skipped_n = length(thumbnail_ids), candidate_ids = character(), batch_ids = character(), subtitle_ids = character(), duplicate_subtitle_ids = character(), message = NULL))
+  eligible_rows <- rows[rows$status == "generated", , drop = FALSE]
+  skipped_n <- length(thumbnail_ids) - nrow(eligible_rows)
+  duplicate_counts <- table(eligible_rows$subtitle_id)
+  duplicate_subtitle_ids <- names(duplicate_counts[duplicate_counts > 1L])
+  if (length(duplicate_subtitle_ids) > 0) {
+    return(list(
+      approved_n = 0L,
+      skipped_n = skipped_n,
+      candidate_ids = character(),
+      batch_ids = character(),
+      subtitle_ids = character(),
+      duplicate_subtitle_ids = duplicate_subtitle_ids,
+      message = "Select only one thumbnail candidate per title/subtitle package before approving."
+    ))
+  }
+
+  approved_packages <- if (nrow(eligible_rows) > 0) {
+    dbGetQuery(
+      con,
+      sprintf("SELECT DISTINCT subtitle_id FROM article_lab_thumbnail_candidates WHERE status = 'approved' AND subtitle_id IN (%s)", paste(rep("?", nrow(eligible_rows)), collapse = ", ")),
+      params = as.list(eligible_rows$subtitle_id)
+    )
+  } else {
+    data.frame()
+  }
+  already_approved_ids <- clean_text(approved_packages$subtitle_id)
+  if (length(already_approved_ids) > 0) {
+    eligible_rows <- eligible_rows[!(eligible_rows$subtitle_id %in% already_approved_ids), , drop = FALSE]
+    skipped_n <- length(thumbnail_ids) - nrow(eligible_rows)
+  }
+  if (nrow(eligible_rows) == 0) {
+    return(list(approved_n = 0L, skipped_n = skipped_n, candidate_ids = character(), batch_ids = character(), subtitle_ids = character(), duplicate_subtitle_ids = character(), message = "No selected thumbnails were eligible for approval."))
+  }
+
+  eligible_ids <- eligible_rows$thumbnail_id
+  candidate_ids <- unique(eligible_rows$candidate_id)
+  batch_ids <- unique(eligible_rows$batch_id)
+  subtitle_ids <- unique(eligible_rows$subtitle_id)
+
+  dbBegin(con)
+  tryCatch({
+    dbExecute(
+      con,
+      sprintf("UPDATE article_lab_thumbnail_candidates SET status = 'approved', approved_at = ?, rejected_at = NULL WHERE thumbnail_id IN (%s)", paste(rep("?", length(eligible_ids)), collapse = ", ")),
+      params = c(list(now_utc()), as.list(eligible_ids))
+    )
+    article_lab_sync_title_thumbnail_stage(con, candidate_ids)
+    for (batch_id in batch_ids) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(approved_n = length(eligible_ids), skipped_n = skipped_n, candidate_ids = candidate_ids, batch_ids = batch_ids, subtitle_ids = subtitle_ids, duplicate_subtitle_ids = character(), message = NULL)
+}
+
+article_lab_reject_thumbnails <- function(con, thumbnail_ids) {
+  thumbnail_ids <- clean_text(thumbnail_ids)
+  thumbnail_ids <- unique(thumbnail_ids[!is.na(thumbnail_ids)])
+  if (length(thumbnail_ids) == 0) return(list(rejected_n = 0L, skipped_n = 0L, candidate_ids = character(), batch_ids = character()))
+
+  placeholders <- paste(rep("?", length(thumbnail_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf("SELECT thumbnail_id, subtitle_id, candidate_id, batch_id, status FROM article_lab_thumbnail_candidates WHERE thumbnail_id IN (%s)", placeholders),
+    params = as.list(thumbnail_ids)
+  )
+  if (nrow(rows) == 0) return(list(rejected_n = 0L, skipped_n = length(thumbnail_ids), candidate_ids = character(), batch_ids = character()))
+  eligible_ids <- rows$thumbnail_id[rows$status == "generated"]
+  skipped_n <- length(thumbnail_ids) - length(eligible_ids)
+  candidate_ids <- unique(rows$candidate_id[rows$thumbnail_id %in% eligible_ids])
+  batch_ids <- unique(rows$batch_id[rows$thumbnail_id %in% eligible_ids])
+
+  dbBegin(con)
+  tryCatch({
+    if (length(eligible_ids) > 0) {
+      dbExecute(
+        con,
+        sprintf("UPDATE article_lab_thumbnail_candidates SET status = 'rejected', rejected_at = ? WHERE thumbnail_id IN (%s)", paste(rep("?", length(eligible_ids)), collapse = ", ")),
+        params = c(list(now_utc()), as.list(eligible_ids))
+      )
+      article_lab_sync_title_thumbnail_stage(con, candidate_ids)
+    }
+    for (batch_id in batch_ids) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(rejected_n = length(eligible_ids), skipped_n = skipped_n, candidate_ids = candidate_ids, batch_ids = batch_ids)
 }
 
 article_lab_unscored_candidates <- function(con, batch_id, model, prompt_version, scope) {
@@ -1191,6 +2848,8 @@ article_lab_update_batch_status <- function(con, batch_id) {
       COALESCE(SUM(CASE WHEN status = 'ready_for_api_scoring' THEN 1 ELSE 0 END), 0) AS ready_n,
       COALESCE(SUM(CASE WHEN status = 'api_scored' THEN 1 ELSE 0 END), 0) AS scored_n,
       COALESCE(SUM(CASE WHEN status = 'approved_for_subtitle' OR promoted = 1 THEN 1 ELSE 0 END), 0) AS approved_n,
+      COALESCE(SUM(CASE WHEN status = 'ready_for_thumbnail' THEN 1 ELSE 0 END), 0) AS subtitle_ready_n,
+      COALESCE(SUM(CASE WHEN status = 'ready_for_outline' THEN 1 ELSE 0 END), 0) AS outline_ready_n,
       COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) AS archived_n,
       COUNT(*) AS total_n
     FROM article_lab_title_candidates
@@ -1200,7 +2859,11 @@ article_lab_update_batch_status <- function(con, batch_id) {
   )
   if (nrow(status_rows) == 0) return(invisible(NULL))
   row <- status_rows[1, , drop = FALSE]
-  batch_status <- if (row$approved_n[[1]] > 0) {
+  batch_status <- if (row$outline_ready_n[[1]] > 0) {
+    "ready_for_outline"
+  } else if (row$subtitle_ready_n[[1]] > 0) {
+    "ready_for_thumbnail"
+  } else if (row$approved_n[[1]] > 0) {
     "approved_for_subtitle"
   } else if (row$ready_n[[1]] > 0) {
     "ready_for_api_scoring"
@@ -1217,6 +2880,74 @@ article_lab_update_batch_status <- function(con, batch_id) {
     params = list(batch_status, batch_id)
   )
   invisible(batch_status)
+}
+
+article_lab_recover_api_pending_candidates <- function(con, batch_id = NULL) {
+  batch_filter <- article_lab_input_string(batch_id)
+  where_sql <- "WHERE c.status = 'api_pending'"
+  params <- list()
+  if (!is.null(batch_filter) && !identical(batch_filter, article_lab_all_batches_value)) {
+    where_sql <- paste(where_sql, "AND c.batch_id = ?")
+    params <- list(batch_filter)
+  }
+
+  pending_query <- sprintf(
+    "
+    SELECT
+      c.candidate_id,
+      c.batch_id,
+      CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM article_lab_title_api_scores s
+          WHERE s.candidate_id = c.candidate_id
+          LIMIT 1
+        ) THEN 'api_scored'
+        ELSE 'ready_for_api_scoring'
+      END AS recovered_status
+    FROM article_lab_title_candidates c
+    %s
+    ",
+    where_sql
+  )
+  pending_rows <- if (length(params) > 0) {
+    dbGetQuery(con, pending_query, params = params)
+  } else {
+    dbGetQuery(con, pending_query)
+  }
+  if (nrow(pending_rows) == 0) return(invisible(0L))
+
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_len(nrow(pending_rows))) {
+      row <- pending_rows[i, , drop = FALSE]
+      dbExecute(
+        con,
+        "
+        UPDATE article_lab_title_candidates
+        SET status = ?,
+            ready_for_human_rating = 0,
+            promoted = CASE WHEN ? = 'api_scored' THEN promoted ELSE 0 END,
+            archived = 0
+        WHERE candidate_id = ?
+        ",
+        params = list(
+          row$recovered_status[[1]],
+          row$recovered_status[[1]],
+          row$candidate_id[[1]]
+        )
+      )
+    }
+    for (current_batch_id in unique(pending_rows$batch_id)) {
+      article_lab_update_batch_status(con, current_batch_id)
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  invisible(nrow(pending_rows))
 }
 
 article_lab_upsert_score <- function(con, score_row) {
@@ -1268,45 +2999,122 @@ article_lab_upsert_score <- function(con, score_row) {
   combined_score
 }
 
-article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope) {
-  candidates <- article_lab_unscored_candidates(con, batch_id, model, prompt_version, scope)
+article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope, candidate_ids = NULL) {
+  article_lab_recover_api_pending_candidates(con, batch_id = batch_id)
   batch_label <- if (identical(batch_id, article_lab_all_batches_value)) "all titles" else paste("batch", batch_id)
-  if (nrow(candidates) == 0) {
-    return(list(scored_n = 0L, failed_n = 0L, failed_ids = character(), batch_label = batch_label, message = sprintf("No titles in %s are currently waiting in ready_for_api_scoring for the selected model/prompt/scope.", batch_label)))
+  selected_ids <- clean_text(candidate_ids)
+  selected_ids <- unique(selected_ids[!is.na(selected_ids)])
+  if (length(selected_ids) == 0) {
+    return(list(
+      scored_n = 0L,
+      used_existing_n = 0L,
+      failed_n = 0L,
+      failed_ids = character(),
+      batch_label = batch_label,
+      message = "Select at least one API-queue title to score."
+    ))
   }
 
-  previous_status <- setNames(candidates$status, candidates$candidate_id)
-  placeholders <- paste(rep("?", nrow(candidates)), collapse = ", ")
-  dbExecute(
-    con,
-    sprintf("UPDATE article_lab_title_candidates SET status = 'api_pending' WHERE candidate_id IN (%s)", placeholders),
-    params = as.list(candidates$candidate_id)
+  candidates <- load_article_lab_scoring_rows(con, batch_id, model, prompt_version, scope)
+  if (nrow(candidates) == 0) {
+    return(list(
+      scored_n = 0L,
+      used_existing_n = 0L,
+      failed_n = 0L,
+      failed_ids = character(),
+      batch_label = batch_label,
+      message = sprintf("No titles in %s are available for API scoring.", batch_label)
+    ))
+  }
+  candidates <- article_lab_normalize_candidate_rows(candidates)
+  candidates <- candidates[candidates$candidate_id %in% selected_ids, , drop = FALSE]
+  if (nrow(candidates) == 0) {
+    return(list(
+      scored_n = 0L,
+      used_existing_n = 0L,
+      failed_n = 0L,
+      failed_ids = character(),
+      batch_label = batch_label,
+      message = "None of the selected titles were found in the current API queue selection."
+    ))
+  }
+
+  eligible <- candidates[candidates$normalized_status == "ready_for_api_scoring", , drop = FALSE]
+  skipped_n <- length(selected_ids) - nrow(eligible)
+  if (nrow(eligible) == 0) {
+    return(list(
+      scored_n = 0L,
+      used_existing_n = 0L,
+      failed_n = 0L,
+      failed_ids = character(),
+      skipped_n = skipped_n,
+      batch_label = batch_label,
+      message = "Only titles in API queue can be scored."
+    ))
+  }
+
+  cached_rows <- eligible[!is.na(eligible$score_id), , drop = FALSE]
+  api_rows <- eligible[is.na(eligible$score_id), c("candidate_id", "batch_id", "title", "status", "title_char_count", "title_length_flag"), drop = FALSE]
+  previous_status <- setNames(api_rows$status, api_rows$candidate_id)
+
+  result <- list(
+    scores = data.frame(),
+    errors = list(),
+    model = article_lab_input_string(model) %||% article_lab_default_score_model,
+    prompt_version = article_lab_input_string(prompt_version) %||% article_lab_default_score_prompt_version,
+    scope = article_lab_input_string(scope) %||% article_lab_default_score_scope
   )
 
-  result <- tryCatch(
-    article_lab_score_api_request(candidates, model = model, prompt_version = prompt_version, scope = scope),
-    error = function(e) e
-  )
-  if (inherits(result, "error")) {
-    for (candidate_id in names(previous_status)) {
-      dbExecute(
-        con,
-        "UPDATE article_lab_title_candidates SET status = ? WHERE candidate_id = ?",
-        params = list(previous_status[[candidate_id]], candidate_id)
-      )
+  if (nrow(api_rows) > 0) {
+    placeholders <- paste(rep("?", nrow(api_rows)), collapse = ", ")
+    dbExecute(
+      con,
+      sprintf("UPDATE article_lab_title_candidates SET status = 'api_pending' WHERE candidate_id IN (%s)", placeholders),
+      params = as.list(api_rows$candidate_id)
+    )
+
+    result <- tryCatch(
+      article_lab_score_api_request(api_rows, model = model, prompt_version = prompt_version, scope = scope),
+      error = function(e) e
+    )
+    if (inherits(result, "error")) {
+      for (candidate_id in names(previous_status)) {
+        dbExecute(
+          con,
+          "UPDATE article_lab_title_candidates SET status = ? WHERE candidate_id = ?",
+          params = list(previous_status[[candidate_id]], candidate_id)
+        )
+      }
+      stop(result)
     }
-    stop(result)
   }
 
   scored_ids <- character()
   failed_ids <- character()
+  cached_ids <- cached_rows$candidate_id
+  batch_ids_to_update <- unique(eligible$batch_id)
+
   dbBegin(con)
   tryCatch({
+    if (length(cached_ids) > 0) {
+      dbExecute(
+        con,
+        sprintf(
+          "UPDATE article_lab_title_candidates
+           SET status = 'api_scored', ready_for_human_rating = 0, promoted = 0, archived = 0
+           WHERE candidate_id IN (%s)",
+          paste(rep("?", length(cached_ids)), collapse = ", ")
+        ),
+        params = as.list(cached_ids)
+      )
+      scored_ids <- c(scored_ids, cached_ids)
+    }
+
     if (nrow(result$scores) > 0) {
       for (i in seq_len(nrow(result$scores))) {
         score_row <- result$scores[i, , drop = FALSE]
-        match_index <- match(score_row$candidate_id[[1]], candidates$candidate_id)
-        score_row$title_char_count <- candidates$title_char_count[[match_index]]
+        match_index <- match(score_row$candidate_id[[1]], eligible$candidate_id)
+        score_row$title_char_count <- eligible$title_char_count[[match_index]]
         article_lab_upsert_score(con, score_row)
         dbExecute(
           con,
@@ -1316,7 +3124,9 @@ article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope)
             WHEN status = 'archived' OR archived = 1 THEN 'archived'
             WHEN status = 'approved_for_subtitle' OR promoted = 1 THEN 'approved_for_subtitle'
             ELSE 'api_scored'
-          END
+          END,
+              ready_for_human_rating = 0,
+              archived = 0
           WHERE candidate_id = ?
           ",
           params = list(score_row$candidate_id[[1]])
@@ -1329,7 +3139,7 @@ article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope)
       failed_ids <- vapply(result$errors, function(entry) article_lab_input_string(entry$candidate_id) %||% NA_character_, character(1))
       failed_ids <- failed_ids[!is.na(failed_ids)]
     }
-    untouched_ids <- setdiff(candidates$candidate_id, union(scored_ids, failed_ids))
+    untouched_ids <- setdiff(api_rows$candidate_id, union(scored_ids, failed_ids))
     failed_ids <- unique(c(failed_ids, untouched_ids))
 
     for (candidate_id in failed_ids) {
@@ -1340,7 +3150,6 @@ article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope)
       )
     }
 
-    batch_ids_to_update <- if (identical(batch_id, article_lab_all_batches_value)) unique(candidates$batch_id) else batch_id
     for (batch_id_value in batch_ids_to_update) {
       article_lab_update_batch_status(con, batch_id_value)
     }
@@ -1352,8 +3161,10 @@ article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope)
 
   list(
     scored_n = length(scored_ids),
+    used_existing_n = length(cached_ids),
     failed_n = length(failed_ids),
     failed_ids = failed_ids,
+    skipped_n = skipped_n,
     model = result$model,
     prompt_version = result$prompt_version,
     scope = result$scope,
@@ -1487,11 +3298,19 @@ article_lab_approve_candidates_for_subtitle <- function(con, candidate_ids) {
   list(approved_n = length(eligible_ids), skipped_n = skipped_n, batch_ids = batch_ids)
 }
 
-save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, raw_json = NA_character_, generation_mode = "generated") {
+save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, raw_json = NA_character_, generation_mode = "generated", enforce_max_chars = TRUE) {
   if (length(titles) == 0) return(invisible(NULL))
-  validated <- article_lab_validate_titles(titles, max_chars = article_lab_title_max_chars)
-  if (length(validated$titles) == 0) {
-    stop(sprintf("No titles met the %s-character maximum.", article_lab_title_max_chars), call. = FALSE)
+  title_values <- if (isTRUE(enforce_max_chars)) {
+    validated <- article_lab_validate_titles(titles, max_chars = article_lab_title_max_chars)
+    validated$titles
+  } else {
+    article_lab_normalize_titles(titles)
+  }
+  if (length(title_values) == 0) {
+    if (isTRUE(enforce_max_chars)) {
+      stop(sprintf("No titles met the %s-character maximum.", article_lab_title_max_chars), call. = FALSE)
+    }
+    stop("No usable titles were provided.", call. = FALSE)
   }
   batch_id <- article_lab_batch_id()
   created_at <- now_utc()
@@ -1502,7 +3321,7 @@ save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, 
   model_value <- clean_text(model)
   if (length(model_value) == 0 || is.na(model_value[[1]])) model_value <- article_lab_default_model
   requested_size <- suppressWarnings(as.integer(requested_batch_size))
-  if (is.na(requested_size) || requested_size < 1L) requested_size <- length(validated$titles)
+  if (is.na(requested_size) || requested_size < 1L) requested_size <- length(title_values)
 
   dbBegin(con)
   tryCatch({
@@ -1527,8 +3346,8 @@ save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, 
       )
     )
 
-    for (i in seq_along(validated$titles)) {
-      title_value <- clean_text(validated$titles[[i]])
+    for (i in seq_along(title_values)) {
+      title_value <- clean_text(title_values[[i]])
       if (length(title_value) == 0 || is.na(title_value[[1]])) next
       title_char_count <- article_lab_title_length(title_value[[1]])
       title_length_flag <- article_lab_title_length_flag(title_char_count)
@@ -1628,6 +3447,7 @@ load_article_lab_scoring_rows <- function(con, batch_id, model, prompt_version, 
       c.promoted,
       c.archived,
       c.notes,
+      s.score_id,
       s.scored_at,
       s.model,
       s.prompt_version,
@@ -1667,6 +3487,7 @@ load_article_lab_scoring_rows <- function(con, batch_id, model, prompt_version, 
       c.promoted,
       c.archived,
       c.notes,
+      s.score_id,
       s.scored_at,
       s.model,
       s.prompt_version,
@@ -1741,6 +3562,8 @@ article_lab_overview <- function(con) {
       ready_for_api_scoring = 0L,
       api_scored = 0L,
       approved_for_subtitle = 0L,
+      ready_for_thumbnail = 0L,
+      ready_for_outline = 0L,
       rejected = 0L,
       archived = 0L
     ))
@@ -1755,10 +3578,70 @@ article_lab_overview <- function(con) {
       COALESCE(SUM(CASE WHEN status = 'ready_for_api_scoring' THEN 1 ELSE 0 END), 0) AS ready_for_api_scoring,
       COALESCE(SUM(CASE WHEN status = 'api_scored' THEN 1 ELSE 0 END), 0) AS api_scored,
       COALESCE(SUM(CASE WHEN status = 'approved_for_subtitle' OR promoted = 1 THEN 1 ELSE 0 END), 0) AS approved_for_subtitle,
+      COALESCE(SUM(CASE WHEN status = 'ready_for_thumbnail' THEN 1 ELSE 0 END), 0) AS ready_for_thumbnail,
+      COALESCE(SUM(CASE WHEN status = 'ready_for_outline' THEN 1 ELSE 0 END), 0) AS ready_for_outline,
       COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected,
       COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) AS archived
     FROM article_lab_title_candidates
   ")
+}
+
+article_lab_update_candidate_notes <- function(con, notes_updates) {
+  if (length(notes_updates) == 0) return(0L)
+  updated_n <- 0L
+  dbBegin(con)
+  tryCatch({
+    for (entry in notes_updates) {
+      candidate_id <- clean_text(entry$candidate_id)
+      if (length(candidate_id) == 0 || is.na(candidate_id[[1]])) next
+      dbExecute(
+        con,
+        "UPDATE article_lab_title_candidates SET notes = ? WHERE candidate_id = ?",
+        params = list(clean_text(entry$notes), candidate_id[[1]])
+      )
+      updated_n <- updated_n + 1L
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  updated_n
+}
+
+article_lab_count_badge <- function(count, label = "titles") {
+  tags$span(class = "lab-count-badge", sprintf("%s %s", count, ifelse(identical(count, 1L), sub("s$", "", label), label)))
+}
+
+article_lab_signal_chip <- function(label, value, class_name = "default") {
+  tags$span(
+    class = paste("lab-chip", class_name),
+    sprintf("%s %s", label, ifelse(is.na(value), "\u2014", format(round(as.numeric(value), 1), nsmall = 1, trim = TRUE)))
+  )
+}
+
+article_lab_table_footer <- function(n, label = "titles") {
+  if (n < 1) return(NULL)
+  div(
+    class = "lab-table-footer",
+    sprintf("Showing 1 to %s of %s %s", n, n, ifelse(identical(n, 1L), sub("s$", "", label), label))
+  )
+}
+
+article_lab_section_card <- function(title, description, body, count = NULL, footer = NULL) {
+  div(
+    class = "lab-card lab-section-card",
+    div(
+      class = "lab-section-header",
+      div(
+        h3(title),
+        p(class = "lab-section-copy", description)
+      ),
+      if (is.null(count)) NULL else article_lab_count_badge(as.integer(count))
+    ),
+    body,
+    footer
+  )
 }
 
 article_lab_generate_table_ui <- function(rows) {
@@ -1781,6 +3664,8 @@ article_lab_generate_table_ui <- function(rows) {
           status_id <- article_lab_row_input_id("article_lab_generate_status", candidate_id)
           notes_id <- article_lab_row_input_id("article_lab_generate_notes", candidate_id)
           tags$tr(
+            `data-selection-group` = "article_lab_generate",
+            `data-candidate-id` = candidate_id,
             tags$td(
               class = "select-cell",
               checkboxInput(select_id, label = NULL, value = FALSE, width = NULL)
@@ -1821,48 +3706,367 @@ article_lab_badge <- function(value) {
   tags$span(class = paste("lab-badge", class_name), article_lab_status_label(status_key))
 }
 
+article_lab_subtitle_badge <- function(value) {
+  label <- clean_text(value)
+  if (length(label) == 0 || is.na(label[[1]])) label <- "n/a"
+  status_key <- tolower(label[[1]])
+  class_name <- paste("subtitle", gsub("[^A-Za-z0-9_]+", "_", status_key), sep = "_")
+  tags$span(class = paste("lab-badge", class_name), article_lab_subtitle_status_label(status_key))
+}
+
+article_lab_thumbnail_badge <- function(value) {
+  label <- clean_text(value)
+  if (length(label) == 0 || is.na(label[[1]])) label <- "n/a"
+  status_key <- tolower(label[[1]])
+  class_name <- paste("thumbnail", gsub("[^A-Za-z0-9_]+", "_", status_key), sep = "_")
+  tags$span(class = paste("lab-badge", class_name), article_lab_thumbnail_status_label(status_key))
+}
+
+article_lab_score_queue_table_ui <- function(rows) {
+  if (nrow(rows) == 0) {
+    return(div(class = "empty-state", "No titles are currently waiting in the API queue for this selection."))
+  }
+
+  rows <- article_lab_normalize_candidate_rows(rows)
+  tagList(
+    div(
+      class = "lab-table-wrap",
+      tags$table(
+        class = "lab-table",
+        tags$thead(tags$tr(
+          tags$th("Select"),
+          tags$th(class = "title-col", "Title"),
+          tags$th(class = "status-col", "Status"),
+          tags$th(class = "notes-col", "Notes")
+        )),
+        tags$tbody(
+          lapply(seq_len(nrow(rows)), function(i) {
+            row <- rows[i, , drop = FALSE]
+            select_id <- article_lab_row_input_id("article_lab_queue_select", row$candidate_id[[1]])
+            notes_id <- article_lab_row_input_id("article_lab_queue_notes", row$candidate_id[[1]])
+
+            tags$tr(
+              `data-selection-group` = "article_lab_queue",
+              `data-candidate-id` = row$candidate_id[[1]],
+              tags$td(
+                class = "select-cell",
+                checkboxInput(select_id, label = NULL, value = FALSE, width = NULL)
+              ),
+              tags$td(class = "title-cell", row$title[[1]]),
+              tags$td(class = "status-cell", article_lab_badge(row$normalized_status[[1]])),
+              tags$td(class = "notes-cell", textInput(notes_id, label = NULL, value = row$notes[[1]] %||% "", width = "100%", placeholder = "Optional note"))
+            )
+          })
+        )
+      )
+    ),
+    article_lab_table_footer(nrow(rows))
+  )
+}
+
 article_lab_score_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
-    return(div(class = "empty-state", "No titles are in the API queue or scored for this selection yet."))
+    return(div(class = "empty-state", "No API-scored titles are currently waiting for approval in this selection."))
   }
 
   rows <- article_lab_normalize_candidate_rows(rows)
   score_value <- function(x) {
     value <- suppressWarnings(as.numeric(x))
-    ifelse(is.na(value), "—", format(round(value, 1), nsmall = 1, trim = TRUE))
+    ifelse(is.na(value), "\u2014", format(round(value, 1), nsmall = 1, trim = TRUE))
   }
 
   tagList(
-    tags$table(
-      class = "lab-table",
-      tags$thead(tags$tr(lapply(
-        c("Select", "Batch", "Title", "Curiosity", "Emotional pull", "Comment potential", "Overall", "Trust risk", "Combined score", "Status", "Notes"),
-        tags$th
-      ))),
-      tags$tbody(
-        lapply(seq_len(nrow(rows)), function(i) {
-          row <- rows[i, , drop = FALSE]
-          select_id <- article_lab_row_input_id("article_lab_score_select", row$candidate_id[[1]])
+    div(
+      class = "lab-table-wrap",
+      tags$table(
+        class = "lab-table scored-table",
+        tags$thead(tags$tr(
+          tags$th("Select"),
+          tags$th(class = "title-col", "Title"),
+          tags$th(class = "score-col", "Combined Score"),
+          tags$th(class = "signals-col", "Main Signals"),
+          tags$th(class = "trust-col", "Trust Risk"),
+          tags$th(class = "status-col", "Status"),
+          tags$th(class = "notes-col", "Notes")
+        )),
+        tags$tbody(
+          lapply(seq_len(nrow(rows)), function(i) {
+            row <- rows[i, , drop = FALSE]
+            select_id <- article_lab_row_input_id("article_lab_scored_select", row$candidate_id[[1]])
+            notes_id <- article_lab_row_input_id("article_lab_scored_notes", row$candidate_id[[1]])
 
-          tags$tr(
-            tags$td(
-              class = "select-cell",
-              checkboxInput(select_id, label = NULL, value = FALSE, width = NULL)
-            ),
-            tags$td(row$batch_id[[1]]),
-            tags$td(row$title[[1]]),
-            tags$td(class = "score-cell", score_value(row$curiosity[[1]])),
-            tags$td(class = "score-cell", score_value(row$emotional_pull[[1]])),
-            tags$td(class = "score-cell", score_value(row$medium_comment_potential[[1]])),
-            tags$td(class = "score-cell", score_value(row$overall_article_potential[[1]])),
-            tags$td(class = "score-cell", score_value(row$trust_risk[[1]])),
-            tags$td(class = "score-cell", score_value(row$combined_title_score[[1]])),
-            tags$td(article_lab_badge(row$normalized_status[[1]])),
-            tags$td(row$notes[[1]] %||% "")
-          )
-        })
+            tags$tr(
+              `data-selection-group` = "article_lab_scored",
+              `data-candidate-id` = row$candidate_id[[1]],
+              tags$td(
+                class = "select-cell",
+                checkboxInput(select_id, label = NULL, value = FALSE, width = NULL)
+              ),
+              tags$td(class = "title-cell", row$title[[1]]),
+              tags$td(class = "score-cell score-strong", score_value(row$combined_title_score[[1]])),
+              tags$td(
+                class = "signals-cell",
+                div(
+                  class = "lab-chip-row",
+                  article_lab_signal_chip("Curiosity", row$curiosity[[1]], "blue"),
+                  article_lab_signal_chip("Emotional", row$emotional_pull[[1]], "purple"),
+                  article_lab_signal_chip("Comment", row$medium_comment_potential[[1]], "orange"),
+                  article_lab_signal_chip("Overall", row$overall_article_potential[[1]], "green")
+                )
+              ),
+              tags$td(class = "score-cell trust-cell", score_value(row$trust_risk[[1]])),
+              tags$td(class = "status-cell", article_lab_badge(row$normalized_status[[1]])),
+              tags$td(class = "notes-cell", textInput(notes_id, label = NULL, value = row$notes[[1]] %||% "", width = "100%", placeholder = "Optional note"))
+            )
+          })
+        )
       )
-    )
+    ),
+    article_lab_table_footer(nrow(rows))
+  )
+}
+
+article_lab_subtitle_target_table_ui <- function(rows) {
+  if (nrow(rows) == 0) {
+    return(div(class = "empty-state", "No approved titles currently need subtitle candidates in this selection."))
+  }
+
+  rows <- article_lab_normalize_candidate_rows(rows)
+  tagList(
+    div(
+      class = "lab-table-wrap",
+      tags$table(
+        class = "lab-table",
+        tags$thead(tags$tr(
+          tags$th("Select"),
+          tags$th(class = "title-col", "Title"),
+          tags$th(class = "status-col", "Status"),
+          tags$th(class = "notes-col", "Notes")
+        )),
+        tags$tbody(
+          lapply(seq_len(nrow(rows)), function(i) {
+            row <- rows[i, , drop = FALSE]
+            select_id <- article_lab_row_input_id("article_lab_subtitle_title_select", row$candidate_id[[1]])
+            notes_id <- article_lab_row_input_id("article_lab_subtitle_title_notes", row$candidate_id[[1]])
+
+            tags$tr(
+              `data-selection-group` = "article_lab_subtitle_titles",
+              `data-candidate-id` = row$candidate_id[[1]],
+              tags$td(
+                class = "select-cell",
+                checkboxInput(select_id, label = NULL, value = FALSE, width = NULL)
+              ),
+              tags$td(class = "title-cell", row$title[[1]]),
+              tags$td(class = "status-cell", article_lab_badge(row$normalized_status[[1]])),
+              tags$td(class = "notes-cell", textInput(notes_id, label = NULL, value = row$notes[[1]] %||% "", width = "100%", placeholder = "Optional note"))
+            )
+          })
+        )
+      )
+    ),
+    article_lab_table_footer(nrow(rows))
+  )
+}
+
+article_lab_subtitle_candidate_table_ui <- function(rows) {
+  if (nrow(rows) == 0) {
+    return(div(class = "empty-state", "No subtitle candidates are currently waiting for approval in this selection."))
+  }
+
+  tagList(
+    div(
+      class = "lab-table-wrap",
+      tags$table(
+        class = "lab-table",
+        tags$thead(tags$tr(
+          tags$th("Select"),
+          tags$th(class = "title-col", "Title"),
+          tags$th(class = "subtitle-col", "Subtitle"),
+          tags$th(class = "status-col", "Status"),
+          tags$th(class = "notes-col", "Notes")
+        )),
+        tags$tbody(
+          lapply(seq_len(nrow(rows)), function(i) {
+            row <- rows[i, , drop = FALSE]
+            select_id <- article_lab_row_input_id("article_lab_subtitle_candidate_select", row$subtitle_id[[1]])
+            notes_id <- article_lab_row_input_id("article_lab_subtitle_candidate_notes", row$subtitle_id[[1]])
+
+            tags$tr(
+              `data-selection-group` = "article_lab_subtitle_candidates",
+              `data-candidate-id` = row$subtitle_id[[1]],
+              tags$td(
+                class = "select-cell",
+                checkboxInput(select_id, label = NULL, value = FALSE, width = NULL)
+              ),
+              tags$td(class = "title-cell", row$title[[1]]),
+              tags$td(class = "subtitle-cell", row$subtitle[[1]]),
+              tags$td(class = "status-cell", article_lab_subtitle_badge(row$subtitle_status[[1]])),
+              tags$td(class = "notes-cell", textInput(notes_id, label = NULL, value = row$notes[[1]] %||% "", width = "100%", placeholder = "Optional note"))
+            )
+          })
+        )
+      )
+    ),
+    article_lab_table_footer(nrow(rows), label = "subtitle candidates")
+  )
+}
+
+article_lab_thumbnail_package_table_ui <- function(rows) {
+  if (nrow(rows) == 0) {
+    return(div(class = "empty-state", "No title/subtitle packages currently need thumbnail candidates in this selection."))
+  }
+
+  tagList(
+    div(
+      class = "lab-table-wrap",
+      tags$table(
+        class = "lab-table",
+        tags$thead(tags$tr(
+          tags$th("Select"),
+          tags$th(class = "title-col", "Title"),
+          tags$th(class = "subtitle-col", "Subtitle"),
+          tags$th(class = "status-col", "Status"),
+          tags$th(class = "notes-col", "Notes")
+        )),
+        tags$tbody(
+          lapply(seq_len(nrow(rows)), function(i) {
+            row <- rows[i, , drop = FALSE]
+            select_id <- article_lab_row_input_id("article_lab_thumbnail_package_select", row$subtitle_id[[1]])
+            notes_id <- article_lab_row_input_id("article_lab_thumbnail_package_notes", row$subtitle_id[[1]])
+
+            tags$tr(
+              `data-selection-group` = "article_lab_thumbnail_packages",
+              `data-candidate-id` = row$subtitle_id[[1]],
+              tags$td(
+                class = "select-cell",
+                checkboxInput(select_id, label = NULL, value = FALSE, width = NULL)
+              ),
+              tags$td(class = "title-cell", row$title[[1]]),
+              tags$td(class = "subtitle-cell", row$subtitle[[1]]),
+              tags$td(class = "status-cell", article_lab_badge(row$normalized_status[[1]])),
+              tags$td(class = "notes-cell", textInput(notes_id, label = NULL, value = row$notes[[1]] %||% "", width = "100%", placeholder = "Optional note"))
+            )
+          })
+        )
+      )
+    ),
+    article_lab_table_footer(nrow(rows), label = "packages")
+  )
+}
+
+article_lab_thumbnail_candidate_grid_ui <- function(rows) {
+  if (nrow(rows) == 0) {
+    return(div(class = "empty-state", "No thumbnail preview cards are currently waiting for approval in this selection."))
+  }
+
+  div(
+    class = "thumbnail-preview-grid",
+    lapply(seq_len(nrow(rows)), function(i) {
+      row <- rows[i, , drop = FALSE]
+      select_id <- article_lab_row_input_id("article_lab_thumbnail_candidate_select", row$thumbnail_id[[1]])
+      notes_id <- article_lab_row_input_id("article_lab_thumbnail_candidate_notes", row$thumbnail_id[[1]])
+
+      div(
+        class = "thumbnail-preview-card",
+        `data-selection-group` = "article_lab_thumbnail_candidates",
+        `data-candidate-id` = row$thumbnail_id[[1]],
+        div(
+          class = "thumbnail-preview-topbar",
+          checkboxInput(select_id, label = NULL, value = FALSE, width = NULL),
+          article_lab_thumbnail_badge(row$thumbnail_status[[1]])
+        ),
+        div(
+          class = "thumbnail-preview-shell",
+          div(
+            class = "thumbnail-preview-meta medium-preview-card",
+            div(class = "preview-kicker", row$thumbnail_label[[1]] %||% "Thumbnail candidate"),
+            div(class = "preview-title", row$title[[1]]),
+            div(class = "preview-subtitle", row$subtitle[[1]])
+          ),
+          div(
+            class = "thumbnail-preview-image-wrap",
+            tags$img(
+              class = "thumbnail-preview-image",
+              src = row$thumbnail_data_uri[[1]],
+              alt = paste("Thumbnail candidate for", row$title[[1]])
+            )
+          )
+        ),
+        textInput(notes_id, label = NULL, value = row$notes[[1]] %||% "", width = "100%", placeholder = "Optional note")
+      )
+    })
+  )
+}
+
+article_lab_ready_for_outline_table_ui <- function(rows) {
+  if (nrow(rows) == 0) {
+    return(div(class = "empty-state", "No title/subtitle/thumbnail packages are ready for Outline yet in this selection."))
+  }
+
+  div(
+    class = "thumbnail-preview-grid",
+    lapply(seq_len(nrow(rows)), function(i) {
+      row <- rows[i, , drop = FALSE]
+      div(
+        class = "thumbnail-preview-card approved",
+        div(class = "thumbnail-preview-topbar", article_lab_thumbnail_badge("approved")),
+        div(
+          class = "thumbnail-preview-shell",
+          div(
+            class = "thumbnail-preview-meta medium-preview-card",
+            div(class = "preview-kicker", row$thumbnail_label[[1]] %||% "Approved thumbnail"),
+            div(class = "preview-title", row$title[[1]]),
+            div(class = "preview-subtitle", row$subtitle[[1]])
+          ),
+          div(
+            class = "thumbnail-preview-image-wrap",
+            tags$img(
+              class = "thumbnail-preview-image",
+              src = row$thumbnail_data_uri[[1]],
+              alt = paste("Approved thumbnail for", row$title[[1]])
+            )
+          )
+        )
+      )
+    })
+  )
+}
+
+article_lab_ready_for_thumbnail_table_ui <- function(rows) {
+  if (nrow(rows) == 0) {
+    return(div(class = "empty-state", "No title packages are ready for Thumbnails yet in this selection."))
+  }
+
+  tagList(
+    div(
+      class = "lab-table-wrap",
+      tags$table(
+        class = "lab-table",
+        tags$thead(tags$tr(
+          tags$th(class = "title-col", "Title"),
+          tags$th(class = "subtitle-col", "Approved subtitles"),
+          tags$th(class = "status-col", "Status")
+        )),
+        tags$tbody(
+          lapply(seq_len(nrow(rows)), function(i) {
+            row <- rows[i, , drop = FALSE]
+            subtitle_lines <- clean_text(strsplit(row$approved_subtitles[[1]] %||% "", "\n", fixed = TRUE)[[1]])
+            tags$tr(
+              tags$td(class = "title-cell", row$title[[1]]),
+              tags$td(
+                class = "subtitle-cell",
+                div(
+                  class = "approved-subtitle-list",
+                  lapply(subtitle_lines[!is.na(subtitle_lines)], function(entry) div(class = "approved-subtitle-item", entry))
+                )
+              ),
+              tags$td(class = "status-cell", article_lab_badge(row$status[[1]]))
+            )
+          })
+        )
+      )
+    ),
+    article_lab_table_footer(nrow(rows), label = "title packages")
   )
 }
 
@@ -2972,6 +5176,26 @@ next_incomplete_dimension_after <- function(con, active_dimension) {
   incomplete$active_dimension[[which.min(incomplete$dimension_index)]]
 }
 
+initialize_app_database <- local({
+  initialized <- FALSE
+
+  function() {
+    if (isTRUE(initialized)) return(invisible(TRUE))
+    con <- connect_db()
+    on.exit(dbDisconnect(con), add = TRUE)
+
+    ensure_rating_schema(con)
+    ensure_article_lab_schema(con)
+    article_lab_recover_api_pending_candidates(con)
+    if (is_dimension_mode) ensure_dimension_pass_queues(con, target_n = default_target_n)
+
+    initialized <<- TRUE
+    invisible(TRUE)
+  }
+})
+
+initialize_app_database()
+
 load_current_dimension_item <- function(con, active_dimension) {
   ensure_dimension_pass_queue(con, active_dimension, target_n = default_target_n)
   item <- dbGetQuery(con, "
@@ -3392,9 +5616,26 @@ ui <- fluidPage(
       .app-shell { display: grid; grid-template-columns: 250px minmax(560px, 1fr) 300px; min-height: calc(100vh - 50px); }
       .sidebar, .guide { border-right: 1px solid var(--line); padding: 22px 20px; position: relative; }
       .guide { border-right: 0; border-left: 1px solid var(--line); }
+      .sidebar-nav-group { margin-bottom: 18px; }
+      .sidebar-nav-label {
+        margin: 0 0 10px;
+        color: #8a8a8a;
+        font-size: 11px;
+        font-weight: 750;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
       .nav-item {
-        height: 42px; display: flex; align-items: center; gap: 14px; padding: 0 18px;
-        border-radius: 8px; color: var(--ink); font-size: 16px; margin-bottom: 10px;
+        min-height: 58px;
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr);
+        gap: 14px;
+        align-items: start;
+        padding: 12px 14px;
+        border-radius: 10px;
+        color: var(--ink);
+        font-size: 15px;
+        margin-bottom: 8px;
       }
       button.nav-item {
         width: 100%;
@@ -3405,24 +5646,59 @@ ui <- fluidPage(
       button.nav-item:hover { background: #f5f5f5; }
       button.nav-item:focus { outline: none; box-shadow: none; }
       button.nav-item:disabled { opacity: .78; cursor: default; }
-      .nav-item.active { background: var(--green-soft); font-weight: 650; }
+      .nav-item.active { background: var(--green-soft); }
+      .nav-icon {
+        font-size: 16px;
+        line-height: 1;
+        margin-top: 2px;
+      }
+      .nav-copy {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+      }
+      .nav-title {
+        font-size: 15px;
+        font-weight: 700;
+        line-height: 1.15;
+      }
+      .nav-subtitle {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.3;
+      }
       .daily-goal {
         border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px;
-        max-width: 250px;
-        position: absolute;
-        left: 20px;
-        right: 20px;
+        max-width: none;
+        position: static;
+        margin-top: 18px;
       }
       .daily-goal.static-card {
         position: static;
         max-width: none;
         margin-top: 18px;
       }
+      .article-lab-helper {
+        display: grid;
+        gap: 8px;
+      }
       .daily-goal strong { display: block; margin-bottom: 8px; }
       .daily-goal .num { color: var(--green); font-weight: 700; }
       .progress-track { height: 7px; background: #e9e9e9; border-radius: 99px; overflow: hidden; margin: 12px 0 8px; }
       .progress-fill { height: 100%; background: var(--green); border-radius: 99px; width: 0%; }
       .main { padding: 22px 30px 18px; max-width: 920px; width: 100%; margin: 0 auto; }
+      .app-shell.workflow-wide-layout { grid-template-columns: 250px minmax(860px, 1fr); }
+      .app-shell.workflow-wide-layout .guide,
+      .guide.guide-hidden { display: none; }
+      .main.workflow-wide-main {
+        max-width: 1280px;
+        padding-right: 34px;
+      }
+      .main.workflow-wide-main .page-subtitle,
+      .main.workflow-wide-main .lab-card,
+      .main.workflow-wide-main .empty-state {
+        max-width: none;
+      }
       h1 { margin: 0; font-size: 26px; line-height: 1.05; font-weight: 750; letter-spacing: 0; }
       .progress-line { margin-top: 5px; color: var(--muted); font-size: 16px; }
       .progress-line .current { color: var(--green); font-weight: 750; }
@@ -3669,28 +5945,6 @@ ui <- fluidPage(
         line-height: 1.4;
         max-width: 760px;
       }
-      .section-tabs {
-        display: flex;
-        gap: 24px;
-        border-bottom: 1px solid var(--line);
-        margin-top: 18px;
-        max-width: 760px;
-      }
-      .section-tab {
-        padding: 0 0 10px;
-        border: 0;
-        background: transparent;
-        color: var(--muted);
-        font-size: 15px;
-        font-weight: 500;
-        cursor: pointer;
-      }
-      .section-tab.active {
-        color: var(--ink);
-        font-weight: 700;
-        border-bottom: 2px solid var(--green);
-      }
-      .section-tab.disabled { opacity: .66; cursor: default; }
       .lab-card,
       .status-card,
       .empty-state {
@@ -3703,6 +5957,7 @@ ui <- fluidPage(
         margin-top: 18px;
         padding: 18px 20px 20px;
       }
+      .lab-section-card { padding-bottom: 16px; }
       .lab-card h2 {
         margin: 0 0 12px;
         font-size: 19px;
@@ -3712,6 +5967,31 @@ ui <- fluidPage(
         margin: 0 0 10px;
         font-size: 17px;
         font-weight: 730;
+      }
+      .lab-section-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        align-items: flex-start;
+        margin-bottom: 14px;
+      }
+      .lab-section-copy {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.4;
+      }
+      .lab-count-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #eef4ff;
+        color: #2757a3;
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
       }
       .lab-grid {
         display: grid;
@@ -3801,6 +6081,10 @@ ui <- fluidPage(
         border-collapse: collapse;
         margin-top: 6px;
       }
+      .lab-table-wrap {
+        width: 100%;
+        overflow-x: auto;
+      }
       .lab-table th,
       .lab-table td {
         padding: 10px 8px;
@@ -3821,8 +6105,39 @@ ui <- fluidPage(
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
       }
+      .lab-table td.score-strong {
+        font-size: 18px;
+        font-weight: 760;
+      }
       .lab-table td.select-cell {
         width: 56px;
+      }
+      .lab-table th.title-col,
+      .lab-table td.title-cell {
+        width: 34%;
+      }
+      .lab-table th.notes-col,
+      .lab-table td.notes-cell {
+        width: 24%;
+      }
+      .lab-table th.subtitle-col,
+      .lab-table td.subtitle-cell {
+        width: 34%;
+      }
+      .lab-table th.signals-col,
+      .lab-table td.signals-cell {
+        width: 24%;
+      }
+      .lab-table th.score-col,
+      .lab-table td.score-cell,
+      .lab-table th.trust-col,
+      .lab-table td.trust-cell,
+      .lab-table th.status-col,
+      .lab-table td.status-cell {
+        white-space: nowrap;
+      }
+      .scored-table .notes-cell .form-control {
+        min-width: 220px;
       }
       .lab-table .shiny-input-container {
         width: 100%;
@@ -3833,6 +6148,11 @@ ui <- fluidPage(
       }
       .lab-table .form-control {
         min-height: 34px;
+      }
+      .lab-table-footer {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 13px;
       }
       .lab-badge {
         display: inline-flex;
@@ -3853,16 +6173,135 @@ ui <- fluidPage(
       .lab-badge.ready_for_api_scoring { background: #edf8ef; color: #1a6d27; }
       .lab-badge.api_scored { background: #eef4ff; color: #2757a3; }
       .lab-badge.approved_for_subtitle { background: #f0ebff; color: #5a33a2; }
+      .lab-badge.ready_for_thumbnail { background: #e9f7f4; color: #166f62; }
+      .lab-badge.ready_for_outline { background: #e8f4ea; color: #1f6c2c; }
+      .lab-badge.subtitle_generated { background: #f5f5f5; color: #666; }
+      .lab-badge.subtitle_approved { background: #e9f7f4; color: #166f62; }
+      .lab-badge.subtitle_rejected { background: #fff3e6; color: #8a5200; }
+      .lab-badge.thumbnail_generated { background: #f5f5f5; color: #666; }
+      .lab-badge.thumbnail_approved { background: #e9f7f4; color: #166f62; }
+      .lab-badge.thumbnail_rejected { background: #fff3e6; color: #8a5200; }
       .lab-badge.disqualified,
       .lab-badge.rejected { background: #fff3e6; color: #8a5200; }
       .lab-badge.generated,
       .lab-badge.api_pending,
       .lab-badge.draft { background: #f5f5f5; color: #666; }
       .lab-badge.archived { background: #f3f3f3; color: #777; }
+      .lab-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .lab-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 9px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 650;
+        line-height: 1;
+        white-space: nowrap;
+      }
+      .lab-chip.blue { background: #eaf1ff; color: #2e63b7; }
+      .lab-chip.purple { background: #f1ebff; color: #6a44b8; }
+      .lab-chip.orange { background: #fff0df; color: #b46406; }
+      .lab-chip.green { background: #eaf7ea; color: #2f7a34; }
+      .lab-chip.default { background: #f3f3f3; color: #555; }
       .lab-status-copy {
         margin-top: 12px;
         color: var(--muted);
         font-size: 13px;
+      }
+      .approved-subtitle-list {
+        display: grid;
+        gap: 8px;
+      }
+      .approved-subtitle-item {
+        padding: 7px 10px;
+        border-radius: 8px;
+        background: #f7f7f7;
+        line-height: 1.35;
+      }
+      .thumbnail-preview-grid {
+        display: grid;
+        gap: 18px;
+        margin-top: 8px;
+        max-width: 760px;
+      }
+      .thumbnail-preview-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        padding: 14px 18px 18px;
+        box-shadow: none;
+        max-width: 760px;
+      }
+      .thumbnail-preview-card.approved {
+        border-color: #dceedd;
+        background: #fbfefb;
+      }
+      .thumbnail-preview-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      .thumbnail-preview-topbar .checkbox {
+        margin: 0;
+      }
+      .thumbnail-preview-shell {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 170px;
+        gap: 32px;
+        align-items: center;
+      }
+      .thumbnail-preview-image-wrap {
+        border-radius: 1px;
+        overflow: hidden;
+        background: #fff;
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+      }
+      .thumbnail-preview-image {
+        width: 170px;
+        height: 113px;
+        object-fit: cover;
+        display: block;
+        border: 0;
+      }
+      .medium-preview-card {
+        border: 0;
+        border-radius: 0;
+        padding: 0;
+        background: transparent;
+        min-width: 0;
+      }
+      .preview-kicker {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .02em;
+        text-transform: uppercase;
+        color: var(--green);
+        margin-bottom: 8px;
+      }
+      .preview-title {
+        font-size: 26px;
+        line-height: 1.15;
+        font-weight: 760;
+        color: var(--ink);
+        margin-bottom: 8px;
+      }
+      .preview-subtitle {
+        color: var(--muted);
+        font-size: 18px;
+        line-height: 1.35;
+      }
+      .thumbnail-preview-card .shiny-input-container {
+        width: 100%;
+        margin-top: 12px;
+        margin-bottom: 0;
       }
       .status-card {
         padding: 14px 16px;
@@ -3887,12 +6326,33 @@ ui <- fluidPage(
         line-height: 1;
         margin-bottom: 8px;
       }
+      .overview-metric-list {
+        display: grid;
+        gap: 14px;
+      }
+      .overview-metric {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr);
+        gap: 10px;
+        align-items: center;
+      }
+      .overview-metric-value {
+        color: #2e63b7;
+        font-size: 24px;
+        font-weight: 760;
+        line-height: 1;
+      }
+      .overview-metric-value.green { color: var(--green); }
       .empty-state {
         max-width: 760px;
         margin-top: 12px;
         padding: 18px 20px;
         color: var(--muted);
         font-size: 14px;
+      }
+      .step-placeholder {
+        display: grid;
+        gap: 12px;
       }
       .guide-section { border-bottom: 1px solid var(--line); padding: 10px 0 16px; }
       .guide-section:first-child { padding-top: 0; }
@@ -3914,7 +6374,8 @@ ui <- fluidPage(
         .app-shell { grid-template-columns: 86px minmax(520px, 1fr); }
         .guide { display: none; }
         .sidebar { padding: 24px 14px; }
-        .nav-item span, .daily-goal { display: none; }
+        .nav-copy, .daily-goal { display: none; }
+        .nav-item { grid-template-columns: 1fr; justify-items: center; padding: 12px 10px; }
       }
       @media (max-width: 820px) {
         .app-shell { display: block; }
@@ -3924,10 +6385,14 @@ ui <- fluidPage(
         .article-card { grid-template-columns: 1fr; gap: 18px; padding: 24px 0 26px; }
         .article-card.thumbnail-only { grid-template-columns: 170px; }
         .article-card.text-only { grid-template-columns: 1fr; }
+        .thumbnail-preview-shell { grid-template-columns: 1fr; gap: 18px; }
+        .thumbnail-preview-grid { max-width: none; }
+        .thumbnail-preview-card { padding: 14px 14px 16px; }
         .thumbnail-wrap { justify-content: flex-start; }
         .thumbnail-wrap .shiny-image-output,
         .thumbnail-wrap img,
-        .thumbnail-placeholder { width: 100% !important; height: auto !important; aspect-ratio: 1.5; }
+        .thumbnail-placeholder,
+        .thumbnail-preview-image { width: 100% !important; height: auto !important; aspect-ratio: 1.5; }
         .rating-buttons { gap: 8px; }
         .rating-buttons .btn { height: 52px; font-size: 21px; }
         .dimension-row { grid-template-columns: 1fr; }
@@ -4002,11 +6467,42 @@ ui <- fluidPage(
         const ratingBottom = ratingPanel.getBoundingClientRect().bottom;
         const sidebarTop = sidebar.getBoundingClientRect().top;
         const guideTop = guide.getBoundingClientRect().top;
-        const dailyTop = Math.max(22, ratingBottom - sidebarTop - dailyGoal.offsetHeight);
         const tipTop = Math.max(22, ratingBottom - guideTop - tip.offsetHeight);
-
-        dailyGoal.style.top = dailyTop + 'px';
+        if (window.getComputedStyle(dailyGoal).position === 'absolute') {
+          const dailyTop = Math.max(22, ratingBottom - sidebarTop - dailyGoal.offsetHeight);
+          dailyGoal.style.top = dailyTop + 'px';
+        }
         tip.style.top = tipTop + 'px';
+      }
+
+      function articleLabSyncSelections(groupName) {
+        if (!groupName || typeof Shiny === 'undefined' || typeof Shiny.setInputValue !== 'function') return;
+        const rows = Array.from(document.querySelectorAll('tr[data-selection-group=\"' + groupName + '\"]'));
+        const selectedIds = rows
+          .filter(function(row) {
+            const checkbox = row.querySelector('input[type=\"checkbox\"]');
+            return !!(checkbox && checkbox.checked);
+          })
+          .map(function(row) {
+            return row.getAttribute('data-candidate-id');
+          })
+          .filter(function(value) {
+            return !!value;
+          });
+        Shiny.setInputValue(groupName + '_selected_snapshot', selectedIds, { priority: 'event' });
+      }
+
+      window.articleLabSyncSelections = articleLabSyncSelections;
+
+      function setWorkflowLayout(layoutName) {
+        const appShell = document.querySelector('.app-shell');
+        const main = document.querySelector('.main');
+        const guide = document.querySelector('.guide');
+        const wideSections = ['api_scoring', 'subtitle_generation', 'thumbnails'];
+        const useWideLayout = wideSections.indexOf(layoutName) >= 0;
+        if (appShell) appShell.classList.toggle('workflow-wide-layout', useWideLayout);
+        if (main) main.classList.toggle('workflow-wide-main', useWideLayout);
+        if (guide) guide.classList.toggle('guide-hidden', useWideLayout);
       }
 
       window.addEventListener('resize', function() {
@@ -4149,9 +6645,11 @@ ui <- fluidPage(
       }
       if (window.Shiny && Shiny.addCustomMessageHandler) {
         Shiny.addCustomMessageHandler('clearRatingFocus', handleClearRatingFocus);
+        Shiny.addCustomMessageHandler('setWorkflowLayout', setWorkflowLayout);
       } else {
         document.addEventListener('shiny:connected', function() {
           Shiny.addCustomMessageHandler('clearRatingFocus', handleClearRatingFocus);
+          Shiny.addCustomMessageHandler('setWorkflowLayout', setWorkflowLayout);
         }, { once: true });
       }
     ")))
@@ -4182,10 +6680,6 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   con <- connect_db()
   onStop(function() dbDisconnect(con))
-  ensure_rating_schema(con)
-  ensure_article_lab_schema(con)
-
-  if (is_dimension_mode) ensure_dimension_pass_queues(con, target_n = default_target_n)
   rating_session_id <- if (is_dimension_mode) NULL else resume_or_create_session(con, target_n = default_target_n)
   active_section <- reactiveVal("home")
   active_dimension <- reactiveVal(if (is_dimension_mode) first_incomplete_dimension(con) else NA_character_)
@@ -4197,24 +6691,23 @@ server <- function(input, output, session) {
     draft_meta = NULL,
     is_generating = FALSE,
     is_scoring = FALSE,
+    is_generating_subtitles = FALSE,
+    is_generating_thumbnails = FALSE,
     notice = NULL
   )
-  article_lab_active_tab <- reactiveVal("generate")
   article_lab_refresh <- reactiveVal(0L)
 
   observeEvent(input$sidebar_nav, {
-    if (is.character(input$sidebar_nav) && input$sidebar_nav %in% c("home", "article_lab")) {
+    valid_sections <- c("home", article_lab_workflow_sections, "settings")
+    if (is.character(input$sidebar_nav) && input$sidebar_nav %in% valid_sections) {
       active_section(input$sidebar_nav)
       if (identical(input$sidebar_nav, "home")) refresh_current()
     }
   }, ignoreInit = TRUE)
 
-  observeEvent(input$article_lab_tab, {
-    tab_value <- clean_text(input$article_lab_tab)
-    if (length(tab_value) > 0 && !is.na(tab_value[[1]]) && tab_value[[1]] %in% c("generate", "api_score")) {
-      article_lab_active_tab(tab_value[[1]])
-    }
-  }, ignoreInit = TRUE)
+  observe({
+    session$sendCustomMessage("setWorkflowLayout", active_section())
+  })
 
   refresh_current <- function() {
     item <- if (is_dimension_mode) {
@@ -4270,33 +6763,54 @@ server <- function(input, output, session) {
 
   output$sidebar_nav <- renderUI({
     current_section <- active_section()
-    nav_button <- function(section, icon, label, enabled = TRUE) {
+    nav_button <- function(section, icon, label, subtitle, enabled = TRUE) {
       tags$button(
         type = "button",
         class = paste("nav-item", if (identical(current_section, section)) "active" else ""),
         onclick = if (enabled) sprintf("Shiny.setInputValue('sidebar_nav', '%s', {priority: 'event'})", section) else NULL,
         disabled = if (!enabled) "disabled" else NULL,
-        span(icon),
-        span(label)
+        span(class = "nav-icon", icon),
+        div(
+          class = "nav-copy",
+          div(class = "nav-title", label),
+          div(class = "nav-subtitle", subtitle)
+        )
       )
     }
 
     tagList(
-      nav_button("home", "\u2302", "Home"),
-      tags$button(type = "button", class = "nav-item", disabled = "disabled", span("\u25a4"), span("Queue")),
-      tags$button(type = "button", class = "nav-item", disabled = "disabled", span("\u21ba"), span("History")),
-      tags$button(type = "button", class = "nav-item", disabled = "disabled", span("\u2699"), span("Settings")),
-      nav_button("article_lab", "\u270e", "Article Lab")
+      div(
+        class = "sidebar-nav-group",
+        nav_button("home", "\u2302", "Home", "Current rating workflow")
+      ),
+      div(
+        class = "sidebar-nav-group",
+        div(class = "sidebar-nav-label", "Article Lab"),
+        nav_button("generate", "\u21bb", "Generate", "Generate & triage titles"),
+        nav_button("api_scoring", "\u2699", "API Scoring", "Score with API & approve"),
+        nav_button("subtitle_generation", "\u270d", "Subtitle Generation", "Generate subtitles"),
+        nav_button("thumbnails", "\u25a7", "Thumbnails", "Generate thumbnails"),
+        nav_button("outline", "\u2263", "Outline", "Create article outline"),
+        nav_button("full_text", "\u270e", "Full Text", "Write full article"),
+        nav_button("review_publish", "\u2611", "Review & Publish", "Review and publish")
+      ),
+      div(
+        class = "sidebar-nav-group",
+        nav_button("settings", "\u2699", "Settings", "App settings")
+      )
     )
   })
 
   output$sidebar_status_card <- renderUI({
-    if (identical(active_section(), "article_lab")) {
+    if (article_lab_is_workflow_section(active_section()) || identical(active_section(), "settings")) {
       return(div(
         class = "daily-goal static-card",
-        strong("Article Lab"),
-        p("Generate, queue, score, and approve titles."),
-        p(class = "shortcut-copy", "This pass keeps Article Lab title approvals out of the Home rating flow.")
+        div(
+          class = "article-lab-helper",
+          strong("Article Lab helper"),
+          p("Follow each step in order."),
+          p(class = "shortcut-copy", "Manually approve at key stages.")
+        )
       ))
     }
 
@@ -4310,18 +6824,9 @@ server <- function(input, output, session) {
   })
 
   output$main_panel <- renderUI({
-    if (identical(active_section(), "article_lab")) {
-      active_tab <- article_lab_active_tab()
-      tab_button <- function(tab_id, label, enabled = TRUE) {
-        tags$button(
-          type = "button",
-          class = paste("section-tab", if (identical(active_tab, tab_id)) "active" else "", if (!enabled) "disabled" else ""),
-          onclick = if (enabled) sprintf("Shiny.setInputValue('article_lab_tab', '%s', {priority: 'event'})", tab_id) else NULL,
-          disabled = if (!enabled) "disabled" else NULL,
-          label
-        )
-      }
-
+    current_section <- active_section()
+    if (article_lab_is_workflow_section(current_section) || identical(current_section, "settings")) {
+      page_meta <- article_lab_nav_meta(current_section)
       generate_panel <- tagList(
         div(
           class = "lab-card",
@@ -4367,6 +6872,21 @@ server <- function(input, output, session) {
             actionButton("article_lab_save", "Save batch", class = "lab-secondary"),
             actionButton("article_lab_clear", "Clear draft", class = "lab-secondary")
           ),
+          div(
+            class = "lab-field",
+            textAreaInput(
+              "article_lab_manual_titles",
+              "Add title ideas manually",
+              value = "",
+              width = "100%",
+              height = "120px",
+              placeholder = "Enter one title idea per line"
+            )
+          ),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_add_manual_titles", "Add manual titles", class = "lab-secondary")
+          ),
           uiOutput("article_lab_notice")
         ),
         div(
@@ -4377,7 +6897,7 @@ server <- function(input, output, session) {
             checkboxInput("article_lab_generate_select_all", "Select all", value = FALSE),
             checkboxInput("article_lab_show_disqualified", "Show disqualified titles", value = FALSE),
             actionButton("article_lab_save_triage", "Save triage changes", class = "lab-secondary"),
-            actionButton("article_lab_move_to_api_queue", "Move selected to API queue", class = "lab-primary")
+            actionButton("article_lab_move_to_api_queue", "Move selected to API queue", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_generate');")
           ),
           uiOutput("article_lab_latest_titles")
         )
@@ -4386,34 +6906,132 @@ server <- function(input, output, session) {
       api_score_panel <- tagList(
         div(
           class = "lab-card",
-          h2("API scoring controls"),
-          div(class = "page-subtitle", "Score only titles in the API queue, then manually approve which scored titles should move to subtitle generation."),
+          h2("Controls"),
           div(class = "lab-grid", uiOutput("article_lab_batch_selector"), div(class = "lab-field", textInput("article_lab_score_model", "Model", value = article_lab_default_score_model, width = "100%")), div(class = "lab-field", textInput("article_lab_score_prompt_version", "Prompt version", value = article_lab_default_score_prompt_version, width = "100%")), div(class = "lab-field", textInput("article_lab_score_scope", "Scope", value = article_lab_default_score_scope, width = "100%"))),
           div(
             class = "lab-actions",
             uiOutput("article_lab_score_button"),
-            actionButton("article_lab_approve_for_subtitle", "Approve selected for subtitle generation", class = "lab-secondary")
+            actionButton("article_lab_refresh_scores", "Refresh", class = "lab-secondary")
           ),
+          div(class = "lab-status-copy", "Only titles in the API queue are scored."),
           uiOutput("article_lab_notice")
         ),
+        uiOutput("article_lab_score_sections")
+      )
+
+      subtitle_generation_panel <- tagList(
         div(
           class = "lab-card",
-          h3("API queue and scored titles"),
-          uiOutput("article_lab_score_table")
+          h2("Controls"),
+          div(
+            class = "lab-field",
+            textAreaInput(
+              "article_lab_subtitle_prompt",
+              "Prompt",
+              value = article_lab_default_subtitle_prompt,
+              width = "100%",
+              height = "190px"
+            )
+          ),
+          div(
+            class = "lab-grid",
+            uiOutput("article_lab_batch_selector"),
+            div(class = "lab-field", textInput("article_lab_subtitle_model", "Model", value = article_lab_default_subtitle_model, width = "100%")),
+            div(class = "lab-field", numericInput("article_lab_subtitle_variants_per_title", "Subtitle candidates per title", value = 4L, min = 1L, max = 8L, width = "100%"))
+          ),
+          div(
+            class = "lab-actions",
+            uiOutput("article_lab_subtitle_generate_button"),
+            actionButton("article_lab_refresh_subtitles", "Refresh", class = "lab-secondary")
+          ),
+          tags$hr(class = "lab-divider"),
+          div(
+            class = "lab-grid",
+            div(class = "lab-field", selectizeInput("article_lab_manual_subtitle_candidate_id", "Add manual subtitle for title", choices = character(), selected = NULL, width = "100%")),
+            div(
+              class = "lab-field",
+              textAreaInput(
+                "article_lab_manual_subtitle_text",
+                "Manual subtitle idea(s)",
+                value = "",
+                width = "100%",
+                height = "110px",
+                placeholder = "Enter one subtitle idea per line"
+              )
+            )
+          ),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_add_manual_subtitles", "Add manual subtitle idea(s)", class = "lab-secondary")
+          ),
+          div(class = "lab-status-copy", "Generate subtitle variants for approved titles, then approve or reject candidates manually."),
+          uiOutput("article_lab_notice")
+        ),
+        uiOutput("article_lab_subtitle_sections")
+      )
+
+      thumbnail_panel <- tagList(
+        div(
+          class = "lab-card",
+          h2("Controls"),
+          div(
+            class = "lab-field",
+            textAreaInput(
+              "article_lab_thumbnail_prompt",
+              "Prompt",
+              value = article_lab_default_thumbnail_prompt,
+              width = "100%",
+              height = "170px"
+            )
+          ),
+          div(
+            class = "lab-grid",
+            uiOutput("article_lab_batch_selector"),
+            div(class = "lab-field", textInput("article_lab_thumbnail_model", "Model", value = article_lab_default_thumbnail_model, width = "100%")),
+            div(class = "lab-field", numericInput("article_lab_thumbnail_variants_per_package", "Thumbnail candidates per package", value = article_lab_default_thumbnail_variants, min = 1L, max = 4L, width = "100%"))
+          ),
+          div(
+            class = "lab-actions",
+            uiOutput("article_lab_thumbnail_generate_button"),
+            actionButton("article_lab_refresh_thumbnails", "Refresh", class = "lab-secondary")
+          ),
+          div(class = "lab-status-copy", "Generate thumbnail candidates for approved title/subtitle packages, then approve one preview card per package."),
+          uiOutput("article_lab_notice")
         )
+        ,
+        uiOutput("article_lab_thumbnail_sections")
+      )
+
+      placeholder_panel <- function(copy) {
+        div(
+          class = "lab-card step-placeholder",
+          p(copy),
+          p(class = "shortcut-copy", "This step is present in the workflow navigation, but its deeper implementation is intentionally left untouched in this pass.")
+        )
+      }
+
+      page_body <- switch(
+        current_section,
+        generate = generate_panel,
+        api_scoring = api_score_panel,
+        subtitle_generation = subtitle_generation_panel,
+        thumbnails = thumbnail_panel,
+        outline = article_lab_section_card(
+          "Ready for Outline",
+          "Approved title/subtitle/thumbnail packages are available here for the next drafting step.",
+          article_lab_ready_for_outline_table_ui(article_lab_ready_for_outline_rows()),
+          count = nrow(article_lab_ready_for_outline_rows())
+        ),
+        full_text = placeholder_panel("Full article drafting workflow routing is now exposed here."),
+        review_publish = placeholder_panel("Final review and publish workflow routing is now exposed here."),
+        settings = placeholder_panel("Settings remain available from the sidebar."),
+        generate_panel
       )
 
       return(tagList(
-        h1("Article Lab"),
-        div(class = "page-subtitle", "Generate, triage, score, and manually approve title candidates."),
-        div(
-          class = "section-tabs",
-          tab_button("generate", "Generate"),
-          tab_button("api_score", "API score"),
-          tab_button("compare", "Compare", enabled = FALSE),
-          tab_button("promote", "Promote", enabled = FALSE)
-        ),
-        if (identical(active_tab, "api_score")) api_score_panel else generate_panel
+        h1(page_meta$title %||% page_meta$nav_title),
+        div(class = "page-subtitle", page_meta$subtitle %||% page_meta$nav_subtitle),
+        page_body
       ))
     }
 
@@ -4598,7 +7216,7 @@ server <- function(input, output, session) {
       batches$batch_id,
       sprintf("%s · %s", batches$batch_id, batches$created_at)
     )
-    choices <- c("All titles" = article_lab_all_batches_value, batch_choices)
+    choices <- c("All batches" = article_lab_all_batches_value, batch_choices)
     selected <- isolate(input$article_lab_selected_batch)
     valid_values <- c(article_lab_all_batches_value, batches$batch_id)
     if (is.null(selected) || !nzchar(selected) || !(selected %in% valid_values)) {
@@ -4615,11 +7233,12 @@ server <- function(input, output, session) {
     batch$batch_id[[1]]
   })
 
-  article_lab_saved_candidates <- reactive({
+  article_lab_selected_batch_candidates <- reactive({
     article_lab_refresh()
     batch_id <- article_lab_selected_batch_id()
     if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
-    load_article_lab_candidates_for_batch(con, batch_id)
+    rows <- load_article_lab_candidates_for_batch(con, batch_id)
+    article_lab_normalize_candidate_rows(rows)
   })
 
   article_lab_generate_candidates <- reactive({
@@ -4651,8 +7270,107 @@ server <- function(input, output, session) {
       scope = input$article_lab_score_scope %||% article_lab_default_score_scope
     )
     rows <- article_lab_normalize_candidate_rows(rows)
-    rows <- rows[rows$normalized_status %in% c("ready_for_api_scoring", "api_pending", "api_scored", "approved_for_subtitle"), , drop = FALSE]
+    rows <- rows[rows$normalized_status %in% c("ready_for_api_scoring", "api_pending", "api_scored"), , drop = FALSE]
     rows[order(rows$created_at, rows$candidate_id, decreasing = TRUE), , drop = FALSE]
+  })
+
+  article_lab_queue_rows <- reactive({
+    rows <- article_lab_scoring_rows()
+    rows[rows$normalized_status %in% c("ready_for_api_scoring", "api_pending"), , drop = FALSE]
+  })
+
+  article_lab_scored_rows <- reactive({
+    rows <- article_lab_scoring_rows()
+    rows <- rows[rows$normalized_status == "api_scored", , drop = FALSE]
+    if (nrow(rows) == 0) return(rows)
+    combined_scores <- suppressWarnings(as.numeric(rows$combined_title_score))
+    combined_scores[is.na(combined_scores)] <- -Inf
+    rows[order(combined_scores, rows$created_at, rows$candidate_id, decreasing = TRUE, na.last = TRUE), , drop = FALSE]
+  })
+
+  article_lab_subtitle_target_rows <- reactive({
+    article_lab_refresh()
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+    rows <- load_article_lab_subtitle_targets(con, batch_id)
+    rows <- article_lab_normalize_candidate_rows(rows)
+    rows <- rows[
+      rows$normalized_status == "approved_for_subtitle" &
+        suppressWarnings(as.integer(rows$generated_subtitle_n)) <= 0 &
+        suppressWarnings(as.integer(rows$approved_subtitle_n)) <= 0,
+      ,
+      drop = FALSE
+    ]
+    rows[order(rows$created_at, rows$candidate_id, decreasing = TRUE), , drop = FALSE]
+  })
+
+  article_lab_pending_subtitle_rows <- reactive({
+    article_lab_refresh()
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+    rows <- load_article_lab_subtitle_rows(con, batch_id)
+    if (nrow(rows) == 0) return(rows)
+    rows <- article_lab_normalize_candidate_rows(
+      within(rows, {
+        status <- parent_status
+      })
+    )
+    rows <- rows[
+      rows$subtitle_status == "generated" &
+        rows$normalized_status %in% c("approved_for_subtitle", "ready_for_thumbnail"),
+      ,
+      drop = FALSE
+    ]
+    title_sort <- tolower(ifelse(is.na(rows$title), "", rows$title))
+    created_sort <- xtfrm(rows$created_at)
+    subtitle_sort <- xtfrm(rows$subtitle_id)
+    rows[order(title_sort, -created_sort, -subtitle_sort), , drop = FALSE]
+  })
+
+  article_lab_thumbnail_package_rows <- reactive({
+    article_lab_refresh()
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+    rows <- load_article_lab_thumbnail_packages(con, batch_id)
+    if (nrow(rows) == 0) return(rows)
+    title_sort <- tolower(ifelse(is.na(rows$title), "", rows$title))
+    subtitle_sort <- tolower(ifelse(is.na(rows$subtitle), "", rows$subtitle))
+    rows[order(title_sort, subtitle_sort, decreasing = FALSE), , drop = FALSE]
+  })
+
+  article_lab_pending_thumbnail_rows <- reactive({
+    article_lab_refresh()
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+    rows <- load_article_lab_thumbnail_rows(con, batch_id)
+    if (nrow(rows) == 0) return(rows)
+    rows <- article_lab_normalize_candidate_rows(
+      within(rows, {
+        status <- parent_status
+      })
+    )
+    title_sort <- tolower(ifelse(is.na(rows$title), "", rows$title))
+    subtitle_sort <- tolower(ifelse(is.na(rows$subtitle), "", rows$subtitle))
+    created_sort <- xtfrm(rows$created_at)
+    rows[order(title_sort, subtitle_sort, -created_sort), , drop = FALSE]
+  })
+
+  article_lab_ready_for_thumbnail_rows <- reactive({
+    article_lab_refresh()
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+    rows <- load_article_lab_ready_for_thumbnail_rows(con, batch_id)
+    if (nrow(rows) == 0) return(rows)
+    rows[order(rows$batch_id, rows$candidate_id, decreasing = TRUE), , drop = FALSE]
+  })
+
+  article_lab_ready_for_outline_rows <- reactive({
+    article_lab_refresh()
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+    rows <- load_article_lab_ready_for_outline_rows(con, batch_id)
+    if (nrow(rows) == 0) return(rows)
+    rows[order(rows$created_at, rows$thumbnail_id, decreasing = TRUE), , drop = FALSE]
   })
 
   collect_generate_triage_updates <- function(rows) {
@@ -4672,20 +7390,58 @@ server <- function(input, output, session) {
     )
   }
 
-  collect_score_selected_ids <- function(rows) {
-    if (nrow(rows) == 0) return(character())
-    selected <- vapply(seq_len(nrow(rows)), function(i) {
+  collect_candidate_note_updates <- function(rows, prefix) {
+    if (nrow(rows) == 0) return(list())
+    lapply(seq_len(nrow(rows)), function(i) {
       candidate_id <- rows$candidate_id[[i]]
-      isTRUE(input[[article_lab_row_input_id("article_lab_score_select", candidate_id)]])
-    }, logical(1))
-    rows$candidate_id[selected]
+      list(
+        candidate_id = candidate_id,
+        notes = input[[article_lab_row_input_id(prefix, candidate_id)]] %||% rows$notes[[i]]
+      )
+    })
   }
 
-  article_lab_apply_select_all <- function(rows, value) {
-    for (cid in rows$candidate_id) {
+  collect_subtitle_note_updates <- function(rows, prefix) {
+    if (nrow(rows) == 0) return(list())
+    lapply(seq_len(nrow(rows)), function(i) {
+      subtitle_id <- rows$subtitle_id[[i]]
+      list(
+        subtitle_id = subtitle_id,
+        notes = input[[article_lab_row_input_id(prefix, subtitle_id)]] %||% rows$notes[[i]]
+      )
+    })
+  }
+
+  collect_thumbnail_note_updates <- function(rows, prefix) {
+    if (nrow(rows) == 0) return(list())
+    lapply(seq_len(nrow(rows)), function(i) {
+      thumbnail_id <- rows$thumbnail_id[[i]]
+      list(
+        thumbnail_id = thumbnail_id,
+        notes = input[[article_lab_row_input_id(prefix, thumbnail_id)]] %||% rows$notes[[i]]
+      )
+    })
+  }
+
+  collect_selected_ids <- function(rows, prefix, snapshot_ids = NULL, key_col = "candidate_id") {
+    if (nrow(rows) == 0) return(character())
+    snapshot_ids <- clean_text(snapshot_ids)
+    snapshot_ids <- unique(snapshot_ids[!is.na(snapshot_ids)])
+    if (length(snapshot_ids) > 0) {
+      return(rows[[key_col]][rows[[key_col]] %in% snapshot_ids])
+    }
+    selected <- vapply(seq_len(nrow(rows)), function(i) {
+      row_id <- rows[[key_col]][[i]]
+      isTRUE(input[[article_lab_row_input_id(prefix, row_id)]])
+    }, logical(1))
+    rows[[key_col]][selected]
+  }
+
+  article_lab_apply_select_all <- function(rows, prefix, value, key_col = "candidate_id") {
+    for (cid in rows[[key_col]]) {
       updateCheckboxInput(
         session,
-        inputId = article_lab_row_input_id("article_lab_generate_select", cid),
+        inputId = article_lab_row_input_id(prefix, cid),
         value = value
       )
     }
@@ -4699,7 +7455,89 @@ server <- function(input, output, session) {
   observeEvent(input$article_lab_generate_select_all, {
     rows <- article_lab_generate_candidates()
     if (nrow(rows) == 0) return()
-    article_lab_apply_select_all(rows, isTRUE(input$article_lab_generate_select_all))
+    article_lab_apply_select_all(rows, "article_lab_generate_select", isTRUE(input$article_lab_generate_select_all))
+  }, ignoreInit = TRUE)
+
+  observe({
+    article_lab_queue_rows()
+    updateCheckboxInput(session, inputId = "article_lab_queue_select_all", value = FALSE)
+  })
+
+  observeEvent(input$article_lab_queue_select_all, {
+    rows <- article_lab_queue_rows()
+    if (nrow(rows) == 0) return()
+    article_lab_apply_select_all(rows, "article_lab_queue_select", isTRUE(input$article_lab_queue_select_all))
+  }, ignoreInit = TRUE)
+
+  observe({
+    article_lab_scored_rows()
+    updateCheckboxInput(session, inputId = "article_lab_scored_select_all", value = FALSE)
+  })
+
+  observeEvent(input$article_lab_scored_select_all, {
+    rows <- article_lab_scored_rows()
+    if (nrow(rows) == 0) return()
+    article_lab_apply_select_all(rows, "article_lab_scored_select", isTRUE(input$article_lab_scored_select_all))
+  }, ignoreInit = TRUE)
+
+  observe({
+    article_lab_subtitle_target_rows()
+    updateCheckboxInput(session, inputId = "article_lab_subtitle_title_select_all", value = FALSE)
+  })
+
+  observeEvent(input$article_lab_subtitle_title_select_all, {
+    rows <- article_lab_subtitle_target_rows()
+    if (nrow(rows) == 0) return()
+    article_lab_apply_select_all(rows, "article_lab_subtitle_title_select", isTRUE(input$article_lab_subtitle_title_select_all))
+  }, ignoreInit = TRUE)
+
+  observe({
+    article_lab_pending_subtitle_rows()
+    updateCheckboxInput(session, inputId = "article_lab_subtitle_candidate_select_all", value = FALSE)
+  })
+
+  observeEvent(input$article_lab_subtitle_candidate_select_all, {
+    rows <- article_lab_pending_subtitle_rows()
+    if (nrow(rows) == 0) return()
+    article_lab_apply_select_all(rows, "article_lab_subtitle_candidate_select", isTRUE(input$article_lab_subtitle_candidate_select_all), key_col = "subtitle_id")
+  }, ignoreInit = TRUE)
+
+  observeEvent(article_lab_selected_batch_id(), {
+    choices <- article_lab_manual_subtitle_choice_map(
+      article_lab_subtitle_target_rows(),
+      article_lab_pending_subtitle_rows()
+    )
+    current_value <- article_lab_input_string(input$article_lab_manual_subtitle_candidate_id)
+    selected_value <- if (length(choices) > 0L && length(current_value) == 1L && !is.na(current_value) && current_value %in% unname(unlist(choices, use.names = FALSE))) current_value else NULL
+    updateSelectizeInput(
+      session,
+      inputId = "article_lab_manual_subtitle_candidate_id",
+      choices = choices,
+      selected = selected_value,
+      server = TRUE
+    )
+  }, ignoreInit = TRUE)
+
+  observe({
+    article_lab_thumbnail_package_rows()
+    updateCheckboxInput(session, inputId = "article_lab_thumbnail_package_select_all", value = FALSE)
+  })
+
+  observeEvent(input$article_lab_thumbnail_package_select_all, {
+    rows <- article_lab_thumbnail_package_rows()
+    if (nrow(rows) == 0) return()
+    article_lab_apply_select_all(rows, "article_lab_thumbnail_package_select", isTRUE(input$article_lab_thumbnail_package_select_all), key_col = "subtitle_id")
+  }, ignoreInit = TRUE)
+
+  observe({
+    article_lab_pending_thumbnail_rows()
+    updateCheckboxInput(session, inputId = "article_lab_thumbnail_candidate_select_all", value = FALSE)
+  })
+
+  observeEvent(input$article_lab_thumbnail_candidate_select_all, {
+    rows <- article_lab_pending_thumbnail_rows()
+    if (nrow(rows) == 0) return()
+    article_lab_apply_select_all(rows, "article_lab_thumbnail_candidate_select", isTRUE(input$article_lab_thumbnail_candidate_select_all), key_col = "thumbnail_id")
   }, ignoreInit = TRUE)
 
   output$article_lab_notice <- renderUI({
@@ -4729,7 +7567,7 @@ server <- function(input, output, session) {
       batches$batch_id,
       sprintf("%s · %s", batches$batch_id, batches$created_at)
     )
-    choices <- c("All titles" = article_lab_all_batches_value, batch_choices)
+    choices <- c("All batches" = article_lab_all_batches_value, batch_choices)
     div(
       class = "lab-field",
       selectInput(
@@ -4753,7 +7591,37 @@ server <- function(input, output, session) {
         "Scoring..."
       )
     } else {
-      actionButton("article_lab_score_titles", "Score API queue", class = "lab-primary")
+      actionButton("article_lab_score_titles", "Score selected API queue", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_queue');")
+    }
+  })
+
+  output$article_lab_subtitle_generate_button <- renderUI({
+    if (isTRUE(article_lab_state$is_generating_subtitles)) {
+      tags$button(
+        id = "article_lab_generate_subtitles",
+        type = "button",
+        class = "btn btn-default action-button lab-primary loading",
+        disabled = "disabled",
+        span(class = "button-spinner"),
+        "Generating..."
+      )
+    } else {
+      actionButton("article_lab_generate_subtitles", "Generate selected subtitle candidates", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_subtitle_titles');")
+    }
+  })
+
+  output$article_lab_thumbnail_generate_button <- renderUI({
+    if (isTRUE(article_lab_state$is_generating_thumbnails)) {
+      tags$button(
+        id = "article_lab_generate_thumbnails",
+        type = "button",
+        class = "btn btn-default action-button lab-primary loading",
+        disabled = "disabled",
+        span(class = "button-spinner"),
+        "Generating..."
+      )
+    } else {
+      actionButton("article_lab_generate_thumbnails", "Generate selected thumbnail candidates", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_packages');")
     }
   })
 
@@ -4780,8 +7648,117 @@ server <- function(input, output, session) {
     article_lab_generate_table_ui(rows)
   })
 
-  output$article_lab_score_table <- renderUI({
-    article_lab_score_table_ui(article_lab_scoring_rows())
+  output$article_lab_score_sections <- renderUI({
+    queue_rows <- article_lab_queue_rows()
+    scored_rows <- article_lab_scored_rows()
+
+    tagList(
+      article_lab_section_card(
+        "1. API queue (waiting to be scored)",
+        "These titles have not been scored yet.",
+        tagList(
+          div(
+            class = "lab-actions",
+            checkboxInput("article_lab_queue_select_all", "Select all", value = FALSE)
+          ),
+          article_lab_score_queue_table_ui(queue_rows)
+        ),
+        count = nrow(queue_rows)
+      ),
+      article_lab_section_card(
+        "2. Scored titles awaiting approval",
+        "These titles have been scored by the API. Select the ones you want to approve for subtitle generation.",
+        tagList(
+          div(
+            class = "lab-actions",
+            checkboxInput("article_lab_scored_select_all", "Select all", value = FALSE)
+          ),
+          article_lab_score_table_ui(scored_rows),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_approve_for_subtitle", "Approve selected for subtitle generation", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_scored');")
+          ),
+          div(class = "lab-status-copy", "Approved titles will move to Subtitle Generation.")
+        ),
+        count = nrow(scored_rows)
+      )
+    )
+  })
+
+  output$article_lab_subtitle_sections <- renderUI({
+    target_rows <- article_lab_subtitle_target_rows()
+    subtitle_rows <- article_lab_pending_subtitle_rows()
+
+    tagList(
+      article_lab_section_card(
+        "1. Titles awaiting subtitle generation",
+        "These approved titles do not have active subtitle candidates yet.",
+        tagList(
+          div(
+            class = "lab-actions",
+            checkboxInput("article_lab_subtitle_title_select_all", "Select all", value = FALSE)
+          ),
+          article_lab_subtitle_target_table_ui(target_rows)
+        ),
+        count = nrow(target_rows)
+      ),
+      article_lab_section_card(
+        "2. Subtitle candidates awaiting approval",
+        "Select subtitle candidates to approve for Thumbnails or reject without deleting them.",
+        tagList(
+          div(
+            class = "lab-actions",
+            checkboxInput("article_lab_subtitle_candidate_select_all", "Select all", value = FALSE)
+          ),
+          article_lab_subtitle_candidate_table_ui(subtitle_rows),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_approve_subtitles", "Approve selected subtitle(s)", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_subtitle_candidates');"),
+            actionButton("article_lab_reject_subtitles", "Reject selected", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_subtitle_candidates');")
+          ),
+          div(class = "lab-status-copy", "Approved subtitle candidates stay available as variants for the Thumbnails step.")
+        ),
+        count = nrow(subtitle_rows)
+      )
+    )
+  })
+
+  output$article_lab_thumbnail_sections <- renderUI({
+    package_rows <- article_lab_thumbnail_package_rows()
+    thumbnail_rows <- article_lab_pending_thumbnail_rows()
+
+    tagList(
+      article_lab_section_card(
+        "1. Title/subtitle packages awaiting thumbnail generation",
+        "These approved title/subtitle packages do not have active thumbnail candidates yet.",
+        tagList(
+          div(
+            class = "lab-actions",
+            checkboxInput("article_lab_thumbnail_package_select_all", "Select all", value = FALSE)
+          ),
+          article_lab_thumbnail_package_table_ui(package_rows)
+        ),
+        count = nrow(package_rows)
+      ),
+      article_lab_section_card(
+        "2. Thumbnail preview cards awaiting approval",
+        "Select one preview card per title/subtitle package to approve for Outline, or reject candidates without deleting them.",
+        tagList(
+          div(
+            class = "lab-actions",
+            checkboxInput("article_lab_thumbnail_candidate_select_all", "Select all", value = FALSE)
+          ),
+          article_lab_thumbnail_candidate_grid_ui(thumbnail_rows),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_approve_thumbnails", "Approve selected thumbnail", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_candidates');"),
+            actionButton("article_lab_reject_thumbnails", "Reject selected", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_candidates');")
+          ),
+          div(class = "lab-status-copy", "Only one approved thumbnail is allowed per title/subtitle package. Approved packages move to Outline.")
+        ),
+        count = nrow(thumbnail_rows)
+      )
+    )
   })
 
   observeEvent(input$article_lab_generate, {
@@ -4840,6 +7817,71 @@ server <- function(input, output, session) {
     }
   }, ignoreInit = TRUE)
 
+  observeEvent(input$article_lab_add_manual_titles, {
+    manual_titles <- article_lab_parse_manual_titles(input$article_lab_manual_titles)
+    if (length(manual_titles) == 0) {
+      article_lab_state$notice <- "Enter at least one manual title idea, with one title per line."
+      return(invisible(NULL))
+    }
+
+    existing_titles <- if (!is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
+      clean_text(article_lab_state$draft$title)
+    } else {
+      character()
+    }
+    new_manual_titles <- setdiff(manual_titles, existing_titles)
+    if (length(new_manual_titles) == 0) {
+      article_lab_state$notice <- "Those manual titles are already in the current draft."
+      updateTextAreaInput(session, "article_lab_manual_titles", value = "")
+      return(invisible(NULL))
+    }
+    combined_titles <- unique(c(existing_titles, manual_titles))
+    normalized_titles <- article_lab_normalize_titles(combined_titles)
+    if (length(normalized_titles) == 0) {
+      article_lab_state$notice <- "No usable manual titles were provided."
+      return(invisible(NULL))
+    }
+
+    article_lab_state$draft <- data.frame(
+      row_number = seq_along(normalized_titles),
+      title = normalized_titles,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+    article_lab_state$draft_created_at <- article_lab_state$draft_created_at %||% now_utc()
+
+    prior_mode <- article_lab_state$draft_meta$mode %||% NA_character_
+    next_mode <- if (is.na(prior_mode) || !nzchar(prior_mode)) {
+      "manual"
+    } else if (identical(prior_mode, "manual")) {
+      "manual"
+    } else {
+      "mixed"
+    }
+    article_lab_state$draft_meta <- modifyList(
+      article_lab_state$draft_meta %||% list(),
+      list(
+        mode = next_mode,
+        raw_json = article_lab_state$draft_meta$raw_json %||% NA_character_
+      )
+    )
+
+    added_n <- sum(normalized_titles %in% new_manual_titles)
+    over_limit_n <- sum(article_lab_title_length(new_manual_titles) > article_lab_title_max_chars, na.rm = TRUE)
+    length_copy <- if (over_limit_n > 0) {
+      sprintf(" %s title%s exceed %s characters and were kept with their length flag.", over_limit_n, ifelse(over_limit_n == 1, "", "s"), article_lab_title_max_chars)
+    } else {
+      ""
+    }
+    article_lab_state$notice <- sprintf(
+      "Added %s manual title idea%s to the current draft.%s Save the batch to persist it to SQLite.",
+      added_n,
+      ifelse(added_n == 1, "", "s"),
+      length_copy
+    )
+    updateTextAreaInput(session, "article_lab_manual_titles", value = "")
+  }, ignoreInit = TRUE)
+
   observeEvent(input$article_lab_save, {
     draft <- article_lab_state$draft
     draft_meta <- article_lab_state$draft_meta
@@ -4857,17 +7899,27 @@ server <- function(input, output, session) {
       model = input$article_lab_model,
       titles = draft$title,
       raw_json = if (is.null(draft_meta$raw_json)) NA_character_ else draft_meta$raw_json,
-      generation_mode = draft_meta$mode %||% "generated"
+      generation_mode = draft_meta$mode %||% "generated",
+      enforce_max_chars = !((draft_meta$mode %||% "") %in% c("manual", "mixed"))
     )
     article_lab_state$draft <- NULL
     article_lab_state$draft_created_at <- NULL
     article_lab_state$draft_meta <- NULL
-    article_lab_state$notice <- sprintf(
-      "Saved batch %s. Candidates start as New and stay in Generate until you manually move selected titles to the API queue. Generation mode: %s. Max title length enforced: %s characters.",
-      batch_id,
-      draft_meta$mode %||% "generated",
-      article_lab_title_max_chars
-    )
+    saved_mode <- draft_meta$mode %||% "generated"
+    article_lab_state$notice <- if (saved_mode %in% c("manual", "mixed")) {
+      sprintf(
+        "Saved batch %s. Candidates start as New and stay in Generate until you manually move selected titles to the API queue. Generation mode: %s. Overlength manual titles were preserved with their length flag.",
+        batch_id,
+        saved_mode
+      )
+    } else {
+      sprintf(
+        "Saved batch %s. Candidates start as New and stay in Generate until you manually move selected titles to the API queue. Generation mode: %s. Max title length enforced: %s characters.",
+        batch_id,
+        saved_mode,
+        article_lab_title_max_chars
+      )
+    }
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 
@@ -4902,7 +7954,18 @@ server <- function(input, output, session) {
     rows <- article_lab_generate_candidates()
     payload <- collect_generate_triage_updates(rows)
     article_lab_save_generate_triage(con, payload$updates)
-    result <- article_lab_move_candidates_to_api_queue(con, payload$selected_ids)
+    snapshot_selected_ids <- collect_selected_ids(
+      rows,
+      "article_lab_generate_select",
+      snapshot_ids = input$article_lab_generate_selected_snapshot
+    )
+    selected_ids <- unique(c(payload$selected_ids, snapshot_selected_ids))
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one New title before moving it to the API queue."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_move_candidates_to_api_queue(con, selected_ids)
     article_lab_state$notice <- sprintf(
       "Moved %s selected title%s to API queue. %s selected title%s were skipped because they were disqualified or not eligible.",
       result$moved_n,
@@ -4915,7 +7978,7 @@ server <- function(input, output, session) {
       if (length(result$batch_ids) == 1 && nzchar(result$batch_ids[[1]])) {
         updateSelectInput(session, "article_lab_selected_batch", selected = result$batch_ids[[1]])
       }
-      article_lab_active_tab("api_score")
+      active_section("api_scoring")
     }
   }, ignoreInit = TRUE)
 
@@ -4930,13 +7993,28 @@ server <- function(input, output, session) {
       article_lab_state$is_scoring <- FALSE
     }, add = TRUE)
 
+    queue_rows <- article_lab_queue_rows()
+    selected_ids <- collect_selected_ids(
+      queue_rows,
+      "article_lab_queue_select",
+      snapshot_ids = input$article_lab_queue_selected_snapshot
+    )
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(queue_rows, "article_lab_queue_notes"))
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(article_lab_scored_rows(), "article_lab_scored_notes"))
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one API-queue title before scoring."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+
     result <- tryCatch(
       article_lab_score_batch(
         con,
         batch_id = batch_id,
         model = input$article_lab_score_model,
         prompt_version = input$article_lab_score_prompt_version,
-        scope = input$article_lab_score_scope
+        scope = input$article_lab_score_scope,
+        candidate_ids = selected_ids
       ),
       error = function(e) e
     )
@@ -4945,13 +8023,14 @@ server <- function(input, output, session) {
     } else {
       article_lab_state$notice <- if (result$scored_n > 0) {
         sprintf(
-          "Scored %s API-queued title%s for %s using model %s, prompt %s, scope %s.%s",
+          "Scored %s selected API-queue title%s for %s using model %s, prompt %s, scope %s.%s%s",
           result$scored_n,
           ifelse(result$scored_n == 1, "", "s"),
           result$batch_label %||% paste("batch", batch_id),
           result$model %||% article_lab_default_score_model,
           result$prompt_version %||% article_lab_default_score_prompt_version,
           result$scope %||% article_lab_default_score_scope,
+          if (result$used_existing_n > 0) sprintf(" %s used an existing saved API score.", result$used_existing_n) else "",
           if (result$failed_n > 0) sprintf(" %s failed and stayed in their previous status.", result$failed_n) else ""
         )
       } else {
@@ -4965,8 +8044,19 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_approve_for_subtitle, {
-    rows <- article_lab_scoring_rows()
-    selected_ids <- collect_score_selected_ids(rows)
+    scored_rows <- article_lab_scored_rows()
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(article_lab_queue_rows(), "article_lab_queue_notes"))
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(scored_rows, "article_lab_scored_notes"))
+    selected_ids <- collect_selected_ids(
+      scored_rows,
+      "article_lab_scored_select",
+      snapshot_ids = input$article_lab_scored_selected_snapshot
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one API-scored title before approving it for subtitle generation."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
     result <- article_lab_approve_candidates_for_subtitle(con, selected_ids)
     article_lab_state$notice <- if (result$approved_n > 0 || result$skipped_n == 0) {
       sprintf("Approved %s selected title%s for subtitle generation.", result$approved_n, ifelse(result$approved_n == 1, "", "s"))
@@ -4982,22 +8072,321 @@ server <- function(input, output, session) {
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 
+  observeEvent(input$article_lab_generate_subtitles, {
+    article_lab_state$is_generating_subtitles <- TRUE
+    on.exit({
+      article_lab_state$is_generating_subtitles <- FALSE
+    }, add = TRUE)
+
+    target_rows <- article_lab_subtitle_target_rows()
+    pending_rows <- article_lab_pending_subtitle_rows()
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(target_rows, "article_lab_subtitle_title_notes"))
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(pending_rows, "article_lab_subtitle_candidate_notes"))
+    selected_ids <- collect_selected_ids(
+      target_rows,
+      "article_lab_subtitle_title_select",
+      snapshot_ids = input$article_lab_subtitle_titles_selected_snapshot
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one approved title before generating subtitle candidates."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+
+    result <- tryCatch(
+      article_lab_generate_subtitles_for_titles(
+        con,
+        candidate_ids = selected_ids,
+        model = input$article_lab_subtitle_model,
+        prompt = input$article_lab_subtitle_prompt,
+        variants_per_title = input$article_lab_subtitle_variants_per_title
+      ),
+      error = function(e) e
+    )
+    if (inherits(result, "error")) {
+      article_lab_state$notice <- paste("Subtitle generation failed:", conditionMessage(result))
+    } else {
+      fallback_copy <- if (!is.null(result$fallback_reason) && nzchar(result$fallback_reason)) {
+        sprintf(" Stub fallback was used because: %s", result$fallback_reason)
+      } else {
+        ""
+      }
+      article_lab_state$notice <- sprintf(
+        "Generated %s subtitle candidate%s for %s selected title%s using model %s.%s %s selected title%s were skipped because they were not eligible or already had active subtitle candidates.%s",
+        result$generated_n,
+        ifelse(result$generated_n == 1, "", "s"),
+        result$title_n,
+        ifelse(result$title_n == 1, "", "s"),
+        result$model %||% article_lab_default_subtitle_model,
+        if (identical(result$mode, "stub")) " The stub helper was used." else "",
+        result$skipped_n,
+        ifelse(result$skipped_n == 1, "", "s"),
+        fallback_copy
+      )
+      article_lab_refresh(article_lab_refresh() + 1L)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_add_manual_subtitles, {
+    target_rows <- article_lab_subtitle_target_rows()
+    pending_rows <- article_lab_pending_subtitle_rows()
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(target_rows, "article_lab_subtitle_title_notes"))
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(pending_rows, "article_lab_subtitle_candidate_notes"))
+
+    candidate_id <- article_lab_input_string(input$article_lab_manual_subtitle_candidate_id)
+    subtitle_text <- input$article_lab_manual_subtitle_text %||% ""
+    proposed_subtitles <- article_lab_normalize_subtitle(unlist(strsplit(subtitle_text, "\n", fixed = TRUE)))
+    if (is.na(candidate_id) || !nzchar(candidate_id)) {
+      article_lab_state$notice <- "Choose a title before adding manual subtitle ideas."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    if (length(proposed_subtitles) == 0) {
+      article_lab_state$notice <- sprintf("Enter at least one manual subtitle idea under %s characters.", article_lab_subtitle_max_chars)
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+
+    result <- article_lab_add_manual_subtitles(con, candidate_id, proposed_subtitles)
+    if (result$added_n > 0) {
+      duplicate_copy <- if (isTRUE(result$duplicate_n > 0)) {
+        sprintf(" %s duplicate idea%s were skipped.", result$duplicate_n, ifelse(result$duplicate_n == 1, "", "s"))
+      } else {
+        ""
+      }
+      article_lab_state$notice <- sprintf(
+        "Added %s manual subtitle idea%s for \"%s\".%s",
+        result$added_n,
+        ifelse(result$added_n == 1, "", "s"),
+        result$title %||% "the selected title",
+        duplicate_copy
+      )
+      updateTextAreaInput(session, "article_lab_manual_subtitle_text", value = "")
+    } else if (isTRUE(result$duplicate_n > 0)) {
+      article_lab_state$notice <- sprintf(
+        "All entered subtitle ideas for \"%s\" already exist in this title's subtitle list.",
+        result$title %||% "the selected title"
+      )
+    } else {
+      article_lab_state$notice <- "The selected title is not currently eligible for manual subtitle ideas in this stage."
+    }
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_approve_subtitles, {
+    target_rows <- article_lab_subtitle_target_rows()
+    pending_rows <- article_lab_pending_subtitle_rows()
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(target_rows, "article_lab_subtitle_title_notes"))
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(pending_rows, "article_lab_subtitle_candidate_notes"))
+    selected_ids <- collect_selected_ids(
+      pending_rows,
+      "article_lab_subtitle_candidate_select",
+      snapshot_ids = input$article_lab_subtitle_candidates_selected_snapshot,
+      key_col = "subtitle_id"
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one subtitle candidate before approving it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_approve_subtitles(con, selected_ids)
+    article_lab_state$notice <- sprintf(
+      "Approved %s selected subtitle candidate%s. %s title package%s are now ready for Thumbnails.",
+      result$approved_n,
+      ifelse(result$approved_n == 1, "", "s"),
+      length(unique(result$candidate_ids)),
+      ifelse(length(unique(result$candidate_ids)) == 1, "", "s")
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_reject_subtitles, {
+    target_rows <- article_lab_subtitle_target_rows()
+    pending_rows <- article_lab_pending_subtitle_rows()
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(target_rows, "article_lab_subtitle_title_notes"))
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(pending_rows, "article_lab_subtitle_candidate_notes"))
+    selected_ids <- collect_selected_ids(
+      pending_rows,
+      "article_lab_subtitle_candidate_select",
+      snapshot_ids = input$article_lab_subtitle_candidates_selected_snapshot,
+      key_col = "subtitle_id"
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one subtitle candidate before rejecting it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_reject_subtitles(con, selected_ids)
+    article_lab_state$notice <- sprintf(
+      "Rejected %s selected subtitle candidate%s. No rows were deleted.",
+      result$rejected_n,
+      ifelse(result$rejected_n == 1, "", "s")
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_generate_thumbnails, {
+    article_lab_state$is_generating_thumbnails <- TRUE
+    on.exit({
+      article_lab_state$is_generating_thumbnails <- FALSE
+    }, add = TRUE)
+
+    package_rows <- article_lab_thumbnail_package_rows()
+    pending_rows <- article_lab_pending_thumbnail_rows()
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(package_rows, "article_lab_thumbnail_package_notes"))
+    article_lab_update_thumbnail_notes(con, collect_thumbnail_note_updates(pending_rows, "article_lab_thumbnail_candidate_notes"))
+    selected_ids <- collect_selected_ids(
+      package_rows,
+      "article_lab_thumbnail_package_select",
+      snapshot_ids = input$article_lab_thumbnail_packages_selected_snapshot,
+      key_col = "subtitle_id"
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one ready title/subtitle package before generating thumbnail candidates."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+
+    result <- tryCatch(
+      article_lab_generate_thumbnails_for_packages(
+        con,
+        subtitle_ids = selected_ids,
+        model = input$article_lab_thumbnail_model,
+        prompt = input$article_lab_thumbnail_prompt,
+        variants_per_package = input$article_lab_thumbnail_variants_per_package
+      ),
+      error = function(e) e
+    )
+    if (inherits(result, "error")) {
+      article_lab_state$notice <- paste("Thumbnail generation failed:", conditionMessage(result))
+    } else {
+      article_lab_state$notice <- sprintf(
+        "Generated %s thumbnail candidate%s for %s selected package%s using model %s. %s selected package%s were skipped because they were not eligible or already had active thumbnail candidates.",
+        result$generated_n,
+        ifelse(result$generated_n == 1, "", "s"),
+        result$package_n,
+        ifelse(result$package_n == 1, "", "s"),
+        result$model %||% article_lab_default_thumbnail_model,
+        result$skipped_n,
+        ifelse(result$skipped_n == 1, "", "s")
+      )
+      article_lab_refresh(article_lab_refresh() + 1L)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_approve_thumbnails, {
+    package_rows <- article_lab_thumbnail_package_rows()
+    pending_rows <- article_lab_pending_thumbnail_rows()
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(package_rows, "article_lab_thumbnail_package_notes"))
+    article_lab_update_thumbnail_notes(con, collect_thumbnail_note_updates(pending_rows, "article_lab_thumbnail_candidate_notes"))
+    selected_ids <- collect_selected_ids(
+      pending_rows,
+      "article_lab_thumbnail_candidate_select",
+      snapshot_ids = input$article_lab_thumbnail_candidates_selected_snapshot,
+      key_col = "thumbnail_id"
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one thumbnail preview card before approving it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    selected_rows <- pending_rows[pending_rows$thumbnail_id %in% selected_ids, , drop = FALSE]
+    duplicate_subtitle_ids <- names(table(selected_rows$subtitle_id)[table(selected_rows$subtitle_id) > 1L])
+    if (length(duplicate_subtitle_ids) > 0) {
+      article_lab_state$notice <- "Select only one thumbnail candidate per title/subtitle package before approving."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_approve_thumbnails(con, selected_ids)
+    if (!is.null(result$message) && nzchar(result$message)) {
+      article_lab_state$notice <- result$message
+    } else {
+      article_lab_state$notice <- sprintf(
+        "Approved %s selected thumbnail%s. %s package%s are now ready for Outline.",
+        result$approved_n,
+        ifelse(result$approved_n == 1, "", "s"),
+        length(unique(result$subtitle_ids)),
+        ifelse(length(unique(result$subtitle_ids)) == 1, "", "s")
+      )
+    }
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_reject_thumbnails, {
+    package_rows <- article_lab_thumbnail_package_rows()
+    pending_rows <- article_lab_pending_thumbnail_rows()
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(package_rows, "article_lab_thumbnail_package_notes"))
+    article_lab_update_thumbnail_notes(con, collect_thumbnail_note_updates(pending_rows, "article_lab_thumbnail_candidate_notes"))
+    selected_ids <- collect_selected_ids(
+      pending_rows,
+      "article_lab_thumbnail_candidate_select",
+      snapshot_ids = input$article_lab_thumbnail_candidates_selected_snapshot,
+      key_col = "thumbnail_id"
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one thumbnail preview card before rejecting it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_reject_thumbnails(con, selected_ids)
+    article_lab_state$notice <- sprintf(
+      "Rejected %s selected thumbnail candidate%s. No rows were deleted.",
+      result$rejected_n,
+      ifelse(result$rejected_n == 1, "", "s")
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_refresh_scores, {
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(article_lab_queue_rows(), "article_lab_queue_notes"))
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(article_lab_scored_rows(), "article_lab_scored_notes"))
+    article_lab_state$notice <- "Refreshed API Scoring and saved visible notes."
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_refresh_subtitles, {
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(article_lab_subtitle_target_rows(), "article_lab_subtitle_title_notes"))
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(article_lab_pending_subtitle_rows(), "article_lab_subtitle_candidate_notes"))
+    article_lab_state$notice <- "Refreshed Subtitle Generation and saved visible notes."
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_refresh_thumbnails, {
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(article_lab_thumbnail_package_rows(), "article_lab_thumbnail_package_notes"))
+    article_lab_update_thumbnail_notes(con, collect_thumbnail_note_updates(article_lab_pending_thumbnail_rows(), "article_lab_thumbnail_candidate_notes"))
+    article_lab_state$notice <- "Refreshed Thumbnails and saved visible notes."
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_open_docs, {
+    showModal(modalDialog(
+      title = "Article Lab workflow docs",
+      p("Source-of-truth docs for this workflow:"),
+      tags$ul(
+        tags$li("data/analysis/article_lab/2026-05-23_title_lab_scoring_and_workflow_summary.md"),
+        tags$li("data/analysis/article_lab/2026-05-23_human_score_and_api_human_combination_notes.md")
+      ),
+      easyClose = TRUE,
+      footer = modalButton("Close")
+    ))
+  }, ignoreInit = TRUE)
+
   output$guide_content <- renderUI({
-    if (identical(active_section(), "article_lab")) {
+    if (article_lab_is_workflow_section(active_section()) || identical(active_section(), "settings")) {
+      current_section <- active_section()
       overview <- article_lab_overview_stats()
       batches <- article_lab_batches()
       latest_saved_batch <- article_lab_saved_batch()
       selected_batch_id <- article_lab_selected_batch_id()
+      selected_candidates <- article_lab_selected_batch_candidates()
       selected_batch <- if (nrow(batches) > 0 && !is.na(selected_batch_id) && nzchar(selected_batch_id)) {
         batches[batches$batch_id == selected_batch_id, , drop = FALSE]
       } else {
         data.frame()
       }
-      scoring_rows <- article_lab_scoring_rows()
-      active_tab <- article_lab_active_tab()
-      current_batch_label <- if (identical(active_tab, "generate") && !is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
+      current_batch_label <- if (identical(current_section, "generate") && !is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
         sprintf("Unsaved draft with %s titles", nrow(article_lab_state$draft))
-      } else if (identical(active_tab, "generate") && !is.null(latest_saved_batch) && nrow(latest_saved_batch) > 0) {
+      } else if (identical(current_section, "generate") && !is.null(latest_saved_batch) && nrow(latest_saved_batch) > 0) {
         sprintf("Latest saved batch %s", latest_saved_batch$batch_id[[1]])
       } else if (identical(selected_batch_id, article_lab_all_batches_value)) {
         "All saved titles across batches"
@@ -5006,66 +8395,45 @@ server <- function(input, output, session) {
       } else {
         "No batch saved yet"
       }
-      current_batch_meta <- if (identical(active_tab, "generate") && !is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
+      current_batch_meta <- if (identical(current_section, "generate") && !is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
         paste("Draft created at", article_lab_state$draft_created_at %||% now_utc())
-      } else if (identical(active_tab, "generate") && !is.null(latest_saved_batch) && nrow(latest_saved_batch) > 0) {
+      } else if (identical(current_section, "generate") && !is.null(latest_saved_batch) && nrow(latest_saved_batch) > 0) {
         paste("Created", latest_saved_batch$created_at[[1]], "\u00b7 model", first_value(latest_saved_batch, "model", article_lab_default_model))
       } else if (identical(selected_batch_id, article_lab_all_batches_value)) {
-        "The API tab can review all batches together. The Generate tab stays focused on the newest saved batch."
+        "The current selection spans all saved batches."
       } else if (nrow(selected_batch) > 0) {
         paste("Created", selected_batch$created_at[[1]], "\u00b7 model", first_value(selected_batch, "model", article_lab_default_model))
       } else {
         "Generate first, then save to persist candidates."
       }
-      scored_n <- if (nrow(scoring_rows) == 0) 0L else sum(!is.na(scoring_rows$combined_title_score))
-      total_n <- nrow(scoring_rows)
-      approved_n <- if (nrow(scoring_rows) == 0) 0L else sum(scoring_rows$normalized_status == "approved_for_subtitle", na.rm = TRUE)
+      ready_n <- if (nrow(selected_candidates) == 0) 0L else sum(selected_candidates$normalized_status == "ready_for_api_scoring", na.rm = TRUE)
+      scored_n <- if (nrow(selected_candidates) == 0) 0L else sum(selected_candidates$normalized_status == "api_scored", na.rm = TRUE)
+      approved_n <- if (nrow(selected_candidates) == 0) 0L else sum(selected_candidates$normalized_status == "approved_for_subtitle", na.rm = TRUE)
+      subtitle_ready_n <- if (nrow(selected_candidates) == 0) 0L else sum(selected_candidates$normalized_status == "ready_for_thumbnail", na.rm = TRUE)
+
+      if (current_section %in% c("api_scoring", "subtitle_generation", "thumbnails")) {
+        return(NULL)
+      }
 
       return(tagList(
         div(
           class = "status-card",
-          h3(if (identical(active_tab, "api_score")) "Run status" else "Article Lab status"),
-          div(class = "status-metric", if (identical(active_tab, "api_score")) sprintf("%s / %s", scored_n, total_n) else overview$saved_candidates[[1]]),
-          p(if (identical(active_tab, "api_score")) {
-            if (identical(selected_batch_id, article_lab_all_batches_value)) {
-              sprintf("%s of %s titles across all batches are scored for the current API config.", scored_n, total_n)
-            } else {
-              sprintf("%s of %s titles in the selected batch are scored for the current API config.", scored_n, total_n)
-            }
-          } else {
-            sprintf("%s saved candidates across %s batches.", overview$saved_candidates[[1]], overview$saved_batches[[1]])
-          }),
-          p(class = "lab-status-copy", if (identical(active_tab, "api_score")) {
-            sprintf("%s titles are in the API queue and %s are already approved.", overview$ready_for_api_scoring[[1]], overview$approved_for_subtitle[[1]])
-          } else {
-            sprintf("%s remain new, %s are disqualified, and %s are waiting in the API queue.", overview$generated[[1]], overview$disqualified[[1]], overview$ready_for_api_scoring[[1]])
-          })
+          h3("Article Lab status"),
+          div(class = "status-metric", overview$saved_candidates[[1]]),
+          p(sprintf("%s saved candidates across %s batches.", overview$saved_candidates[[1]], overview$saved_batches[[1]])),
+          p(class = "lab-status-copy", sprintf("%s remain New, %s are in API queue, %s are approved for subtitles, %s are ready for Thumbnails, and %s are ready for Outline.", overview$generated[[1]], overview$ready_for_api_scoring[[1]], overview$approved_for_subtitle[[1]], overview$ready_for_thumbnail[[1]], overview$ready_for_outline[[1]]))
         ),
         div(
           class = "status-card",
-          h3(if (identical(active_tab, "api_score")) "Approvals" else "Current batch"),
-          if (identical(active_tab, "api_score")) {
-            tagList(
-              div(class = "status-metric", approved_n),
-              p(if (identical(selected_batch_id, article_lab_all_batches_value)) {
-                sprintf("%s title%s across all batches are approved for subtitle generation.", approved_n, ifelse(approved_n == 1, "", "s"))
-              } else {
-                sprintf("%s title%s in this selection are approved for subtitle generation.", approved_n, ifelse(approved_n == 1, "", "s"))
-              }),
-              p(class = "lab-status-copy", "Only manually selected API-scored titles move forward.")
-            )
-          } else {
-            tagList(
-              p(current_batch_label),
-              p(class = "lab-status-copy", current_batch_meta)
-            )
-          }
+          h3("Current selection"),
+          p(current_batch_label),
+          p(class = "lab-status-copy", current_batch_meta)
         ),
         div(
           class = "status-card",
           h3("Reminder"),
-          p("This pass does not use Home, human rating, or automatic top-N promotion."),
-          p(class = "lab-status-copy", "The subtitle generation handoff is now the approved_for_subtitle status.")
+          p("Home remains the separate rating workflow."),
+          p(class = "lab-status-copy", sprintf("This pass now covers Generate, API Scoring, Subtitle Generation, and Thumbnails. %s title%s are ready for Thumbnails in the current selection.", subtitle_ready_n, ifelse(subtitle_ready_n == 1, "", "s")))
         )
       ))
     }
