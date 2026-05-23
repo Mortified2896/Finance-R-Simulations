@@ -43,6 +43,7 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `audit_dimension_v2_thumbnail_provenance_row.R`: read-only row-level provenance trace across cohort CSV, source sample CSVs, DB/article/view rows, queue rows, observation tables, and local file identity.
 - `rate_medium_titles_terminal.R`: blind terminal human-rating workflow.
 - `score_medium_headlines_openai.py`, `analyze_openai_headline_scores.R`, and `analyze_openai_headline_scores_regularized.R`: older headline scoring workflow.
+- `langfuse_python.py`: shared Python helper for optional Langfuse tracing and OpenAI client setup across scoring scripts.
 
 ## Image Queues And Downloads
 
@@ -65,7 +66,9 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `writing_setup/apply_article_lab_schema.R`: creates or updates the Article Lab title-generation and title-scoring tables and indexes with a database backup first.
 - `writing_setup/apply_writing_lab_schema.R`: creates or updates the broader writing-lab schema objects.
 - `writing_api/generate_titles.mjs`: live OpenAI title-generation helper for the Article Lab Generate tab.
+- `writing_api/generate_subtitles.mjs`: live OpenAI subtitle-generation helper for the Article Lab Subtitle Generation tab.
 - `writing_api/score_article_lab_titles.py`: live OpenAI title-only scoring helper for the Article Lab API score tab using the v2_2 rubric.
 - `writing_api/reroll_sentence.mjs`: article sentence/paragraph rewrite helper.
+- `writing_api/langfuse.mjs`: shared Node helper for optional Langfuse tracing around writing API calls.
 - `writing_api/draft_section.mjs`: placeholder.
 - `writing_api/critique_draft.mjs`: placeholder.

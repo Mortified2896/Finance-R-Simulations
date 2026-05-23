@@ -18,13 +18,12 @@ import mimetypes
 import os
 import sqlite3
 import sys
-import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from langfuse_python import build_openai_client, flush_langfuse, langfuse_enabled, start_langfuse_run
 
 
 DEFAULT_DB = Path("data/db/medium_articles.sqlite")
@@ -34,7 +33,6 @@ DEFAULT_VALIDATED_PROMPT_VERSION = "thumbnail_v1_validated"
 DEFAULT_SCOPE = "thumbnail_only"
 DEFAULT_SAMPLE_FILE = Path("data/analysis/title_api_score_samples/thumbnail_100_v1.csv")
 DEFAULT_IMAGE_INPUT_MODE = "auto"
-API_URL = "https://api.openai.com/v1/responses"
 THUMBNAIL_QUEUE = Path("data/analysis/medium_images/medium_image_download_queue.csv")
 
 VALID_SCOPES = {"thumbnail_only", "title_thumbnail", "title_subtitle_thumbnail"}
@@ -567,23 +565,17 @@ def extract_response_text(response: dict[str, Any]) -> str:
     return "\n".join(chunks)
 
 
-def call_openai(payload: dict[str, Any], api_key: str, max_retries: int) -> dict[str, Any]:
-    encoded = json.dumps(payload).encode("utf-8")
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    for attempt in range(max_retries + 1):
-        request = urllib.request.Request(API_URL, data=encoded, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")
-            if error.code not in {408, 409, 429, 500, 502, 503, 504} or attempt >= max_retries:
-                raise RuntimeError(f"OpenAI API request failed with HTTP {error.code}: {body}") from error
-        except (urllib.error.URLError, TimeoutError) as error:
-            if attempt >= max_retries:
-                raise RuntimeError(f"OpenAI API request failed: {error}") from error
-        time.sleep(min(30, 2**attempt))
-    raise RuntimeError("OpenAI API request failed after retries")
+def call_openai(client: Any, payload: dict[str, Any], *, name: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    request_payload = dict(payload)
+    if langfuse_enabled():
+        request_payload["name"] = name
+        if metadata:
+            request_payload["metadata"] = metadata
+    try:
+        response = client.responses.create(**request_payload, timeout=120)
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"OpenAI API request failed: {error}") from error
+    return response.model_dump(mode="json")
 
 
 def validate_model_output(parsed: dict[str, Any]) -> None:
@@ -701,13 +693,42 @@ def main() -> int:
         if not api_key:
             raise SystemExit("OPENAI_API_KEY is not set. Use --dry-run for a no-cost payload check.")
 
-        for index, item in enumerate(candidates, start=1):
-            payload = build_payload(args.model, item, args.prompt_version, args.scope)
-            response = call_openai(payload, api_key, args.max_retries)
-            parsed = json.loads(extract_response_text(response))
-            validate_model_output(parsed)
-            insert_score(connection, item, args, response, parsed)
-            print(f"[{index}/{len(candidates)}] scored {item['row']['canonical_article_key']}")
+        client = build_openai_client(api_key, max_retries=args.max_retries)
+        try:
+            with start_langfuse_run(
+                "score-medium-thumbnails-run",
+                input={"candidate_count": len(candidates), "score_scope": args.scope, "image_input_mode": args.image_input_mode},
+                metadata={
+                    "script": "scoreMediumThumbnailsApiV1",
+                    "model": args.model,
+                    "promptVersion": args.prompt_version,
+                    "scoreScope": args.scope,
+                    "imageInputMode": args.image_input_mode,
+                    "dbPath": args.db,
+                },
+                tags=["medium-analysis", "thumbnail-scoring"],
+                session_id=args.sample_file or args.scope,
+                trace_name="score-medium-thumbnails-api-v1",
+            ):
+                for index, item in enumerate(candidates, start=1):
+                    payload = build_payload(args.model, item, args.prompt_version, args.scope)
+                    response = call_openai(
+                        client,
+                        payload,
+                        name="score-medium-thumbnail-row",
+                        metadata={
+                            "canonical_article_key": item["row"]["canonical_article_key"],
+                            "prompt_version": args.prompt_version,
+                            "score_scope": args.scope,
+                            "image_input_mode": args.image_input_mode,
+                        },
+                    )
+                    parsed = json.loads(extract_response_text(response))
+                    validate_model_output(parsed)
+                    insert_score(connection, item, args, response, parsed)
+                    print(f"[{index}/{len(candidates)}] scored {item['row']['canonical_article_key']}")
+        finally:
+            flush_langfuse()
         print("Scoring complete.")
         return 0
     finally:

@@ -2,7 +2,7 @@ import "dotenv/config";
 import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import OpenAI from "openai";
+import { createOpenAIClient, flushLangfuse, withLangfuseRun } from "./langfuse.mjs";
 
 const MODEL = "gpt-5.5";
 const PROJECT_DIR = path.join("article_projects", "sp500-finfluencers");
@@ -79,8 +79,6 @@ async function main() {
     return;
   }
 
-  const client = new OpenAI({ apiKey });
-
   const prompt = `You are helping rewrite a selected sentence or paragraph for a Medium finance article.
 
 Article brief:
@@ -112,26 +110,51 @@ Writing constraints:
 Text to rewrite:
 ${inputText}`;
 
-  let generatedText;
   try {
-    const response = await client.responses.create({
-      model: MODEL,
-      input: prompt,
-    });
+    await withLangfuseRun(
+      {
+        name: "reroll-sentence-run",
+        input: {
+          inputLength: inputText.length,
+          projectDir: PROJECT_DIR
+        },
+        metadata: {
+          script: "rerollSentence",
+          model: MODEL,
+          project: "sp500finfluencers"
+        },
+        tags: ["writing-api", "reroll-sentence"],
+        traceName: "reroll-sentence"
+      },
+      async () => {
+        let generatedText;
+        try {
+          const client = await createOpenAIClient(apiKey, {
+            generationName: "reroll-sentence",
+            generationMetadata: {
+              projectDir: PROJECT_DIR,
+              inputLength: inputText.length
+            },
+            tags: ["writing-api", "reroll-sentence"]
+          });
+          const response = await client.responses.create({
+            model: MODEL,
+            input: prompt,
+          });
 
-    generatedText = extractText(response);
-    if (!generatedText) {
-      throw new Error("The API response did not include generated text.");
-    }
-  } catch (error) {
-    console.error("OpenAI API failure:", error.message);
-    process.exitCode = 1;
-    return;
-  }
+          generatedText = extractText(response);
+          if (!generatedText) {
+            throw new Error("The API response did not include generated text.");
+          }
+        } catch (error) {
+          console.error("OpenAI API failure:", error.message);
+          process.exitCode = 1;
+          return;
+        }
 
-  const timestamp = formatTimestamp();
-  const outputPath = path.join(OUTPUT_DIR, `reroll_sentence_${timestamp}.md`);
-  const markdown = `# Reroll Sentence Output
+        const timestamp = formatTimestamp();
+        const outputPath = path.join(OUTPUT_DIR, `reroll_sentence_${timestamp}.md`);
+        const markdown = `# Reroll Sentence Output
 
 Timestamp: ${timestamp}
 
@@ -146,11 +169,16 @@ Generated alternatives:
 ${generatedText}
 `;
 
-  await fs.mkdir(OUTPUT_DIR, { recursive: true });
-  await fs.writeFile(outputPath, markdown, "utf8");
+        await fs.mkdir(OUTPUT_DIR, { recursive: true });
+        await fs.writeFile(outputPath, markdown, "utf8");
 
-  console.log(generatedText);
-  console.log(`\nSaved output to ${outputPath}`);
+        console.log(generatedText);
+        console.log(`\nSaved output to ${outputPath}`);
+      }
+    );
+  } finally {
+    await flushLangfuse();
+  }
 }
 
 main().catch((error) => {

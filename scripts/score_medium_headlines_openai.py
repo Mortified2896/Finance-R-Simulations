@@ -18,11 +18,11 @@ import os
 import random
 import sys
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from langfuse_python import build_openai_client, flush_langfuse, langfuse_enabled, start_langfuse_run
 
 
 INPUT_PATH = Path("data/analysis/medium_analysis_v1/medium_title_prediction_dataset.csv")
@@ -33,8 +33,6 @@ RUBRIC_VERSION = "headline_v2"
 DEFAULT_MODEL = "gpt-5-mini"
 DEFAULT_SAMPLE_SIZE = 200
 DEFAULT_SEED = 20260513
-API_URL = "https://api.openai.com/v1/responses"
-
 DIMENSIONS = [
     ("clarity", "easy to understand on first pass"),
     ("concreteness", "gives enough specific information before the click"),
@@ -303,26 +301,17 @@ def extract_response_text(response: dict[str, Any]) -> str:
     return "\n".join(chunks)
 
 
-def call_openai(payload: dict[str, Any], api_key: str, max_retries: int) -> dict[str, Any]:
-    encoded = json.dumps(payload).encode("utf-8")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    for attempt in range(max_retries + 1):
-        request = urllib.request.Request(API_URL, data=encoded, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=90) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")
-            if error.code not in {408, 409, 429, 500, 502, 503, 504} or attempt >= max_retries:
-                raise RuntimeError(f"OpenAI API request failed with HTTP {error.code}: {body}") from error
-        except (urllib.error.URLError, TimeoutError) as error:
-            if attempt >= max_retries:
-                raise RuntimeError(f"OpenAI API request failed: {error}") from error
-        time.sleep(min(30, 2 ** attempt))
-    raise RuntimeError("OpenAI API request failed after retries")
+def call_openai(client: Any, payload: dict[str, Any], *, name: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    request_payload = dict(payload)
+    if langfuse_enabled():
+        request_payload["name"] = name
+        if metadata:
+            request_payload["metadata"] = metadata
+    try:
+        response = client.responses.create(**request_payload, timeout=90)
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"OpenAI API request failed: {error}") from error
+    return response.model_dump(mode="json")
 
 
 def validate_scores(parsed: dict[str, Any]) -> None:
@@ -465,45 +454,71 @@ def main() -> int:
 
     print(f"Scoring {len(work_items)} article/scope pairs with {args.model}.")
     new_rows: list[dict[str, Any]] = []
-    for index, (row, scope) in enumerate(work_items, start=1):
-        title = clean_text(row.get("title")) or ""
-        subtitle = get_subtitle(row)
-        payload = build_payload(args.model, title, subtitle, scope, args.temperature)
-        response: dict[str, Any] | None = None
-        parsed: dict[str, Any] | None = None
-        for validation_attempt in range(args.max_retries + 1):
-            response = call_openai(payload, api_key, args.max_retries)
-            parsed = json.loads(extract_response_text(response))
-            try:
-                validate_scores(parsed)
-                break
-            except ValueError:
-                if validation_attempt >= args.max_retries:
-                    raise
-                time.sleep(min(30, 2 ** validation_attempt))
-        if response is None or parsed is None:
-            raise RuntimeError("OpenAI API returned no validated response")
-        timestamp_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        flat = flatten_result(row, scope, title, subtitle, args.model, timestamp_utc, parsed)
-        raw_record = {
-            "article_id": flat["article_id"],
-            "medium_post_id": flat["medium_post_id"],
-            "score_scope": scope,
-            "title": title,
-            "subtitle": subtitle,
-            "rubric_version": RUBRIC_VERSION,
-            "model": args.model,
-            "timestamp_utc": timestamp_utc,
-            "model_output": parsed,
-            "response_id": response.get("id"),
-        }
-        append_jsonl(jsonl_output, raw_record)
-        new_rows.append(flat)
+    client = build_openai_client(api_key, max_retries=args.max_retries)
+    try:
+        with start_langfuse_run(
+            "score-medium-headlines-run",
+            input={"work_items": len(work_items), "temperature": args.temperature, "scopes": ",".join(scopes)},
+            metadata={
+                "script": "scoreMediumHeadlinesOpenai",
+                "model": args.model,
+                "rubricVersion": RUBRIC_VERSION,
+                "inputPath": str(input_path),
+            },
+            tags=["medium-analysis", "headline-scoring"],
+            session_id=str(input_path),
+            trace_name="score-medium-headlines-openai",
+        ):
+            for index, (row, scope) in enumerate(work_items, start=1):
+                title = clean_text(row.get("title")) or ""
+                subtitle = get_subtitle(row)
+                payload = build_payload(args.model, title, subtitle, scope, args.temperature)
+                response: dict[str, Any] | None = None
+                parsed: dict[str, Any] | None = None
+                for validation_attempt in range(args.max_retries + 1):
+                    response = call_openai(
+                        client,
+                        payload,
+                        name="score-medium-headline-row",
+                        metadata={
+                            "article_id": get_article_id(row),
+                            "score_scope": scope,
+                            "rubric_version": RUBRIC_VERSION,
+                        },
+                    )
+                    parsed = json.loads(extract_response_text(response))
+                    try:
+                        validate_scores(parsed)
+                        break
+                    except ValueError:
+                        if validation_attempt >= args.max_retries:
+                            raise
+                        time.sleep(min(30, 2 ** validation_attempt))
+                if response is None or parsed is None:
+                    raise RuntimeError("OpenAI API returned no validated response")
+                timestamp_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                flat = flatten_result(row, scope, title, subtitle, args.model, timestamp_utc, parsed)
+                raw_record = {
+                    "article_id": flat["article_id"],
+                    "medium_post_id": flat["medium_post_id"],
+                    "score_scope": scope,
+                    "title": title,
+                    "subtitle": subtitle,
+                    "rubric_version": RUBRIC_VERSION,
+                    "model": args.model,
+                    "timestamp_utc": timestamp_utc,
+                    "model_output": parsed,
+                    "response_id": response.get("id"),
+                }
+                append_jsonl(jsonl_output, raw_record)
+                new_rows.append(flat)
 
-        if len(new_rows) >= 10:
-            append_csv_rows(csv_output, new_rows)
-            new_rows = []
-        print(f"[{index}/{len(work_items)}] scored article_id={flat['article_id']} scope={scope}")
+                if len(new_rows) >= 10:
+                    append_csv_rows(csv_output, new_rows)
+                    new_rows = []
+                print(f"[{index}/{len(work_items)}] scored article_id={flat['article_id']} scope={scope}")
+    finally:
+        flush_langfuse()
 
     append_csv_rows(csv_output, new_rows)
     print(f"Wrote CSV: {csv_output}")

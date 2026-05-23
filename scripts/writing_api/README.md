@@ -22,6 +22,9 @@ This installs:
 
 - `openai`
 - `dotenv`
+- `@langfuse/openai`
+- `@langfuse/otel`
+- `@langfuse/tracing`
 
 ## API key
 
@@ -32,6 +35,24 @@ OPENAI_API_KEY=...
 ```
 
 `.env` must not be committed.
+
+## Optional Langfuse tracing
+
+Tracing is enabled automatically for the Node and Python OpenAI helpers when these environment variables are present:
+
+```text
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+```
+
+`LANGFUSE_HOST` is also accepted and mapped to `LANGFUSE_BASE_URL` automatically.
+
+For the Python scoring scripts, install the runtime packages in your local Python environment:
+
+```sh
+python3 -m pip install openai langfuse
+```
 
 ## Generate article titles
 

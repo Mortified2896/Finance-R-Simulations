@@ -9,14 +9,16 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-API_URL = "https://api.openai.com/v1/responses"
+SCRIPT_ROOT = Path(__file__).resolve().parents[1]
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+
+from langfuse_python import build_openai_client, flush_langfuse, langfuse_enabled, start_langfuse_run
+
 DEFAULT_MODEL = os.environ.get("OPENAI_TITLE_SCORING_MODEL", "gpt-5-mini")
 DEFAULT_PROMPT_VERSION = "v2_3"
 DEFAULT_SCOPE = "title_only"
@@ -171,26 +173,17 @@ def extract_response_text(response: dict[str, Any]) -> str:
     return "\n".join(chunks)
 
 
-def call_openai(payload: dict[str, Any], api_key: str, max_retries: int) -> dict[str, Any]:
-    encoded = json.dumps(payload).encode("utf-8")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    for attempt in range(max_retries + 1):
-        request = urllib.request.Request(API_URL, data=encoded, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=90) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")
-            if error.code not in {408, 409, 429, 500, 502, 503, 504} or attempt >= max_retries:
-                raise RuntimeError(f"OpenAI API request failed with HTTP {error.code}: {body}") from error
-        except (urllib.error.URLError, TimeoutError) as error:
-            if attempt >= max_retries:
-                raise RuntimeError(f"OpenAI API request failed: {error}") from error
-        time.sleep(min(30, 2**attempt))
-    raise RuntimeError("OpenAI API request failed after retries")
+def call_openai(client: Any, payload: dict[str, Any], *, name: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    request_payload = dict(payload)
+    if langfuse_enabled():
+        request_payload["name"] = name
+        if metadata:
+            request_payload["metadata"] = metadata
+    try:
+        response = client.responses.create(**request_payload, timeout=90)
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"OpenAI API request failed: {error}") from error
+    return response.model_dump(mode="json")
 
 
 def validate_model_output(parsed: dict[str, Any]) -> None:
@@ -241,47 +234,75 @@ def main() -> int:
 
     scores: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    client = build_openai_client(api_key, max_retries=MAX_RETRIES)
 
-    for entry in raw_candidates:
-        candidate_id = clean_text(entry.get("candidate_id"))
-        batch_id = clean_text(entry.get("batch_id"))
-        title = clean_text(entry.get("title"))
-        if not candidate_id or not batch_id or not title:
-            errors.append(
-                {
-                    "candidate_id": candidate_id,
-                    "batch_id": batch_id,
-                    "error": "candidate_id, batch_id, and title are required",
-                }
-            )
-            continue
-
-        try:
-            response = call_openai(build_payload(model, title, prompt_version, scope), api_key, MAX_RETRIES)
-            parsed = json.loads(extract_response_text(response))
-            validate_model_output(parsed)
-            score_row = {
-                "candidate_id": candidate_id,
-                "batch_id": batch_id,
-                "scored_at": utc_now(),
+    try:
+        with start_langfuse_run(
+            "score-article-lab-titles-run",
+            input={"request_path": str(request_path), "candidate_count": len(raw_candidates)},
+            metadata={
+                "script": "scoreArticleLabTitles",
                 "model": model,
-                "prompt_version": prompt_version,
-                "scope": scope,
-                "predicted_success_bucket": parsed["predicted_success_bucket"],
-                "short_reason": parsed["short_reason"],
-                "raw_json": response,
-            }
-            for field in SCORE_FIELDS:
-                score_row[field] = parsed[field]
-            scores.append(score_row)
-        except Exception as error:  # noqa: BLE001
-            errors.append(
-                {
-                    "candidate_id": candidate_id,
-                    "batch_id": batch_id,
-                    "error": str(error),
-                }
-            )
+                "promptVersion": prompt_version,
+                "scoreScope": scope,
+                "requestPath": str(request_path),
+            },
+            tags=["writing-api", "title-scoring"],
+            session_id=str(request_path),
+            trace_name="score-article-lab-titles",
+        ):
+            for entry in raw_candidates:
+                candidate_id = clean_text(entry.get("candidate_id"))
+                batch_id = clean_text(entry.get("batch_id"))
+                title = clean_text(entry.get("title"))
+                if not candidate_id or not batch_id or not title:
+                    errors.append(
+                        {
+                            "candidate_id": candidate_id,
+                            "batch_id": batch_id,
+                            "error": "candidate_id, batch_id, and title are required",
+                        }
+                    )
+                    continue
+
+                try:
+                    response = call_openai(
+                        client,
+                        build_payload(model, title, prompt_version, scope),
+                        name="score-article-lab-title",
+                        metadata={
+                            "candidate_id": candidate_id,
+                            "batch_id": batch_id,
+                            "prompt_version": prompt_version,
+                            "score_scope": scope,
+                        },
+                    )
+                    parsed = json.loads(extract_response_text(response))
+                    validate_model_output(parsed)
+                    score_row = {
+                        "candidate_id": candidate_id,
+                        "batch_id": batch_id,
+                        "scored_at": utc_now(),
+                        "model": model,
+                        "prompt_version": prompt_version,
+                        "scope": scope,
+                        "predicted_success_bucket": parsed["predicted_success_bucket"],
+                        "short_reason": parsed["short_reason"],
+                        "raw_json": response,
+                    }
+                    for field in SCORE_FIELDS:
+                        score_row[field] = parsed[field]
+                    scores.append(score_row)
+                except Exception as error:  # noqa: BLE001
+                    errors.append(
+                        {
+                            "candidate_id": candidate_id,
+                            "batch_id": batch_id,
+                            "error": str(error),
+                        }
+                    )
+    finally:
+        flush_langfuse()
 
     result = {
         "mode": "api",

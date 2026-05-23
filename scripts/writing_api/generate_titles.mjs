@@ -1,6 +1,6 @@
 import "dotenv/config";
 import fs from "node:fs/promises";
-import OpenAI from "openai";
+import { createOpenAIClient, flushLangfuse, withLangfuseRun } from "./langfuse.mjs";
 
 const MAX_TITLE_CHARS = 45;
 
@@ -160,7 +160,6 @@ async function main() {
     return;
   }
 
-  const client = new OpenAI({ apiKey });
   const builtPrompt = buildPrompt({
     prompt,
     batchSize,
@@ -169,67 +168,114 @@ async function main() {
     exampleTitles
   });
 
-  let response;
   try {
-    response = await client.responses.create({
-      model,
-      input: builtPrompt
-    });
-  } catch (error) {
-    console.error(`OpenAI API failure: ${error.message}`);
-    process.exitCode = 1;
-    return;
-  }
-
-  const rawText = extractText(response);
-  let titles = parseTitles(rawText, batchSize);
-  let { valid, invalid } = splitByLength(titles, MAX_TITLE_CHARS);
-  let retryUsed = false;
-  let retryRawText = null;
-
-  if (invalid.length > 0) {
-    retryUsed = true;
-    let retryResponse;
-    try {
-      retryResponse = await client.responses.create({
-        model,
-        input: buildRetryPrompt({
-          originalPrompt: builtPrompt,
+    await withLangfuseRun(
+      {
+        name: "generate-medium-titles-run",
+        input: {
+          requestPath,
           batchSize,
-          invalidTitles: invalid
-        })
-      });
-    } catch (error) {
-      console.error(`OpenAI API retry failure: ${error.message}`);
-      process.exitCode = 1;
-      return;
-    }
+          seedTopic,
+          hasInspirationSource: Boolean(inspirationSource),
+          exampleTitlesCount: exampleTitles.length
+        },
+        metadata: {
+          script: "generateTitles",
+          model,
+          mode: "writingApi",
+          requestPath
+        },
+        tags: ["writing-api", "title-generation"],
+        sessionId: requestPath,
+        traceName: "generate-medium-titles"
+      },
+      async () => {
+        let response;
+        try {
+          const client = await createOpenAIClient(apiKey, {
+            generationName: "generate-medium-titles",
+            generationMetadata: {
+              batchSize,
+              seedTopic,
+              inspirationSource,
+              exampleTitlesCount: exampleTitles.length
+            },
+            tags: ["writing-api", "title-generation"],
+            sessionId: requestPath
+          });
+          response = await client.responses.create({
+            model,
+            input: builtPrompt
+          });
+        } catch (error) {
+          console.error(`OpenAI API failure: ${error.message}`);
+          process.exitCode = 1;
+          return;
+        }
 
-    retryRawText = extractText(retryResponse);
-    titles = parseTitles(retryRawText, batchSize);
-    ({ valid, invalid } = splitByLength(titles, MAX_TITLE_CHARS));
+        const rawText = extractText(response);
+        let titles = parseTitles(rawText, batchSize);
+        let { valid, invalid } = splitByLength(titles, MAX_TITLE_CHARS);
+        let retryUsed = false;
+        let retryRawText = null;
+
+        if (invalid.length > 0) {
+          retryUsed = true;
+          let retryResponse;
+          try {
+            const retryClient = await createOpenAIClient(apiKey, {
+              generationName: "rewrite-overlong-medium-titles",
+              generationMetadata: {
+                batchSize,
+                invalidCount: invalid.length
+              },
+              tags: ["writing-api", "title-generation", "retry"],
+              sessionId: requestPath
+            });
+            retryResponse = await retryClient.responses.create({
+              model,
+              input: buildRetryPrompt({
+                originalPrompt: builtPrompt,
+                batchSize,
+                invalidTitles: invalid
+              })
+            });
+          } catch (error) {
+            console.error(`OpenAI API retry failure: ${error.message}`);
+            process.exitCode = 1;
+            return;
+          }
+
+          retryRawText = extractText(retryResponse);
+          titles = parseTitles(retryRawText, batchSize);
+          ({ valid, invalid } = splitByLength(titles, MAX_TITLE_CHARS));
+        }
+
+        if (valid.length === 0) {
+          console.error("The API response did not contain any usable titles.");
+          process.exitCode = 1;
+          return;
+        }
+
+        const output = {
+          mode: "api",
+          model,
+          response_id: response.id ?? null,
+          titles: valid,
+          raw_text: rawText,
+          retry_used: retryUsed,
+          retry_raw_text: retryRawText,
+          dropped_count: invalid.length,
+          dropped_titles: invalid,
+          usage: response.usage ?? null
+        };
+
+        process.stdout.write(JSON.stringify(output));
+      }
+    );
+  } finally {
+    await flushLangfuse();
   }
-
-  if (valid.length === 0) {
-    console.error("The API response did not contain any usable titles.");
-    process.exitCode = 1;
-    return;
-  }
-
-  const output = {
-    mode: "api",
-    model,
-    response_id: response.id ?? null,
-    titles: valid,
-    raw_text: rawText,
-    retry_used: retryUsed,
-    retry_raw_text: retryRawText,
-    dropped_count: invalid.length,
-    dropped_titles: invalid,
-    usage: response.usage ?? null
-  };
-
-  process.stdout.write(JSON.stringify(output));
 }
 
 main().catch((error) => {
