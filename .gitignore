@@ -4,6 +4,8 @@
 *.log
 .DS_Store
 Rplots.pdf
+__pycache__/
+*.pyc
 
 # Dependencies and local fixtures
 node_modules/
