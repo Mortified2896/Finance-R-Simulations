@@ -36,6 +36,7 @@ data/medium_article_clap_capture_profile/
 data/analysis/medium_title_prediction_dataset.csv
 data/analysis/medium_analysis_v1/
 data/analysis/medium_analysis_v2/
+data/analysis/research_library/
 data/analysis/title_baseline/
 data/analysis/title_followup/
 data/analysis/title_target_sensitivity/
@@ -59,6 +60,11 @@ article_projects/active/*/03_title_scores.csv
 
 # Article writing workbench files
 article_projects/active/*/01_title_ideas.csv
+
+# Local Research Library imports and assets
+data/research/imports/
+data/research/pdfs/
+data/research/text/
 
 # Local active article drafts and writing workbench
 article_projects/active/

@@ -51,6 +51,12 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `export_medium_body_image_download_queue.R`: creates the body image download queue.
 - `download_medium_images.py`: downloads queued Medium images with robot/crawl-delay awareness. Duplicate image hashes are allowed; when downloaded bytes match an existing file, the downloader copies that file to the current row's expected `image_file_stem` path and records duplicate metadata so local paths remain unique.
 
+## Research Library
+
+- `research_setup/apply_research_library_schema.R`: creates the local `research_papers` table and indexes in the existing Medium SQLite database, with a backup before schema changes by default.
+- `research_import/import_research_papers_csv.R`: imports local research-library CSV metadata and idempotently upserts by `link_url` while preserving manual curation fields.
+- `research_import/inspect_research_library.R`: prints a quick count summary for the local Research Library table.
+
 ## Inspection And Tests
 
 - `inspect_medium_db.R`: quick local Medium DB inspection.
