@@ -4022,6 +4022,48 @@ article_lab_approve_candidates_for_subtitle <- function(con, candidate_ids) {
   list(approved_n = length(eligible_ids), skipped_n = skipped_n, batch_ids = batch_ids)
 }
 
+article_lab_archive_api_scored_candidates <- function(con, candidate_ids) {
+  candidate_ids <- clean_text(candidate_ids)
+  candidate_ids <- unique(candidate_ids[!is.na(candidate_ids)])
+  if (length(candidate_ids) == 0) return(list(archived_n = 0L, skipped_n = 0L, batch_ids = character()))
+
+  placeholders <- paste(rep("?", length(candidate_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf(
+      "SELECT candidate_id, batch_id, status, ready_for_human_rating, promoted, archived FROM article_lab_title_candidates WHERE candidate_id IN (%s)",
+      placeholders
+    ),
+    params = as.list(candidate_ids)
+  )
+  if (nrow(rows) == 0) return(list(archived_n = 0L, skipped_n = length(candidate_ids), batch_ids = character()))
+  rows <- article_lab_normalize_candidate_rows(rows)
+  eligible_ids <- rows$candidate_id[rows$normalized_status == "api_scored"]
+  skipped_n <- length(candidate_ids) - length(eligible_ids)
+  batch_ids <- unique(rows$batch_id)
+
+  dbBegin(con)
+  tryCatch({
+    if (length(eligible_ids) > 0) {
+      dbExecute(
+        con,
+        sprintf(
+          "UPDATE article_lab_title_candidates SET status = 'archived', promoted = 0, ready_for_human_rating = 0, archived = 1 WHERE candidate_id IN (%s)",
+          paste(rep("?", length(eligible_ids)), collapse = ", ")
+        ),
+        params = as.list(eligible_ids)
+      )
+    }
+    for (batch_id in batch_ids) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(archived_n = length(eligible_ids), skipped_n = skipped_n, batch_ids = batch_ids)
+}
+
 save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, raw_json = NA_character_, generation_mode = "generated", enforce_max_chars = TRUE, notes_extra = NULL) {
   if (length(titles) == 0) return(invisible(NULL))
   validated <- article_lab_validate_titles(titles, max_chars = article_lab_title_max_chars)
@@ -9282,7 +9324,8 @@ server <- function(input, output, session) {
           article_lab_score_table_ui(scored_rows),
           div(
             class = "lab-actions",
-            actionButton("article_lab_approve_for_subtitle", "Approve selected for subtitle generation", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_scored');")
+            actionButton("article_lab_approve_for_subtitle", "Approve selected for subtitle generation", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_scored');"),
+            actionButton("article_lab_archive_scored_titles", "Archive selected titles", onclick = "window.articleLabSyncSelections('article_lab_scored');")
           ),
           div(class = "lab-status-copy", "Approved titles will move to Subtitle Generation.")
         ),
@@ -9519,13 +9562,10 @@ server <- function(input, output, session) {
     article_lab_state$notice <- "Saved manual/default generation prompt."
   }, ignoreInit = TRUE)
 
-  observeEvent(input$article_lab_save, {
+  save_current_article_lab_draft <- function() {
     draft <- article_lab_state$draft
-    draft_meta <- article_lab_state$draft_meta
-    if (is.null(draft) || nrow(draft) == 0) {
-      article_lab_state$notice <- "Nothing to save yet. Generate a draft first."
-      return(invisible(NULL))
-    }
+    draft_meta <- article_lab_state$draft_meta %||% list()
+    if (is.null(draft) || nrow(draft) == 0) return(NULL)
 
     batch_id <- save_article_lab_batch(
       con,
@@ -9540,25 +9580,36 @@ server <- function(input, output, session) {
       enforce_max_chars = !((draft_meta$mode %||% "") %in% c("manual", "mixed")),
       notes_extra = draft_meta$notes_extra
     )
+    saved_mode <- draft_meta$mode %||% "generated"
     article_lab_state$draft <- NULL
     article_lab_state$draft_created_at <- NULL
     article_lab_state$draft_meta <- NULL
-    saved_mode <- draft_meta$mode %||% "generated"
-    article_lab_state$notice <- if (saved_mode %in% c("manual", "mixed")) {
+    article_lab_refresh(article_lab_refresh() + 1L)
+
+    list(batch_id = batch_id, mode = saved_mode, title_n = nrow(draft))
+  }
+
+  observeEvent(input$article_lab_save, {
+    saved <- save_current_article_lab_draft()
+    if (is.null(saved)) {
+      article_lab_state$notice <- "Nothing to save yet. Generate a draft first."
+      return(invisible(NULL))
+    }
+
+    article_lab_state$notice <- if (saved$mode %in% c("manual", "mixed")) {
       sprintf(
         "Saved batch %s. Candidates start as New and stay in Generate until you manually move selected titles to the API queue. Generation mode: %s. Overlength manual titles were preserved with their length flag.",
-        batch_id,
-        saved_mode
+        saved$batch_id,
+        saved$mode
       )
     } else {
       sprintf(
         "Saved batch %s. Candidates start as New and stay in Generate until you manually move selected titles to the API queue. Generation mode: %s. Max title length enforced: %s characters.",
-        batch_id,
-        saved_mode,
+        saved$batch_id,
+        saved$mode,
         article_lab_title_max_chars
       )
     }
-    article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_clear, {
@@ -9570,7 +9621,8 @@ server <- function(input, output, session) {
 
   observeEvent(input$article_lab_save_triage, {
     if (!is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
-      article_lab_state$notice <- "Save the current draft batch before editing statuses or notes."
+      saved <- save_current_article_lab_draft()
+      article_lab_state$notice <- sprintf("Saved draft batch %s with %s title%s. You can now edit statuses or notes.", saved$batch_id, saved$title_n, ifelse(saved$title_n == 1, "", "s"))
       return(invisible(NULL))
     }
     rows <- article_lab_generate_candidates()
@@ -9586,7 +9638,30 @@ server <- function(input, output, session) {
 
   observeEvent(input$article_lab_move_to_api_queue, {
     if (!is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
-      article_lab_state$notice <- "Save the current draft batch before moving titles to the API queue."
+      draft <- article_lab_state$draft
+      selected_indexes <- which(vapply(seq_len(nrow(draft)), function(i) {
+        isTRUE(input[[article_lab_row_input_id("article_lab_generate_select", sprintf("draft_%02d", i))]])
+      }, logical(1)))
+      if (length(selected_indexes) == 0) {
+        article_lab_state$notice <- "Select at least one draft title before moving it to the API queue."
+        return(invisible(NULL))
+      }
+      saved <- save_current_article_lab_draft()
+      selected_ids <- article_lab_candidate_id(saved$batch_id, selected_indexes)
+      result <- article_lab_move_candidates_to_api_queue(con, selected_ids)
+      article_lab_state$notice <- sprintf(
+        "Saved draft batch %s and moved %s selected title%s to API queue. %s selected title%s were skipped because they were not eligible.",
+        saved$batch_id,
+        result$moved_n,
+        ifelse(result$moved_n == 1, "", "s"),
+        result$skipped_n,
+        ifelse(result$skipped_n == 1, "", "s")
+      )
+      article_lab_refresh(article_lab_refresh() + 1L)
+      if (result$moved_n > 0) {
+        updateSelectInput(session, "article_lab_selected_batch", selected = saved$batch_id)
+        active_section("api_scoring")
+      }
       return(invisible(NULL))
     }
     rows <- article_lab_generate_candidates()
@@ -9703,6 +9778,35 @@ server <- function(input, output, session) {
         "Approved %s selected title%s for subtitle generation. %s selected title%s were skipped because they were not API scored.",
         result$approved_n,
         ifelse(result$approved_n == 1, "", "s"),
+        result$skipped_n,
+        ifelse(result$skipped_n == 1, "", "s")
+      )
+    }
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_archive_scored_titles, {
+    scored_rows <- article_lab_scored_rows()
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(article_lab_queue_rows(), "article_lab_queue_notes"))
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(scored_rows, "article_lab_scored_notes"))
+    selected_ids <- collect_selected_ids(
+      scored_rows,
+      "article_lab_scored_select",
+      snapshot_ids = input$article_lab_scored_selected_snapshot
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one API-scored title before archiving it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_archive_api_scored_candidates(con, selected_ids)
+    article_lab_state$notice <- if (result$archived_n > 0 || result$skipped_n == 0) {
+      sprintf("Archived %s selected title%s.", result$archived_n, ifelse(result$archived_n == 1, "", "s"))
+    } else {
+      sprintf(
+        "Archived %s selected title%s. %s selected title%s were skipped because they were not API scored.",
+        result$archived_n,
+        ifelse(result$archived_n == 1, "", "s"),
         result$skipped_n,
         ifelse(result$skipped_n == 1, "", "s")
       )
