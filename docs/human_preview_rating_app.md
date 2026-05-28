@@ -57,9 +57,23 @@ Manual subtitle ideas are saved into the normal subtitle-candidate table and the
 
 That keeps manual and API-generated subtitle variants in the same approval flow for rejection, approval, and downstream thumbnail work.
 
+## Article Lab Row Dismissal
+
+Every Article Lab tab that shows persisted workflow rows should include a non-destructive way to dismiss selected rows. Use status changes such as `disqualified`, `archived`, or `rejected`; do not delete rows just to hide old or unwanted content.
+
+For current tabs, this means generated titles can be disqualified, API queue and subtitle-stage titles can be archived, scored titles can be archived, subtitle and thumbnail candidates can be rejected, and ready title/subtitle packages in Thumbnails can be dismissed by rejecting that approved subtitle package.
+
 ## Article Lab Model Selectors
 
 All Article Lab model selection fields must be dropdown selectors, not free-text inputs. Use the shared model choice list in the app and include any environment-configured default as an available option, so future model fields stay consistent while still honoring local overrides.
+
+## Article Lab API Prompt Visibility
+
+Every Article Lab tab or control that sends content to an API must show an explicit "Prompt that will be sent to the API" disclosure near the generation/scoring action. The disclosure must include the editable prompt text, fixed wrapper/system instructions, model, prompt version/scope when relevant, output/schema requirements, and the selected row context that changes the generated outcome.
+
+For batch actions, show the exact per-item context for the currently selected rows, not just a generic template. If an API request includes a file attachment, show the text payload sent alongside the file and identify the attached local file/path. If helper scripts add hidden examples, wrappers, retry instructions, schema constraints, or source summaries, expose those additions in the UI as part of the effective prompt contract.
+
+When adding or changing an API-producing workflow, update the disclosure in the same change as the API call. Do not leave a tab where the user can click generate/score without seeing which prompt and context will produce that outcome.
 
 ## Modes
 

@@ -2088,6 +2088,65 @@ article_lab_score_id <- function(candidate_id) {
   paste0("als_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", gsub("[^A-Za-z0-9]+", "_", candidate_id))
 }
 
+article_lab_score_system_prompt <- paste(
+  "You score the reader-facing pre-click appeal of Medium finance titles.",
+  "Use only the supplied title. Do not infer or use claps, responses, rank, age, publication performance, or observation history.",
+  "Do not estimate click potential. Return calibrated JSON scores from 1 to 5."
+)
+
+article_lab_score_user_prompt <- function(prompt_version, scope, title) {
+  prompt_version <- article_lab_input_string(prompt_version) %||% article_lab_default_score_prompt_version
+  scope <- article_lab_input_string(scope) %||% article_lab_default_score_scope
+  title <- article_lab_input_string(title) %||% ""
+  title_json <- toJSON(list(title = title), auto_unbox = TRUE, pretty = TRUE)
+
+  if (identical(prompt_version, "v2_3")) {
+    return(paste0(
+      "Prompt version: ", prompt_version, "\n\n",
+      "Score scope: ", scope, "\n",
+      "You are scoring only the title. Do not infer a subtitle. Treat missing context as missing.\n\n",
+      "Important measurement note:\n",
+      "Do not estimate click potential. For competitor Medium articles, we do not have impressions, views, reads, or click-through data, so click potential is not directly testable in this dataset.\n\n",
+      "Focus instead on outcomes that can be compared against observed public metrics:\n",
+      "- medium_comment_potential: how likely this article is to receive written responses/comments, especially because it invites disagreement, personal stories, debate, strong opinions, corrections, or follow-up questions.\n",
+      "- overall_article_potential: overall expected Medium performance based on the title only, considering likely reader interest, topic strength, emotional pull, trust, and engagement potential.\n\n",
+      "Calibrate scores relative to typical Medium personal finance articles, not in isolation.\n\n",
+      "Use the full 1-5 scale aggressively:\n",
+      "1 = very weak, likely below average\n",
+      "2 = below average or generic\n",
+      "3 = average / okay for Medium finance\n",
+      "4 = clearly above average, likely stronger than most articles\n",
+      "5 = exceptional, rare, top-tier potential\n\n",
+      "Most normal articles should receive 2 or 3.\n",
+      "Do not give 4 unless the title has a clearly strong hook, strong topic demand, meaningful emotional or discussion pull, and a clear reader payoff.\n",
+      "Do not give 5 unless the title looks unusually compelling and would plausibly belong among the strongest articles in the dataset.\n",
+      "Avoid defaulting to 4 for merely competent, useful, or credible articles.\n\n",
+      "Input fields, and no other article data:\n",
+      title_json, "\n\n",
+      "Rubric:\n",
+      "- curiosity: How much the title creates a genuine desire to know more.\n",
+      "- emotional_pull: How much the title creates emotional interest, concern, excitement, surprise, or urgency.\n",
+      "- medium_comment_potential: Estimate how likely the article is to generate written Medium responses/comments. Higher scores should go to title wording that invites disagreement, debate, personal experiences, corrections, strong opinions, or nuanced discussion. A useful but straightforward article can have high clap potential but low comment potential. Use the full scale.\n",
+      "- overall_article_potential: Estimate overall Medium performance potential from the title only. This should be a relative ranking judgment, not a quality compliment. Consider topic demand, emotional stakes, trust, likely engagement, and whether the title feels meaningfully differentiated from generic finance content. Use 5 sparingly for likely top-decile potential.\n",
+      "- trust_risk: Risk that the title feels exaggerated, misleading, too clickbaity, or credibility-damaging. Higher means more risk. A title can create curiosity or emotion while still carrying trust risk.\n\n",
+      "predicted_success_bucket:\n",
+      "- low = likely below median or weak relative to typical Medium finance articles.\n",
+      "- medium = around median to moderately above average.\n",
+      "- high = likely top 20 percent potential. Use high sparingly. Do not classify most articles as high.\n\n",
+      "Return JSON matching the schema exactly. short_reason must be one short sentence."
+    ))
+  }
+
+  paste0(
+    "Prompt version: ", prompt_version, "\n\n",
+    "Score scope: ", scope, "\n",
+    "You are scoring only the title. Do not infer a subtitle. Treat missing context as missing.\n\n",
+    "Input fields, and no other article data:\n",
+    title_json, "\n\n",
+    "Return JSON matching the schema exactly."
+  )
+}
+
 article_lab_score_api_request <- function(candidates, model = NA_character_, prompt_version = NA_character_, scope = NA_character_) {
   helper_path <- file.path("scripts", "writing_api", "score_article_lab_titles.py")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/score_article_lab_titles.py", call. = FALSE)
@@ -3288,6 +3347,70 @@ article_lab_reject_subtitles <- function(con, subtitle_ids) {
   list(rejected_n = length(eligible_ids), skipped_n = skipped_n, candidate_ids = candidate_ids, batch_ids = batch_ids)
 }
 
+article_lab_dismiss_thumbnail_packages <- function(con, subtitle_ids) {
+  subtitle_ids <- clean_text(subtitle_ids)
+  subtitle_ids <- unique(subtitle_ids[!is.na(subtitle_ids)])
+  if (length(subtitle_ids) == 0) return(list(dismissed_n = 0L, skipped_n = 0L, candidate_ids = character(), batch_ids = character()))
+
+  placeholders <- paste(rep("?", length(subtitle_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf(
+      "SELECT
+         s.subtitle_id,
+         s.candidate_id,
+         s.batch_id,
+         s.status,
+         COALESCE(t.generated_n, 0) AS generated_thumbnail_n,
+         COALESCE(t.approved_n, 0) AS approved_thumbnail_n
+       FROM article_lab_subtitle_candidates s
+       LEFT JOIN (
+         SELECT
+           subtitle_id,
+           COALESCE(SUM(CASE WHEN status = 'generated' THEN 1 ELSE 0 END), 0) AS generated_n,
+           COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved_n
+         FROM article_lab_thumbnail_candidates
+         GROUP BY subtitle_id
+       ) t
+         ON t.subtitle_id = s.subtitle_id
+       WHERE s.subtitle_id IN (%s)",
+      placeholders
+    ),
+    params = as.list(subtitle_ids)
+  )
+  if (nrow(rows) == 0) return(list(dismissed_n = 0L, skipped_n = length(subtitle_ids), candidate_ids = character(), batch_ids = character()))
+
+  eligible_rows <- rows[
+    rows$status == "approved" &
+      rows$generated_thumbnail_n <= 0 &
+      rows$approved_thumbnail_n <= 0,
+    ,
+    drop = FALSE
+  ]
+  skipped_n <- length(subtitle_ids) - nrow(eligible_rows)
+  candidate_ids <- unique(eligible_rows$candidate_id)
+  batch_ids <- unique(eligible_rows$batch_id)
+
+  dbBegin(con)
+  tryCatch({
+    if (nrow(eligible_rows) > 0) {
+      dbExecute(
+        con,
+        sprintf("UPDATE article_lab_subtitle_candidates SET status = 'rejected', rejected_at = ?, approved_at = NULL WHERE subtitle_id IN (%s)", paste(rep("?", nrow(eligible_rows)), collapse = ", ")),
+        params = c(list(now_utc()), as.list(eligible_rows$subtitle_id))
+      )
+      article_lab_sync_title_subtitle_stage(con, candidate_ids)
+    }
+    for (batch_id in batch_ids) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+
+  list(dismissed_n = nrow(eligible_rows), skipped_n = skipped_n, candidate_ids = candidate_ids, batch_ids = batch_ids)
+}
+
 article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, model = NA_character_, prompt = NA_character_, variants_per_package = article_lab_default_thumbnail_variants) {
   subtitle_ids <- clean_text(subtitle_ids)
   subtitle_ids <- unique(subtitle_ids[!is.na(subtitle_ids)])
@@ -4038,7 +4161,7 @@ article_lab_archive_api_scored_candidates <- function(con, candidate_ids) {
   )
   if (nrow(rows) == 0) return(list(archived_n = 0L, skipped_n = length(candidate_ids), batch_ids = character()))
   rows <- article_lab_normalize_candidate_rows(rows)
-  eligible_ids <- rows$candidate_id[rows$normalized_status == "api_scored"]
+  eligible_ids <- rows$candidate_id[rows$normalized_status %in% c("ready_for_api_scoring", "api_scored", "approved_for_subtitle")]
   skipped_n <- length(candidate_ids) - length(eligible_ids)
   batch_ids <- unique(rows$batch_id)
 
@@ -7737,6 +7860,7 @@ server <- function(input, output, session) {
             uiOutput("article_lab_score_button"),
             actionButton("article_lab_refresh_scores", "Refresh", class = "lab-secondary")
           ),
+          uiOutput("article_lab_score_effective_prompt"),
           div(class = "lab-status-copy", "Only titles in the API queue are scored."),
           uiOutput("article_lab_notice")
         ),
@@ -7820,6 +7944,7 @@ server <- function(input, output, session) {
             uiOutput("article_lab_thumbnail_generate_button"),
             actionButton("article_lab_refresh_thumbnails", "Refresh", class = "lab-secondary")
           ),
+          uiOutput("article_lab_thumbnail_effective_prompt"),
           div(class = "lab-status-copy", "Generate thumbnail candidates for approved title/subtitle packages, then approve one preview card per package."),
           uiOutput("article_lab_notice")
         )
@@ -7893,6 +8018,7 @@ server <- function(input, output, session) {
               div(class = "lab-field", selectInput("research_summary_prompt_version", "Prompt version", choices = article_lab_research_summary_prompt_version_choices, selected = article_lab_default_research_summary_prompt_version, width = "100%"))
             ),
             div(class = "lab-field lab-editor-textarea", textAreaInput("research_summary_api_prompt", "API prompt", value = article_lab_default_research_summary_prompt, width = "100%", height = "260px")),
+            uiOutput("research_summary_effective_prompt"),
             div(class = "lab-actions", actionButton("research_generate_summary_draft", "Generate summary draft", class = "lab-primary"))
           ),
           div(
@@ -8989,9 +9115,14 @@ server <- function(input, output, session) {
       sprintf("Inspiration source: %s", article_lab_input_string(effective$inspiration_source) %||% "(none)"),
       sep = "\n"
     )
+    example_titles <- if (identical(article_lab_input_string(effective$inspiration_source), "top performing titles")) {
+      article_lab_top_title_examples(con, limit = 8L)
+    } else {
+      character()
+    }
     div(
       class = "lab-card",
-      h3("Prompt that will be used"),
+      h3("Prompt that will be sent to the API"),
       p(class = "lab-status-copy", mode_copy),
       tags$details(
         open = if (summary_mode) "open" else NULL,
@@ -9015,8 +9146,113 @@ server <- function(input, output, session) {
           h4("Manual/default prompt"),
           tags$pre(class = "lab-status-copy", effective$manual_prompt)
         ),
+        if (length(example_titles) > 0) tagList(
+          h4("Reference examples sent as inspiration"),
+          tags$pre(class = "lab-status-copy", paste(sprintf("%s. %s", seq_along(example_titles), example_titles), collapse = "\n"))
+        ),
         h4("Article summary"),
         tags$pre(class = "lab-status-copy", effective$prompt)
+      )
+    )
+  })
+
+  output$research_summary_effective_prompt <- renderUI({
+    source <- selected_research_source()
+    asset <- selected_research_pdf_asset()
+    prompt_text <- article_lab_input_multiline(input$research_summary_api_prompt) %||% article_lab_default_research_summary_prompt
+    pdf_status <- if (nrow(asset) == 0) "missing" else research_input_default(asset$status[[1]], "missing")
+    local_pdf_path <- if (nrow(asset) == 0) NA_character_ else research_input_value(asset$local_path[[1]])
+    resolved_pdf_path <- research_resolve_local_pdf_path(local_pdf_path)
+    request_fields <- paste(
+      sprintf("Model: %s", article_lab_input_string(input$research_summary_model) %||% article_lab_default_research_summary_model),
+      sprintf("Prompt version: %s", article_lab_input_string(input$research_summary_prompt_version) %||% article_lab_default_research_summary_prompt_version),
+      sprintf("PDF attachment status: %s", pdf_status),
+      sprintf("PDF attachment filename/path: %s", resolved_pdf_path %||% "(none)"),
+      sep = "\n"
+    )
+    metadata_text <- if (nrow(source) == 0) {
+      "(No source selected. Select a source to see the exact source metadata sent with the PDF.)"
+    } else {
+      paste(
+        "Source metadata:",
+        sprintf("Research source ID: %s", source$research_source_id[[1]] %||% ""),
+        sprintf("Source title: %s", article_lab_input_string(source$source_title[[1]]) %||% ""),
+        sprintf("Source URL: %s", article_lab_input_string(source$source_url[[1]]) %||% ""),
+        sprintf("PDF URL: %s", article_lab_input_string(source$pdf_url[[1]]) %||% ""),
+        "Main idea:",
+        article_lab_input_multiline(source$main_idea[[1]]) %||% "",
+        "",
+        "Abstract:",
+        article_lab_input_multiline(source$abstract[[1]]) %||% "",
+        "",
+        "User prompt:",
+        prompt_text,
+        sep = "\n"
+      )
+    }
+
+    div(
+      class = "lab-card",
+      h3("Prompt that will be sent to the API"),
+      p(class = "lab-status-copy", "Summary generation sends the selected PDF as an input_file plus this text metadata/prompt payload."),
+      tags$details(
+        open = if (nrow(source) > 0) "open" else NULL,
+        tags$summary("Show exact research summary API prompt"),
+        h4("Request fields"),
+        tags$pre(class = "lab-status-copy", request_fields),
+        h4("Input text sent with PDF"),
+        tags$pre(class = "lab-status-copy", metadata_text)
+      )
+    )
+  })
+
+  output$article_lab_score_effective_prompt <- renderUI({
+    queue_rows <- article_lab_queue_rows()
+    selected_ids <- collect_selected_ids(
+      queue_rows,
+      "article_lab_queue_select",
+      snapshot_ids = input$article_lab_queue_selected_snapshot
+    )
+    selected_rows <- if (length(selected_ids) > 0 && nrow(queue_rows) > 0) {
+      queue_rows[queue_rows$candidate_id %in% selected_ids, , drop = FALSE]
+    } else {
+      queue_rows[0, , drop = FALSE]
+    }
+    model <- article_lab_input_string(input$article_lab_score_model) %||% article_lab_default_score_model
+    prompt_version <- article_lab_input_string(input$article_lab_score_prompt_version) %||% article_lab_default_score_prompt_version
+    scope <- article_lab_input_string(input$article_lab_score_scope) %||% article_lab_default_score_scope
+    request_fields <- paste(
+      sprintf("Model: %s", model),
+      sprintf("Prompt version: %s", prompt_version),
+      sprintf("Scope: %s", scope),
+      "Response format: strict JSON schema with curiosity, emotional_pull, medium_comment_potential, overall_article_potential, trust_risk, predicted_success_bucket, and short_reason.",
+      sep = "\n"
+    )
+    user_prompts <- if (nrow(selected_rows) == 0) {
+      "(No selected API-queue titles. Select title checkboxes to see the exact per-title user prompt that will be sent.)"
+    } else {
+      paste(vapply(seq_len(nrow(selected_rows)), function(i) {
+        paste(
+          sprintf("candidate_id=%s | batch_id=%s", selected_rows$candidate_id[[i]], selected_rows$batch_id[[i]]),
+          article_lab_score_user_prompt(prompt_version, scope, selected_rows$title[[i]]),
+          sep = "\n\n"
+        )
+      }, character(1)), collapse = "\n\n---\n\n")
+    }
+
+    div(
+      class = "lab-card",
+      h3("Prompt that will be sent to the API"),
+      p(class = "lab-status-copy", "API scoring sends one request per selected title. Each request uses this system prompt plus the per-title user prompt below."),
+      tags$details(
+        open = if (nrow(selected_rows) > 0) "open" else NULL,
+        tags$summary("Show exact title scoring API prompt"),
+        h4("Request fields"),
+        tags$pre(class = "lab-status-copy", request_fields),
+        h4("System prompt"),
+        tags$pre(class = "lab-status-copy", article_lab_score_system_prompt),
+        h4("Per-title user prompt"),
+        tags$pre(class = "lab-status-copy", user_prompts)
       )
     )
   })
@@ -9048,7 +9284,7 @@ server <- function(input, output, session) {
 
     div(
       class = "lab-card",
-      h3("Prompt that will be used"),
+      h3("Prompt that will be sent to the API"),
       p(class = "lab-status-copy", summary_copy),
       tags$details(
         open = if (has_summary) "open" else NULL,
@@ -9071,6 +9307,59 @@ server <- function(input, output, session) {
             )
           }, character(1)), collapse = "\n\n---\n\n"))
         )
+      )
+    )
+  })
+
+  output$article_lab_thumbnail_effective_prompt <- renderUI({
+    packages <- article_lab_thumbnail_package_rows()
+    variants_per_package <- max(1L, min(4L, suppressWarnings(as.integer(input$article_lab_thumbnail_variants_per_package)) %||% article_lab_default_thumbnail_variants))
+    base_prompt <- article_lab_input_multiline(input$article_lab_thumbnail_prompt) %||% article_lab_default_thumbnail_prompt
+    selected_ids <- collect_selected_ids(
+      packages,
+      "article_lab_thumbnail_package_select",
+      snapshot_ids = input$article_lab_thumbnail_packages_selected_snapshot,
+      key_col = "subtitle_id"
+    )
+    selected_packages <- if (length(selected_ids) > 0 && nrow(packages) > 0) {
+      packages[packages$subtitle_id %in% selected_ids, , drop = FALSE]
+    } else {
+      packages[0, , drop = FALSE]
+    }
+    request_additions <- paste(
+      sprintf("Model: %s", article_lab_input_string(input$article_lab_thumbnail_model) %||% article_lab_default_thumbnail_model),
+      sprintf("Thumbnail candidates per package: %s", variants_per_package),
+      sep = "\n"
+    )
+    package_list <- if (nrow(selected_packages) == 0) {
+      "(No selected eligible title/subtitle packages. Select package checkboxes to see the exact package context that will be sent.)"
+    } else {
+      paste(vapply(seq_len(nrow(selected_packages)), function(i) {
+        sprintf(
+          "%s. subtitle_id=%s | candidate_id=%s | batch_id=%s\nTitle: %s\nSubtitle: %s",
+          i,
+          selected_packages$subtitle_id[[i]],
+          selected_packages$candidate_id[[i]],
+          selected_packages$batch_id[[i]],
+          selected_packages$title[[i]],
+          selected_packages$subtitle[[i]]
+        )
+      }, character(1)), collapse = "\n\n")
+    }
+
+    div(
+      class = "lab-card",
+      h3("Prompt that will be sent to the API"),
+      p(class = "lab-status-copy", "Thumbnail generation sends this prompt plus the selected title/subtitle package context."),
+      tags$details(
+        open = if (nrow(selected_packages) > 0) "open" else NULL,
+        tags$summary("Show exact thumbnail API prompt"),
+        h4("Thumbnail prompt"),
+        tags$pre(class = "lab-status-copy", base_prompt),
+        h4("Request fields"),
+        tags$pre(class = "lab-status-copy", request_additions),
+        h4("Selected title/subtitle packages"),
+        tags$pre(class = "lab-status-copy", package_list)
       )
     )
   })
@@ -9309,7 +9598,11 @@ server <- function(input, output, session) {
             class = "lab-actions",
             checkboxInput("article_lab_queue_select_all", "Select all", value = FALSE)
           ),
-          article_lab_score_queue_table_ui(queue_rows)
+          article_lab_score_queue_table_ui(queue_rows),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_archive_queue_titles", "Archive selected titles", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_queue');")
+          )
         ),
         count = nrow(queue_rows)
       ),
@@ -9347,7 +9640,11 @@ server <- function(input, output, session) {
             class = "lab-actions",
             checkboxInput("article_lab_subtitle_title_select_all", "Select all", value = FALSE)
           ),
-          article_lab_subtitle_target_table_ui(target_rows)
+          article_lab_subtitle_target_table_ui(target_rows),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_archive_subtitle_titles", "Archive selected titles", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_subtitle_titles');")
+          )
         ),
         count = nrow(target_rows)
       ),
@@ -9385,7 +9682,11 @@ server <- function(input, output, session) {
             class = "lab-actions",
             checkboxInput("article_lab_thumbnail_package_select_all", "Select all", value = FALSE)
           ),
-          article_lab_thumbnail_package_table_ui(package_rows)
+          article_lab_thumbnail_package_table_ui(package_rows),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_dismiss_thumbnail_packages", "Dismiss selected packages", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_packages');")
+          )
         ),
         count = nrow(package_rows)
       ),
@@ -9785,6 +10086,29 @@ server <- function(input, output, session) {
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 
+  observeEvent(input$article_lab_archive_queue_titles, {
+    queue_rows <- article_lab_queue_rows()
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(queue_rows, "article_lab_queue_notes"))
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(article_lab_scored_rows(), "article_lab_scored_notes"))
+    selected_ids <- collect_selected_ids(
+      queue_rows,
+      "article_lab_queue_select",
+      snapshot_ids = input$article_lab_queue_selected_snapshot
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one API-queue title before archiving it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_archive_api_scored_candidates(con, selected_ids)
+    article_lab_state$notice <- sprintf(
+      "Archived %s selected API-queue title%s. No rows were deleted.",
+      result$archived_n,
+      ifelse(result$archived_n == 1, "", "s")
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
   observeEvent(input$article_lab_archive_scored_titles, {
     scored_rows <- article_lab_scored_rows()
     article_lab_update_candidate_notes(con, collect_candidate_note_updates(article_lab_queue_rows(), "article_lab_queue_notes"))
@@ -9811,6 +10135,30 @@ server <- function(input, output, session) {
         ifelse(result$skipped_n == 1, "", "s")
       )
     }
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_archive_subtitle_titles, {
+    target_rows <- article_lab_subtitle_target_rows()
+    pending_rows <- article_lab_pending_subtitle_rows()
+    article_lab_update_candidate_notes(con, collect_candidate_note_updates(target_rows, "article_lab_subtitle_title_notes"))
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(pending_rows, "article_lab_subtitle_candidate_notes"))
+    selected_ids <- collect_selected_ids(
+      target_rows,
+      "article_lab_subtitle_title_select",
+      snapshot_ids = input$article_lab_subtitle_titles_selected_snapshot
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one subtitle-stage title before archiving it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_archive_api_scored_candidates(con, selected_ids)
+    article_lab_state$notice <- sprintf(
+      "Archived %s selected subtitle-stage title%s. No rows were deleted.",
+      result$archived_n,
+      ifelse(result$archived_n == 1, "", "s")
+    )
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 
@@ -10014,6 +10362,31 @@ server <- function(input, output, session) {
       )
       article_lab_refresh(article_lab_refresh() + 1L)
     }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_dismiss_thumbnail_packages, {
+    package_rows <- article_lab_thumbnail_package_rows()
+    pending_rows <- article_lab_pending_thumbnail_rows()
+    article_lab_update_subtitle_notes(con, collect_subtitle_note_updates(package_rows, "article_lab_thumbnail_package_notes"))
+    article_lab_update_thumbnail_notes(con, collect_thumbnail_note_updates(pending_rows, "article_lab_thumbnail_candidate_notes"))
+    selected_ids <- collect_selected_ids(
+      package_rows,
+      "article_lab_thumbnail_package_select",
+      snapshot_ids = input$article_lab_thumbnail_packages_selected_snapshot,
+      key_col = "subtitle_id"
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one ready title/subtitle package before dismissing it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_dismiss_thumbnail_packages(con, selected_ids)
+    article_lab_state$notice <- sprintf(
+      "Dismissed %s selected title/subtitle package%s. No rows were deleted.",
+      result$dismissed_n,
+      ifelse(result$dismissed_n == 1, "", "s")
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_approve_thumbnails, {
