@@ -1,4 +1,4 @@
-required_packages <- c("shiny", "DBI", "RSQLite", "jsonlite")
+required_packages <- c("shiny", "DBI", "RSQLite", "jsonlite", "DT")
 missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_packages) > 0) {
   stop(
@@ -13,6 +13,7 @@ library(shiny)
 library(DBI)
 library(RSQLite)
 library(jsonlite)
+library(DT)
 
 requested_rating_mode <- Sys.getenv("HUMAN_RATING_MODE", unset = "feed_preview_1_5")
 is_dimension_v1_mode <- requested_rating_mode %in% c("dimensions_v1", "human_preview_dimensions_v1")
@@ -88,6 +89,17 @@ clean_text <- function(x) {
   y[is.na(x)] <- NA_character_
   y <- gsub("\u00a0", " ", y, fixed = TRUE)
   y <- gsub("\\s+", " ", y)
+  y <- trimws(y)
+  y[y == ""] <- NA_character_
+  y
+}
+
+clean_multiline_text <- function(x) {
+  y <- as.character(x)
+  y[is.na(x)] <- NA_character_
+  y <- gsub("\r\n?", "\n", y)
+  y <- gsub("\u00a0", " ", y, fixed = TRUE)
+  y <- gsub("[ \t]+$", "", y, perl = TRUE)
   y <- trimws(y)
   y[y == ""] <- NA_character_
   y
@@ -520,12 +532,61 @@ article_lab_default_prompt <- paste(
   sep = "\n"
 )
 
+article_lab_manual_prompt_key <- "manual_default"
+
+load_article_lab_prompt <- function(con, prompt_key = article_lab_manual_prompt_key) {
+  key <- article_lab_input_string(prompt_key) %||% article_lab_manual_prompt_key
+  if (!dbExistsTable(con, "article_lab_prompts")) return(article_lab_default_prompt)
+  rows <- dbGetQuery(con, "
+    SELECT prompt_text
+    FROM article_lab_prompts
+    WHERE prompt_key = ?
+    LIMIT 1
+  ", params = list(key))
+  if (nrow(rows) == 0) return(article_lab_default_prompt)
+  article_lab_input_multiline(rows$prompt_text[[1]]) %||% article_lab_default_prompt
+}
+
+save_article_lab_prompt <- function(con, prompt_text, prompt_key = article_lab_manual_prompt_key) {
+  key <- article_lab_input_string(prompt_key) %||% article_lab_manual_prompt_key
+  text <- article_lab_input_multiline(prompt_text) %||% article_lab_default_prompt
+  timestamp <- now_utc()
+  rows <- dbGetQuery(con, "SELECT prompt_key FROM article_lab_prompts WHERE prompt_key = ? LIMIT 1", params = list(key))
+  if (nrow(rows) > 0) {
+    dbExecute(con, "
+      UPDATE article_lab_prompts
+      SET updated_at = ?, prompt_text = ?
+      WHERE prompt_key = ?
+    ", params = list(timestamp, text, key))
+    return(invisible(key))
+  }
+  dbExecute(con, "
+    INSERT INTO article_lab_prompts (prompt_key, created_at, updated_at, prompt_text)
+    VALUES (?, ?, ?, ?)
+  ", params = list(key, timestamp, timestamp, text))
+  invisible(key)
+}
+
 article_lab_default_model <- local({
   configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_HEADLINE_MODEL", unset = "")
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
+article_lab_title_generation_model_choices <- c(
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+  "gpt-4.1-nano",
+  "o3",
+  "o3-mini",
+  "o4-mini"
+)
+if (!article_lab_default_model %in% article_lab_title_generation_model_choices) {
+  article_lab_title_generation_model_choices <- c(article_lab_default_model, article_lab_title_generation_model_choices)
+}
 article_lab_default_score_model <- local({
   configured <- Sys.getenv("OPENAI_TITLE_SCORING_MODEL", unset = "")
   if (!nzchar(configured)) configured <- "gpt-5-mini"
@@ -544,6 +605,56 @@ article_lab_default_thumbnail_model <- local({
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
+article_lab_default_research_summary_model <- local({
+  configured <- Sys.getenv("OPENAI_RESEARCH_SUMMARY_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5-mini"
+  configured
+})
+article_lab_research_summary_model_choices <- c(
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+  "gpt-4.1-nano",
+  "o3",
+  "o3-mini",
+  "o4-mini"
+)
+if (!article_lab_default_research_summary_model %in% article_lab_research_summary_model_choices) {
+  article_lab_research_summary_model_choices <- c(article_lab_default_research_summary_model, article_lab_research_summary_model_choices)
+}
+article_lab_default_research_summary_prompt_version <- "research_summary_v1"
+article_lab_research_summary_prompt_version_choices <- c(
+  "research_summary_v1"
+)
+if (!article_lab_default_research_summary_prompt_version %in% article_lab_research_summary_prompt_version_choices) {
+  article_lab_research_summary_prompt_version_choices <- c(article_lab_default_research_summary_prompt_version, article_lab_research_summary_prompt_version_choices)
+}
+article_lab_default_research_summary_prompt <- paste(
+  "Summarize this research paper for a beginner-friendly, evidence-based personal finance writing workflow.",
+  "",
+  "Do not write an article. Do not generate titles. Do not overclaim. Separate what the paper says from what an investor might infer. Be transparent about uncertainty and limitations.",
+  "",
+  "Use each section heading on its own line, with a blank line after the heading and blank lines between paragraphs or bullet groups so the saved draft remains easy to edit. Do not put body text on the same line as a heading.",
+  "",
+  "Use this exact structure:",
+  "",
+  "Short summary:",
+  "",
+  "Main findings:",
+  "",
+  "Why it matters for investors:",
+  "",
+  "Interesting details:",
+  "",
+  "Caveats / limitations:",
+  "",
+  "What not to overclaim:",
+  "",
+  "Possible article directions:",
+  sep = "\n"
+)
 article_lab_default_subtitle_prompt <- paste(
   "Generate Medium-style subtitle candidates for approved personal finance and investing article titles.",
   "Return valid JSON only.",
@@ -566,7 +677,12 @@ article_lab_default_thumbnail_prompt <- paste(
 article_lab_default_score_prompt_version <- "v2_2"
 article_lab_default_score_scope <- "title_only"
 article_lab_all_batches_value <- "__all_article_lab_batches__"
-article_lab_title_max_chars <- 45L
+article_lab_title_max_chars <- 140L
+article_lab_title_preferred_min_chars <- 40L
+article_lab_title_preferred_max_chars <- 75L
+article_lab_title_mobile_safe_chars <- 45L
+article_lab_title_good_chars <- 60L
+article_lab_title_long_allowed_chars <- 90L
 article_lab_subtitle_max_chars <- 90L
 article_lab_default_thumbnail_variants <- 3L
 article_lab_candidate_status_values <- c(
@@ -605,6 +721,8 @@ article_lab_thumbnail_status_labels <- c(
   rejected = "Rejected"
 )
 article_lab_workflow_sections <- c(
+  "research_inbox",
+  "summary",
   "generate",
   "api_scoring",
   "subtitle_generation",
@@ -617,6 +735,18 @@ article_lab_page_meta <- list(
   home = list(
     nav_title = "Home",
     nav_subtitle = "Current rating workflow"
+  ),
+  research_inbox = list(
+    nav_title = "Research Inbox",
+    nav_subtitle = "Track papers and article angles",
+    title = "Article Lab - Research Inbox",
+    subtitle = "Track papers and article angles."
+  ),
+  summary = list(
+    nav_title = "Summary",
+    nav_subtitle = "Check paper summary",
+    title = "Article Lab - Summary",
+    subtitle = "Check paper summary."
   ),
   generate = list(
     nav_title = "Generate",
@@ -685,9 +815,17 @@ article_lab_title_length_flag <- function(char_count) {
     is.na(count),
     NA_character_,
     ifelse(
-      count <= 45L,
+      count <= article_lab_title_mobile_safe_chars,
       "mobile_safe",
-      ifelse(count <= 60L, "good", ifelse(count <= 75L, "risky", "too_long"))
+      ifelse(
+        count <= article_lab_title_good_chars,
+        "good",
+        ifelse(
+          count <= article_lab_title_long_allowed_chars,
+          "long_but_allowed",
+          ifelse(count <= article_lab_title_max_chars, "very_long_but_allowed", "too_long")
+        )
+      )
     )
   )
 }
@@ -710,7 +848,11 @@ article_lab_combined_title_score <- function(curiosity, emotional_pull, medium_c
   length_penalty <- ifelse(
     is.na(char_count),
     0,
-    ifelse(char_count > 75L, 20, ifelse(char_count > 60L, 8, 0))
+    ifelse(
+      char_count > article_lab_title_max_chars,
+      35,
+      ifelse(char_count > article_lab_title_long_allowed_chars, 20, ifelse(char_count > article_lab_title_preferred_max_chars, 8, 0))
+    )
   )
   raw_score <- (0.25 * curiosity_norm) +
     (0.30 * emotional_norm) +
@@ -793,6 +935,15 @@ article_lab_normalize_candidate_rows <- function(rows) {
 
 ensure_article_lab_schema <- function(con) {
   dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_prompts (
+      prompt_key TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      prompt_text TEXT NOT NULL
+    )
+  ")
+
+  dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_lab_title_batches (
       batch_id TEXT PRIMARY KEY,
       created_at TEXT NOT NULL,
@@ -828,6 +979,12 @@ ensure_article_lab_schema <- function(con) {
   db_add_column_if_missing(con, "article_lab_title_candidates", "title_char_count", "INTEGER")
   db_add_column_if_missing(con, "article_lab_title_candidates", "title_length_flag", "TEXT")
   db_add_column_if_missing(con, "article_lab_title_candidates", "notes", "TEXT")
+
+  prompt_columns <- list(
+    prompt_key = "TEXT NOT NULL DEFAULT ''", created_at = "TEXT NOT NULL DEFAULT ''",
+    updated_at = "TEXT NOT NULL DEFAULT ''", prompt_text = "TEXT NOT NULL DEFAULT ''"
+  )
+  for (column_name in names(prompt_columns)) db_add_column_if_missing(con, "article_lab_prompts", column_name, prompt_columns[[column_name]])
 
   dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_lab_title_api_scores (
@@ -974,13 +1131,18 @@ ensure_article_lab_schema <- function(con) {
   dbExecute(con, "
     UPDATE article_lab_title_candidates
     SET title_char_count = COALESCE(title_char_count, LENGTH(COALESCE(title, ''))),
-        title_length_flag = COALESCE(title_length_flag, CASE
+        title_length_flag = CASE
           WHEN LENGTH(COALESCE(title, '')) <= 45 THEN 'mobile_safe'
           WHEN LENGTH(COALESCE(title, '')) <= 60 THEN 'good'
-          WHEN LENGTH(COALESCE(title, '')) <= 75 THEN 'risky'
+          WHEN LENGTH(COALESCE(title, '')) <= 90 THEN 'long_but_allowed'
+          WHEN LENGTH(COALESCE(title, '')) <= 140 THEN 'very_long_but_allowed'
           ELSE 'too_long'
-        END)
-    WHERE title_char_count IS NULL OR title_length_flag IS NULL
+        END
+    WHERE title_char_count IS NULL
+       OR title_length_flag IS NULL
+       OR title_length_flag = 'risky'
+       OR (title_length_flag = 'too_long' AND LENGTH(COALESCE(title, '')) <= 140)
+       OR title_length_flag NOT IN ('mobile_safe', 'good', 'long_but_allowed', 'very_long_but_allowed', 'too_long')
   ")
 
   dbExecute(con, "
@@ -1042,12 +1204,495 @@ ensure_article_lab_schema <- function(con) {
   ")
 }
 
+ensure_research_workflow_schema <- function(con) {
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS research_sources (
+      research_source_id INTEGER PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      source_title TEXT NOT NULL,
+      source_url TEXT,
+      pdf_url TEXT,
+      main_idea TEXT,
+      abstract TEXT,
+      source_type TEXT DEFAULT 'paper',
+      source_name TEXT,
+      manual_sort_order INTEGER,
+      status TEXT NOT NULL DEFAULT 'new',
+      notes TEXT,
+      imported_from_table TEXT,
+      imported_from_id TEXT
+    )
+  ")
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS research_article_angles (
+      research_angle_id INTEGER PRIMARY KEY,
+      research_source_id INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      angle_title TEXT NOT NULL,
+      main_idea TEXT,
+      manual_sort_order INTEGER,
+      status TEXT NOT NULL DEFAULT 'idea',
+      notes TEXT,
+      article_lab_batch_id TEXT,
+      FOREIGN KEY(research_source_id) REFERENCES research_sources(research_source_id)
+    )
+  ")
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS research_source_summaries (
+      summary_id INTEGER PRIMARY KEY,
+      research_source_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      summary_text TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      confirmed_at TEXT,
+      model TEXT,
+      prompt_version TEXT,
+      notes TEXT,
+      raw_json TEXT,
+      FOREIGN KEY(research_source_id) REFERENCES research_sources(research_source_id)
+    )
+  ")
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS research_source_assets (
+      asset_id INTEGER PRIMARY KEY,
+      research_source_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      asset_type TEXT NOT NULL DEFAULT 'pdf',
+      source_url TEXT,
+      local_path TEXT,
+      original_filename TEXT,
+      file_sha256 TEXT,
+      status TEXT NOT NULL DEFAULT 'missing',
+      error TEXT,
+      notes TEXT,
+      FOREIGN KEY(research_source_id) REFERENCES research_sources(research_source_id)
+    )
+  ")
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS research_summary_prompts (
+      prompt_version TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      prompt_text TEXT NOT NULL
+    )
+  ")
+
+  source_columns <- list(
+    source_url = "TEXT", pdf_url = "TEXT", main_idea = "TEXT", abstract = "TEXT",
+    source_type = "TEXT DEFAULT 'paper'", source_name = "TEXT", manual_sort_order = "INTEGER",
+    notes = "TEXT", imported_from_table = "TEXT", imported_from_id = "TEXT"
+  )
+  for (column_name in names(source_columns)) db_add_column_if_missing(con, "research_sources", column_name, source_columns[[column_name]])
+
+  angle_columns <- list(
+    research_source_id = "INTEGER", main_idea = "TEXT", manual_sort_order = "INTEGER",
+    notes = "TEXT", article_lab_batch_id = "TEXT"
+  )
+  for (column_name in names(angle_columns)) db_add_column_if_missing(con, "research_article_angles", column_name, angle_columns[[column_name]])
+
+  summary_columns <- list(
+    research_source_id = "INTEGER NOT NULL DEFAULT 0", created_at = "TEXT NOT NULL DEFAULT ''",
+    updated_at = "TEXT NOT NULL DEFAULT ''", summary_text = "TEXT NOT NULL DEFAULT ''",
+    status = "TEXT NOT NULL DEFAULT 'draft'", confirmed_at = "TEXT", model = "TEXT",
+    prompt_version = "TEXT", notes = "TEXT", raw_json = "TEXT"
+  )
+  for (column_name in names(summary_columns)) db_add_column_if_missing(con, "research_source_summaries", column_name, summary_columns[[column_name]])
+
+  asset_columns <- list(
+    research_source_id = "INTEGER NOT NULL DEFAULT 0", created_at = "TEXT NOT NULL DEFAULT ''",
+    updated_at = "TEXT NOT NULL DEFAULT ''", asset_type = "TEXT NOT NULL DEFAULT 'pdf'",
+    source_url = "TEXT", local_path = "TEXT", original_filename = "TEXT", file_sha256 = "TEXT",
+    status = "TEXT NOT NULL DEFAULT 'missing'", error = "TEXT", notes = "TEXT"
+  )
+  for (column_name in names(asset_columns)) db_add_column_if_missing(con, "research_source_assets", column_name, asset_columns[[column_name]])
+
+  prompt_columns <- list(
+    prompt_version = "TEXT NOT NULL DEFAULT ''", created_at = "TEXT NOT NULL DEFAULT ''",
+    updated_at = "TEXT NOT NULL DEFAULT ''", prompt_text = "TEXT NOT NULL DEFAULT ''"
+  )
+  for (column_name in names(prompt_columns)) db_add_column_if_missing(con, "research_summary_prompts", column_name, prompt_columns[[column_name]])
+
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_research_sources_status_sort_updated ON research_sources (status, manual_sort_order, updated_at)")
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_research_sources_name_type ON research_sources (source_name, source_type)")
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_research_article_angles_status_sort_updated ON research_article_angles (status, manual_sort_order, updated_at)")
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_research_article_angles_source ON research_article_angles (research_source_id)")
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_research_source_summaries_source_status_updated ON research_source_summaries (research_source_id, status, updated_at)")
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_research_source_summaries_status_confirmed_updated ON research_source_summaries (status, confirmed_at, updated_at)")
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_research_source_assets_source_type_status_updated ON research_source_assets (research_source_id, asset_type, status, updated_at)")
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_research_source_assets_file_sha256 ON research_source_assets (file_sha256)")
+}
+
 article_lab_batch_id <- function() {
   paste0("alb_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
 }
 
 article_lab_candidate_id <- function(batch_id, index) {
   paste0("alc_", batch_id, "_", sprintf("%02d", as.integer(index)))
+}
+
+research_workflow_sort_sql <- "CASE WHEN manual_sort_order IS NULL THEN 1 ELSE 0 END, manual_sort_order ASC, updated_at DESC"
+research_source_sort_sql <- "CASE WHEN s.manual_sort_order IS NULL THEN 1 ELSE 0 END, s.manual_sort_order ASC, s.updated_at DESC"
+research_ranked_source_sort_sql <- "s.manual_sort_order ASC, s.updated_at DESC"
+research_unranked_source_sort_sql <- "s.updated_at DESC"
+research_angle_sort_sql <- "CASE WHEN a.manual_sort_order IS NULL THEN 1 ELSE 0 END, a.manual_sort_order ASC, a.updated_at DESC"
+
+research_input_value <- function(value) {
+  cleaned <- clean_text(value)
+  if (length(cleaned) == 0 || is.na(cleaned[[1]])) NA_character_ else cleaned[[1]]
+}
+
+research_multiline_value <- function(value) {
+  cleaned <- clean_multiline_text(value)
+  if (length(cleaned) == 0 || is.na(cleaned[[1]])) NA_character_ else cleaned[[1]]
+}
+
+research_input_default <- function(value, default) {
+  cleaned <- research_input_value(value)
+  if (is.na(cleaned)) default else cleaned
+}
+
+research_input_integer <- function(value) {
+  cleaned <- research_input_value(value)
+  number <- suppressWarnings(as.integer(cleaned))
+  if (is.na(number)) NA_integer_ else number
+}
+
+research_numeric_default <- function(value) {
+  number <- suppressWarnings(as.integer(value))
+  if (length(number) == 0 || is.na(number[[1]])) NULL else number[[1]]
+}
+
+load_research_sources <- function(con, status = "__all__", ranked = NULL) {
+  if (!dbExistsTable(con, "research_sources")) return(data.frame())
+  status_value <- research_input_value(status)
+  where <- character()
+  params <- list()
+  if (!is.na(status_value) && !identical(status_value, "__all__")) {
+    where <- c(where, "s.status = ?")
+    params <- c(params, list(status_value))
+  }
+  if (isTRUE(ranked)) {
+    where <- c(where, "s.manual_sort_order IS NOT NULL")
+    order_sql <- research_ranked_source_sort_sql
+  } else if (identical(ranked, FALSE)) {
+    where <- c(where, "s.manual_sort_order IS NULL")
+    order_sql <- research_unranked_source_sort_sql
+  } else {
+    order_sql <- research_source_sort_sql
+  }
+  source_query <- "
+    SELECT s.*, COUNT(a.research_angle_id) AS angles_count
+    FROM research_sources s
+    LEFT JOIN research_article_angles a ON a.research_source_id = s.research_source_id
+  "
+  where_sql <- if (length(where) > 0) paste0(" WHERE ", paste(where, collapse = " AND ")) else ""
+  query <- paste0(source_query, where_sql, " GROUP BY s.research_source_id ORDER BY ", order_sql)
+  if (length(params) > 0) dbGetQuery(con, query, params = params) else dbGetQuery(con, query)
+}
+
+load_research_source_by_id <- function(con, source_id) {
+  source_id_value <- research_input_integer(source_id)
+  if (is.na(source_id_value) || !dbExistsTable(con, "research_sources")) return(data.frame())
+  dbGetQuery(con, "
+    SELECT s.*, COUNT(a.research_angle_id) AS angles_count
+    FROM research_sources s
+    LEFT JOIN research_article_angles a ON a.research_source_id = s.research_source_id
+    WHERE s.research_source_id = ?
+    GROUP BY s.research_source_id
+    LIMIT 1
+  ", params = list(source_id_value))
+}
+
+load_research_angles <- function(con, source_id = NULL) {
+  if (!dbExistsTable(con, "research_article_angles")) return(data.frame())
+  source_id_value <- research_input_integer(source_id)
+  angle_query <- paste0("
+    SELECT a.*, s.source_title, s.source_url, s.pdf_url, s.main_idea AS source_main_idea, s.abstract AS source_abstract
+    FROM research_article_angles a
+    LEFT JOIN research_sources s ON s.research_source_id = a.research_source_id
+  ")
+  if (!is.na(source_id_value)) {
+    return(dbGetQuery(con, paste0(angle_query, " WHERE a.research_source_id = ? ORDER BY ", research_angle_sort_sql), params = list(source_id_value)))
+  }
+  dbGetQuery(con, paste0(angle_query, " ORDER BY ", research_angle_sort_sql))
+}
+
+research_truncate <- function(value, max_chars = 90L) {
+  value <- research_input_value(value)
+  if (is.na(value)) return("")
+  if (nchar(value, type = "chars") <= max_chars) return(value)
+  paste0(substr(value, 1L, max_chars - 3L), "...")
+}
+
+research_link <- function(url, label) {
+  value <- research_input_value(url)
+  if (is.na(value)) return("")
+  sprintf('<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>', htmltools::htmlEscape(value), htmltools::htmlEscape(label))
+}
+
+research_links <- function(source_url, pdf_url) {
+  links <- c(research_link(source_url, "Open"), research_link(pdf_url, "PDF"))
+  links <- links[nzchar(links)]
+  paste(links, collapse = " &middot; ")
+}
+
+research_summary_template <- paste(
+  "Short summary:",
+  "",
+  "Main findings:",
+  "",
+  "Why it matters for investors:",
+  "",
+  "Interesting details:",
+  "",
+  "Caveats / limitations:",
+  "",
+  "What not to overclaim:",
+  "",
+  "Possible article directions:",
+  sep = "\n"
+)
+
+load_research_source_summary <- function(con, source_id, status = NULL) {
+  source_id_value <- research_input_integer(source_id)
+  if (is.na(source_id_value) || !dbExistsTable(con, "research_source_summaries")) return(data.frame())
+  status_value <- research_input_value(status)
+  if (!is.na(status_value)) {
+    return(dbGetQuery(con, "
+      SELECT *
+      FROM research_source_summaries
+      WHERE research_source_id = ? AND status = ?
+      ORDER BY updated_at DESC, summary_id DESC
+      LIMIT 1
+    ", params = list(source_id_value, status_value)))
+  }
+  dbGetQuery(con, "
+    SELECT *
+    FROM research_source_summaries
+    WHERE research_source_id = ?
+    ORDER BY CASE status WHEN 'draft' THEN 0 WHEN 'confirmed' THEN 1 ELSE 2 END, updated_at DESC, summary_id DESC
+    LIMIT 1
+  ", params = list(source_id_value))
+}
+
+load_confirmed_research_summaries <- function(con) {
+  if (!dbExistsTable(con, "research_source_summaries") || !dbExistsTable(con, "research_sources")) return(data.frame())
+  dbGetQuery(con, "
+    SELECT ss.*, s.source_title, s.source_url, s.pdf_url, s.main_idea, s.abstract,
+      s.status AS source_status, s.manual_sort_order
+    FROM research_source_summaries ss
+    JOIN research_sources s ON s.research_source_id = ss.research_source_id
+    WHERE ss.status = 'confirmed'
+    ORDER BY CASE WHEN s.manual_sort_order IS NULL THEN 1 ELSE 0 END,
+      s.manual_sort_order ASC, ss.confirmed_at DESC, ss.updated_at DESC, ss.summary_id DESC
+  ")
+}
+
+research_summary_prompt <- function(summary_row) {
+  paste(
+    paste("Source title:", summary_row$source_title[[1]] %||% ""),
+    paste("Source link:", summary_row$source_url[[1]] %||% ""),
+    paste("PDF link:", summary_row$pdf_url[[1]] %||% ""),
+    paste("Confirmed summary:", summary_row$summary_text[[1]] %||% ""),
+    sep = "\n\n"
+  )
+}
+
+research_pdf_dir <- file.path(project_root, "data", "research_pdfs")
+
+research_pdf_status_labels <- c(
+  missing = "Missing",
+  downloaded = "Downloaded",
+  uploaded = "Uploaded manually",
+  failed = "Download failed"
+)
+
+load_research_summary_prompt <- function(con, prompt_version) {
+  version <- article_lab_input_string(prompt_version) %||% article_lab_default_research_summary_prompt_version
+  if (!dbExistsTable(con, "research_summary_prompts")) return(article_lab_default_research_summary_prompt)
+  rows <- dbGetQuery(con, "
+    SELECT prompt_text
+    FROM research_summary_prompts
+    WHERE prompt_version = ?
+    LIMIT 1
+  ", params = list(version))
+  if (nrow(rows) == 0) return(article_lab_default_research_summary_prompt)
+  article_lab_input_multiline(rows$prompt_text[[1]]) %||% article_lab_default_research_summary_prompt
+}
+
+save_research_summary_prompt <- function(con, prompt_version, prompt_text) {
+  version <- article_lab_input_string(prompt_version) %||% article_lab_default_research_summary_prompt_version
+  text <- article_lab_input_multiline(prompt_text) %||% article_lab_default_research_summary_prompt
+  timestamp <- now_utc()
+  rows <- dbGetQuery(con, "SELECT prompt_version FROM research_summary_prompts WHERE prompt_version = ? LIMIT 1", params = list(version))
+  if (nrow(rows) > 0) {
+    dbExecute(con, "
+      UPDATE research_summary_prompts
+      SET updated_at = ?, prompt_text = ?
+      WHERE prompt_version = ?
+    ", params = list(timestamp, text, version))
+    return(invisible(version))
+  }
+  dbExecute(con, "
+    INSERT INTO research_summary_prompts (prompt_version, created_at, updated_at, prompt_text)
+    VALUES (?, ?, ?, ?)
+  ", params = list(version, timestamp, timestamp, text))
+  invisible(version)
+}
+
+research_safe_file_slug <- function(value) {
+  value <- research_input_default(value, "research-source")
+  value <- iconv(value, to = "ASCII//TRANSLIT", sub = "")
+  value <- tolower(gsub("[^a-z0-9]+", "-", value))
+  value <- gsub("(^-+|-+$)", "", value)
+  if (!nzchar(value)) "research-source" else substr(value, 1L, 80L)
+}
+
+research_pdf_local_path <- function(source_id, title, original_filename = NULL) {
+  dir.create(research_pdf_dir, recursive = TRUE, showWarnings = FALSE)
+  extension <- tolower(tools::file_ext(original_filename %||% ""))
+  if (!identical(extension, "pdf")) extension <- "pdf"
+  file.path(research_pdf_dir, sprintf("research_source_%s_%s.%s", as.integer(source_id), research_safe_file_slug(title), extension))
+}
+
+research_resolve_local_pdf_path <- function(path) {
+  value <- research_input_value(path)
+  if (is.na(value)) return(NA_character_)
+  candidates <- if (grepl("^(/|[A-Za-z]:[/\\\\])", value)) {
+    value
+  } else {
+    c(value, file.path(project_root, value))
+  }
+  for (candidate in candidates) {
+    if (file.exists(candidate)) return(normalizePath(candidate, winslash = "/", mustWork = TRUE))
+  }
+  value
+}
+
+research_pdf_sha256 <- function(path) {
+  value <- tools::sha256sum(path)
+  unname(as.character(value[[1]]))
+}
+
+research_file_is_pdf <- function(path) {
+  if (!file.exists(path) || file.info(path)$size < 5) return(FALSE)
+  header <- readBin(path, what = "raw", n = 5L)
+  identical(rawToChar(header), "%PDF-")
+}
+
+research_pdf_source_url <- function(source) {
+  pdf_url <- research_input_value(source$pdf_url[[1]])
+  if (!is.na(pdf_url)) return(pdf_url)
+  source_url <- research_input_value(source$source_url[[1]])
+  if (!is.na(source_url) && grepl("\\.pdf($|[?#])", source_url, ignore.case = TRUE)) return(source_url)
+  NA_character_
+}
+
+load_research_pdf_asset <- function(con, source_id) {
+  source_id_value <- research_input_integer(source_id)
+  if (is.na(source_id_value) || !dbExistsTable(con, "research_source_assets")) return(data.frame())
+  dbGetQuery(con, "
+    SELECT *
+    FROM research_source_assets
+    WHERE research_source_id = ? AND asset_type = 'pdf'
+    ORDER BY updated_at DESC, asset_id DESC
+    LIMIT 1
+  ", params = list(source_id_value))
+}
+
+save_research_pdf_asset <- function(con, source_id, status, source_url = NA_character_, local_path = NA_character_, original_filename = NA_character_, file_sha256 = NA_character_, error = NA_character_) {
+  timestamp <- now_utc()
+  existing <- load_research_pdf_asset(con, source_id)
+  local_path <- research_resolve_local_pdf_path(local_path)
+  values <- list(timestamp, source_url, local_path, original_filename, file_sha256, status, error)
+  if (nrow(existing) > 0) {
+    dbExecute(con, "
+      UPDATE research_source_assets
+      SET updated_at = ?, source_url = ?, local_path = ?, original_filename = ?, file_sha256 = ?, status = ?, error = ?
+      WHERE asset_id = ?
+    ", params = c(values, list(existing$asset_id[[1]])))
+    return(existing$asset_id[[1]])
+  }
+  dbExecute(con, "
+    INSERT INTO research_source_assets
+      (research_source_id, created_at, updated_at, asset_type, source_url, local_path, original_filename, file_sha256, status, error)
+    VALUES (?, ?, ?, 'pdf', ?, ?, ?, ?, ?, ?)
+  ", params = list(source_id, timestamp, timestamp, source_url, local_path, original_filename, file_sha256, status, error))
+  dbGetQuery(con, "SELECT last_insert_rowid() AS asset_id")$asset_id[[1]]
+}
+
+research_summary_api_request <- function(source, asset, model = NA_character_, prompt_version = NA_character_, prompt = NA_character_) {
+  helper_path <- file.path("scripts", "writing_api", "summarize_research_pdf.mjs")
+  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/summarize_research_pdf.mjs", call. = FALSE)
+  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+  if (nrow(source) == 0) stop("Select a source before generating a summary.", call. = FALSE)
+  if (nrow(asset) == 0 || !(asset$status[[1]] %in% c("downloaded", "uploaded"))) stop("Download or upload a PDF before generating an API summary.", call. = FALSE)
+  local_pdf_path <- research_resolve_local_pdf_path(asset$local_path[[1]])
+  if (is.na(local_pdf_path) || !file.exists(local_pdf_path)) stop("The selected PDF asset does not exist on disk.", call. = FALSE)
+
+  request_payload <- list(
+    model = article_lab_input_string(model) %||% article_lab_default_research_summary_model,
+    prompt_version = article_lab_input_string(prompt_version) %||% article_lab_default_research_summary_prompt_version,
+    prompt = article_lab_input_multiline(prompt) %||% article_lab_default_research_summary_prompt,
+    research_source_id = source$research_source_id[[1]],
+    source_title = article_lab_input_string(source$source_title[[1]]),
+    source_url = article_lab_input_string(source$source_url[[1]]),
+    pdf_url = article_lab_input_string(source$pdf_url[[1]]),
+    main_idea = article_lab_input_multiline(source$main_idea[[1]]),
+    abstract = article_lab_input_multiline(source$abstract[[1]]),
+    local_pdf_path = local_pdf_path
+  )
+
+  request_file <- tempfile(pattern = "research_summary_request_", fileext = ".json")
+  stdout_file <- tempfile(pattern = "research_summary_stdout_", fileext = ".json")
+  stderr_file <- tempfile(pattern = "research_summary_stderr_", fileext = ".log")
+  on.exit(unlink(c(request_file, stdout_file, stderr_file), force = TRUE), add = TRUE)
+
+  write_json(request_payload, request_file, auto_unbox = TRUE, pretty = FALSE, null = "null")
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2("node", args = c(helper_path, request_file), stdout = stdout_file, stderr = stderr_file)
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
+    stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Research summary helper failed.", call. = FALSE)
+  }
+  if (!nzchar(trimws(stdout_text))) stop("Research summary helper returned no output.", call. = FALSE)
+
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  summary_text <- article_lab_input_multiline(parsed$summary_text)
+  if (is.null(summary_text) || is.na(summary_text)) stop("Research summary helper returned no summary_text.", call. = FALSE)
+  list(
+    summary_text = summary_text,
+    model = article_lab_input_string(parsed$model) %||% request_payload$model,
+    prompt_version = article_lab_input_string(parsed$prompt_version) %||% request_payload$prompt_version,
+    raw_json = stdout_text,
+    response_id = article_lab_input_string(parsed$response_id)
+  )
+}
+
+research_title_prompt <- function(source, angle) {
+  source_context <- research_input_default(source$main_idea[[1]], research_input_default(source$abstract[[1]], ""))
+  paste(
+    "Generate reader-facing Medium titles, not academic paper summary titles.",
+    "Stay credible, beginner-friendly, science-based, and do not overclaim what the source proves.",
+    paste("Source title:", source$source_title[[1]] %||% ""),
+    paste("Source link:", source$source_url[[1]] %||% ""),
+    paste("PDF link:", source$pdf_url[[1]] %||% ""),
+    paste("Main idea or abstract:", source_context),
+    paste("Article angle title:", angle$angle_title[[1]] %||% ""),
+    paste("Angle main idea:", angle$main_idea[[1]] %||% ""),
+    sep = "\n\n"
+  )
 }
 
 article_lab_title_length <- function(x) {
@@ -1175,6 +1820,11 @@ article_lab_input_string <- function(x) {
   if (length(value) == 0 || is.na(value[[1]])) NULL else value[[1]]
 }
 
+article_lab_input_multiline <- function(x) {
+  value <- clean_multiline_text(x)
+  if (length(value) == 0 || is.na(value[[1]])) NULL else value[[1]]
+}
+
 article_lab_has_api_key <- function() {
   env_key <- Sys.getenv("OPENAI_API_KEY", unset = "")
   if (nzchar(trimws(env_key))) return(TRUE)
@@ -1254,13 +1904,14 @@ article_lab_top_title_examples <- function(con, limit = 8L) {
   unique(titles[!is.na(titles)])
 }
 
-article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_, example_titles = character()) {
+article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_, example_titles = character(), manual_prompt = NA_character_) {
   helper_path <- file.path("scripts", "writing_api", "generate_titles.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_titles.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
 
   request_payload <- list(
     prompt = article_lab_input_string(prompt) %||% article_lab_default_prompt,
+    manual_prompt = article_lab_input_multiline(manual_prompt),
     batch_size = as.integer(batch_size),
     seed_topic = article_lab_input_string(seed_topic),
     inspiration_source = article_lab_input_string(inspiration_source),
@@ -1314,7 +1965,7 @@ article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_characte
   )
 }
 
-generate_title_candidates <- function(con, prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_) {
+generate_title_candidates <- function(con, prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_, manual_prompt = NA_character_) {
   inspiration_value <- article_lab_input_string(inspiration_source)
   example_titles <- if (identical(inspiration_value, "top performing titles")) article_lab_top_title_examples(con, limit = 8L) else character()
 
@@ -1325,7 +1976,8 @@ generate_title_candidates <- function(con, prompt, batch_size, seed_topic = NA_c
       seed_topic = seed_topic,
       inspiration_source = inspiration_source,
       model = model,
-      example_titles = example_titles
+      example_titles = example_titles,
+      manual_prompt = manual_prompt
     )
     api_result$fallback_reason <- NULL
     api_result$validated <- article_lab_validate_titles(api_result$titles$title, max_chars = article_lab_title_max_chars)
@@ -3298,19 +3950,12 @@ article_lab_approve_candidates_for_subtitle <- function(con, candidate_ids) {
   list(approved_n = length(eligible_ids), skipped_n = skipped_n, batch_ids = batch_ids)
 }
 
-save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, raw_json = NA_character_, generation_mode = "generated", enforce_max_chars = TRUE) {
+save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, raw_json = NA_character_, generation_mode = "generated", enforce_max_chars = TRUE, notes_extra = NULL) {
   if (length(titles) == 0) return(invisible(NULL))
-  title_values <- if (isTRUE(enforce_max_chars)) {
-    validated <- article_lab_validate_titles(titles, max_chars = article_lab_title_max_chars)
-    validated$titles
-  } else {
-    article_lab_normalize_titles(titles)
-  }
+  validated <- article_lab_validate_titles(titles, max_chars = article_lab_title_max_chars)
+  title_values <- validated$titles
   if (length(title_values) == 0) {
-    if (isTRUE(enforce_max_chars)) {
-      stop(sprintf("No titles met the %s-character maximum.", article_lab_title_max_chars), call. = FALSE)
-    }
-    stop("No usable titles were provided.", call. = FALSE)
+    stop(sprintf("No titles met the %s-character maximum.", article_lab_title_max_chars), call. = FALSE)
   }
   batch_id <- article_lab_batch_id()
   created_at <- now_utc()
@@ -3341,7 +3986,8 @@ save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, 
         "generated",
         paste(
           sprintf("Generation mode: %s.", generation_mode),
-          "Article Lab candidates stay generated until manual triage moves selected titles into ready_for_api_scoring."
+          "Article Lab candidates stay generated until manual triage moves selected titles into ready_for_api_scoring.",
+          notes_extra %||% ""
         )
       )
     )
@@ -3534,7 +4180,9 @@ load_article_lab_scoring_rows <- function(con, batch_id, model, prompt_version, 
     suppressWarnings(as.integer(rows$title_char_count))
   )
   rows$title_length_flag <- ifelse(
-    is.na(rows$title_length_flag),
+    is.na(rows$title_length_flag) |
+      rows$title_length_flag == "risky" |
+      (rows$title_length_flag == "too_long" & rows$title_char_count <= article_lab_title_max_chars),
     article_lab_title_length_flag(rows$title_char_count),
     rows$title_length_flag
   )
@@ -5186,6 +5834,7 @@ initialize_app_database <- local({
 
     ensure_rating_schema(con)
     ensure_article_lab_schema(con)
+    ensure_research_workflow_schema(con)
     article_lab_recover_api_pending_candidates(con)
     if (is_dimension_mode) ensure_dimension_pass_queues(con, target_n = default_target_n)
 
@@ -6015,6 +6664,13 @@ ui <- fluidPage(
         border-color: var(--green);
         box-shadow: 0 0 0 3px rgba(26, 137, 23, .12);
       }
+      .lab-editor-textarea textarea.form-control {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+        font-size: 13px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        tab-size: 2;
+      }
       .lab-actions {
         display: flex;
         gap: 10px;
@@ -6149,6 +6805,30 @@ ui <- fluidPage(
       .lab-table .form-control {
         min-height: 34px;
       }
+      table.dataTable.research-source-table {
+        width: 100% !important;
+        table-layout: fixed;
+      }
+      table.dataTable.research-source-table tbody td {
+        vertical-align: middle;
+      }
+      table.dataTable.research-source-table tbody tr.selected,
+      table.dataTable.research-source-table tbody tr.selected > * {
+        background-color: #edf8ef !important;
+        color: var(--ink) !important;
+      }
+      table.dataTable.research-source-table .research-source-title,
+      table.dataTable.research-source-table .research-source-main {
+        display: block;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      table.dataTable.research-source-table .research-source-title,
+      table.dataTable.research-source-table .research-source-main { max-width: 100%; }
+      table.dataTable.research-source-table .research-source-links {
+        white-space: nowrap;
+      }
       .lab-table-footer {
         margin-top: 10px;
         color: var(--muted);
@@ -6168,7 +6848,8 @@ ui <- fluidPage(
       }
       .lab-badge.mobile_safe,
       .lab-badge.good { background: #edf8ef; color: #1a6d27; }
-      .lab-badge.risky { background: #fff6e6; color: #8a5a00; }
+      .lab-badge.long_but_allowed { background: #fff6e6; color: #8a5a00; }
+      .lab-badge.very_long_but_allowed { background: #fff1df; color: #9a4f00; }
       .lab-badge.too_long { background: #fdecec; color: #9b2727; }
       .lab-badge.ready_for_api_scoring { background: #edf8ef; color: #1a6d27; }
       .lab-badge.api_scored { background: #eef4ff; color: #2757a3; }
@@ -6498,7 +7179,7 @@ ui <- fluidPage(
         const appShell = document.querySelector('.app-shell');
         const main = document.querySelector('.main');
         const guide = document.querySelector('.guide');
-        const wideSections = ['api_scoring', 'subtitle_generation', 'thumbnails'];
+        const wideSections = ['research_inbox', 'api_scoring', 'subtitle_generation', 'thumbnails'];
         const useWideLayout = wideSections.indexOf(layoutName) >= 0;
         if (appShell) appShell.classList.toggle('workflow-wide-layout', useWideLayout);
         if (main) main.classList.toggle('workflow-wide-main', useWideLayout);
@@ -6685,6 +7366,7 @@ server <- function(input, output, session) {
   active_dimension <- reactiveVal(if (is_dimension_mode) first_incomplete_dimension(con) else NA_character_)
   current <- reactiveVal(NULL)
   shown_started_at <- reactiveVal(Sys.time())
+  saved_article_lab_prompt <- reactiveVal(load_article_lab_prompt(con))
   article_lab_state <- reactiveValues(
     draft = NULL,
     draft_created_at = NULL,
@@ -6696,6 +7378,26 @@ server <- function(input, output, session) {
     notice = NULL
   )
   article_lab_refresh <- reactiveVal(0L)
+
+  observeEvent(input$research_summary_prompt_version, {
+    updateTextAreaInput(
+      session,
+      "research_summary_api_prompt",
+      value = load_research_summary_prompt(con, input$research_summary_prompt_version)
+    )
+  }, ignoreInit = FALSE)
+
+  output$article_lab_prompt_save_button <- renderUI({
+    current_prompt <- article_lab_input_multiline(input$article_lab_prompt) %||% article_lab_default_prompt
+    saved_prompt <- article_lab_input_multiline(saved_article_lab_prompt()) %||% article_lab_default_prompt
+    has_changes <- !identical(current_prompt, saved_prompt)
+    actionButton(
+      "article_lab_save_prompt",
+      if (has_changes) "Save prompt" else "Prompt saved",
+      class = if (has_changes) "lab-primary" else "lab-secondary",
+      disabled = if (has_changes) NULL else "disabled"
+    )
+  })
 
   observeEvent(input$sidebar_nav, {
     valid_sections <- c("home", article_lab_workflow_sections, "settings")
@@ -6786,6 +7488,8 @@ server <- function(input, output, session) {
       div(
         class = "sidebar-nav-group",
         div(class = "sidebar-nav-label", "Article Lab"),
+        nav_button("research_inbox", "R", "Research Inbox", "Track papers and article angles"),
+        nav_button("summary", "S", "Summary", "Check paper summary"),
         nav_button("generate", "\u21bb", "Generate", "Generate & triage titles"),
         nav_button("api_scoring", "\u2699", "API Scoring", "Score with API & approve"),
         nav_button("subtitle_generation", "\u270d", "Subtitle Generation", "Generate subtitles"),
@@ -6835,37 +7539,43 @@ server <- function(input, output, session) {
             class = "lab-field",
             textAreaInput(
               "article_lab_prompt",
-              label = NULL,
-              value = article_lab_default_prompt,
+              label = "Manual/default prompt",
+              value = saved_article_lab_prompt(),
               width = "100%",
               height = "230px"
             )
           ),
+          div(class = "lab-actions", uiOutput("article_lab_prompt_save_button")),
           div(
             class = "lab-grid",
+            div(
+              class = "lab-field",
+              uiOutput("article_lab_research_summary_selector")
+            ),
             div(
               class = "lab-field",
               numericInput("article_lab_batch_size", "Batch size", value = 12L, min = 1L, max = 25L, width = "100%")
             ),
             div(
               class = "lab-field",
-              textInput("article_lab_model", "Model", value = article_lab_default_model, width = "100%")
+              selectInput("article_lab_model", "Model", choices = article_lab_title_generation_model_choices, selected = article_lab_default_model, width = "100%")
             ),
             div(
               class = "lab-field",
-              textInput("article_lab_seed_topic", "Optional seed/topic", value = "", width = "100%", placeholder = "Optional article idea or angle")
+              textInput("article_lab_seed_topic", "Optional seed/topic (manual mode)", value = "", width = "100%", placeholder = "Optional article idea or angle")
             ),
             div(
               class = "lab-field",
               selectInput(
                 "article_lab_inspiration_source",
-                "Optional inspiration source",
+                "Optional inspiration source (manual mode)",
                 choices = c("", "manual prompt", "top performing titles", "custom"),
                 selected = "",
                 width = "100%"
               )
             )
           ),
+          uiOutput("article_lab_effective_prompt"),
           div(
             class = "lab-actions",
             uiOutput("article_lab_generate_button"),
@@ -7010,8 +7720,84 @@ server <- function(input, output, session) {
         )
       }
 
+      research_inbox_panel <- tagList(
+        div(
+          class = "lab-card",
+          h2("Ranked Queue"),
+          div(class = "lab-status-copy", "Ranked sources have a manual sort order. Use the buttons to move the selected ranked source."),
+          div(class = "lab-grid", div(class = "lab-field", selectInput("research_source_status_filter", "Filter by status", choices = c("All" = "__all__", "new", "reading", "angle_ready", "used", "archived"), selected = "__all__", width = "100%"))),
+          div(class = "lab-actions", actionButton("research_refresh", "Refresh", class = "lab-secondary"), actionButton("research_ranked_move_up", "Move selected up", class = "lab-secondary"), actionButton("research_ranked_move_down", "Move selected down", class = "lab-secondary"), actionButton("research_remove_from_ranked", "Remove selected from ranked queue", class = "lab-secondary")),
+          DT::DTOutput("research_ranked_sources_table")
+        ),
+        div(
+          class = "lab-card",
+          h2("Selected Source / Angle Workspace"),
+          uiOutput("research_selected_source_summary"),
+          uiOutput("research_angle_workspace")
+        ),
+        div(
+          class = "lab-card",
+          h2("Unranked Sources"),
+          div(class = "lab-status-copy", "Unranked sources have no manual sort order."),
+          div(class = "lab-actions", actionButton("research_add_to_ranked", "Add selected to ranked queue", class = "lab-primary")),
+          DT::DTOutput("research_unranked_sources_table")
+        ),
+        div(
+          class = "lab-card",
+          h3("New source"),
+          div(class = "lab-grid", div(class = "lab-field", textInput("research_new_source_title", "Source title", width = "100%")), div(class = "lab-field", textInput("research_new_source_url", "Source URL", width = "100%")), div(class = "lab-field", textInput("research_new_pdf_url", "PDF URL", width = "100%")), div(class = "lab-field", numericInput("research_new_source_sort", "Sort order", value = NULL, width = "100%"))),
+          div(class = "lab-field", textAreaInput("research_new_source_main_idea", "Main idea", width = "100%", height = "90px")),
+          div(class = "lab-field", textAreaInput("research_new_source_abstract", "Abstract", width = "100%", height = "90px")),
+          div(class = "lab-grid", div(class = "lab-field", textInput("research_new_source_status", "Status", value = "new", width = "100%")), div(class = "lab-field", textInput("research_new_source_name", "Source name", value = "", width = "100%"))),
+          div(class = "lab-field", textAreaInput("research_new_source_notes", "Notes", width = "100%", height = "80px")),
+          div(class = "lab-actions", actionButton("research_add_source", "Add source", class = "lab-primary"))
+        ),
+        uiOutput("article_lab_notice")
+      )
+
+      summary_panel <- tagList(
+        div(
+          class = "lab-card",
+          h2("Research Summary"),
+          div(class = "lab-field", uiOutput("research_summary_source_selector")),
+          uiOutput("research_summary_selected_source"),
+          uiOutput("research_summary_pdf_status"),
+          div(
+            class = "lab-actions",
+            actionButton("research_download_pdf", "Download PDF", class = "lab-secondary"),
+            actionButton("research_clear_pdf", "Clear/replace PDF", class = "lab-secondary")
+          ),
+          div(class = "lab-field", fileInput("research_pdf_upload", "Upload PDF manually", accept = c(".pdf", "application/pdf"), width = "100%")),
+          uiOutput("research_summary_pdf_gate"),
+          div(
+            class = "lab-card",
+            h3("API summary generation"),
+            div(
+              class = "lab-grid",
+              div(class = "lab-field", selectInput("research_summary_model", "Model", choices = article_lab_research_summary_model_choices, selected = article_lab_default_research_summary_model, width = "100%")),
+              div(class = "lab-field", selectInput("research_summary_prompt_version", "Prompt version", choices = article_lab_research_summary_prompt_version_choices, selected = article_lab_default_research_summary_prompt_version, width = "100%"))
+            ),
+            div(class = "lab-field lab-editor-textarea", textAreaInput("research_summary_api_prompt", "API prompt", value = article_lab_default_research_summary_prompt, width = "100%", height = "260px")),
+            div(class = "lab-actions", actionButton("research_generate_summary_draft", "Generate summary draft", class = "lab-primary"))
+          ),
+          div(
+            class = "lab-field lab-editor-textarea",
+            textAreaInput("research_summary_text", "Summary text", value = research_summary_template, width = "100%", height = "620px")
+          ),
+          div(
+            class = "lab-actions",
+            actionButton("research_save_summary_draft", "Save summary draft", class = "lab-secondary"),
+            actionButton("research_confirm_summary", "Mark summary confirmed", class = "lab-primary"),
+            actionButton("research_send_summary_to_generate", "Send confirmed summary to Generate", class = "lab-secondary")
+          ),
+          uiOutput("article_lab_notice")
+        )
+      )
+
       page_body <- switch(
         current_section,
+        research_inbox = research_inbox_panel,
+        summary = summary_panel,
         generate = generate_panel,
         api_scoring = api_score_panel,
         subtitle_generation = subtitle_generation_panel,
@@ -7338,6 +8124,89 @@ server <- function(input, output, session) {
     rows[order(title_sort, subtitle_sort, decreasing = FALSE), , drop = FALSE]
   })
 
+  research_refresh <- reactiveVal(0L)
+  selected_research_source_id <- reactiveVal(NA_integer_)
+
+  research_ranked_sources <- reactive({
+    research_refresh()
+    load_research_sources(con, input$research_source_status_filter %||% "__all__", ranked = TRUE)
+  })
+
+  research_unranked_sources <- reactive({
+    research_refresh()
+    load_research_sources(con, input$research_source_status_filter %||% "__all__", ranked = FALSE)
+  })
+
+  research_summary_sources <- reactive({
+    research_refresh()
+    load_research_sources(con, "__all__", ranked = NULL)
+  })
+
+  confirmed_research_summaries <- reactive({
+    research_refresh()
+    load_confirmed_research_summaries(con)
+  })
+
+  selected_generate_summary <- reactive({
+    selected_summary_id <- research_input_integer(input$article_lab_research_summary_id)
+    rows <- confirmed_research_summaries()
+    if (is.na(selected_summary_id) || nrow(rows) == 0 || !(selected_summary_id %in% rows$summary_id)) return(data.frame())
+    rows[match(selected_summary_id, rows$summary_id), , drop = FALSE]
+  })
+
+  article_lab_effective_generation_inputs <- reactive({
+    selected_summary <- selected_generate_summary()
+    if (nrow(selected_summary) > 0) {
+      return(list(
+        mode = "research_summary",
+        prompt = research_summary_prompt(selected_summary),
+        manual_prompt = input$article_lab_prompt %||% article_lab_default_prompt,
+        seed_topic = selected_summary$source_title[[1]],
+        inspiration_source = paste0("research_summary:", selected_summary$summary_id[[1]]),
+        summary_id = selected_summary$summary_id[[1]],
+        source_title = selected_summary$source_title[[1]] %||% ""
+      ))
+    }
+    list(
+      mode = "manual",
+      prompt = input$article_lab_prompt %||% article_lab_default_prompt,
+      manual_prompt = "",
+      seed_topic = input$article_lab_seed_topic %||% "",
+      inspiration_source = input$article_lab_inspiration_source %||% "",
+      summary_id = NA_integer_,
+      source_title = ""
+    )
+  })
+
+  selected_research_source <- reactive({
+    research_refresh()
+    load_research_source_by_id(con, selected_research_source_id())
+  })
+
+  selected_research_source_summary <- reactive({
+    research_refresh()
+    load_research_source_summary(con, selected_research_source_id())
+  })
+
+  selected_research_pdf_asset <- reactive({
+    research_refresh()
+    load_research_pdf_asset(con, selected_research_source_id())
+  })
+
+  research_angles <- reactive({
+    research_refresh()
+    source <- selected_research_source()
+    if (nrow(source) == 0) return(data.frame())
+    load_research_angles(con, source$research_source_id[[1]])
+  })
+
+  selected_research_angle <- reactive({
+    rows <- research_angles()
+    selected <- input$research_angles_table_rows_selected
+    if (nrow(rows) == 0 || length(selected) == 0) return(data.frame())
+    rows[selected[[1]], , drop = FALSE]
+  })
+
   article_lab_pending_thumbnail_rows <- reactive({
     article_lab_refresh()
     batch_id <- article_lab_selected_batch_id()
@@ -7540,10 +8409,620 @@ server <- function(input, output, session) {
     article_lab_apply_select_all(rows, "article_lab_thumbnail_candidate_select", isTRUE(input$article_lab_thumbnail_candidate_select_all), key_col = "thumbnail_id")
   }, ignoreInit = TRUE)
 
+  observeEvent(input$research_refresh, {
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_refresh_selected_source, {
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_ranked_sources_table_rows_selected, {
+    rows <- research_ranked_sources()
+    selected <- input$research_ranked_sources_table_rows_selected
+    if (nrow(rows) == 0 || length(selected) == 0) return()
+    selected_research_source_id(rows$research_source_id[[selected[[1]]]])
+    DT::selectRows(DT::dataTableProxy("research_unranked_sources_table"), NULL)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_unranked_sources_table_rows_selected, {
+    rows <- research_unranked_sources()
+    selected <- input$research_unranked_sources_table_rows_selected
+    if (nrow(rows) == 0 || length(selected) == 0) return()
+    selected_research_source_id(rows$research_source_id[[selected[[1]]]])
+    DT::selectRows(DT::dataTableProxy("research_ranked_sources_table"), NULL)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_summary_source_id, {
+    selected_research_source_id(research_input_integer(input$research_summary_source_id))
+  }, ignoreInit = TRUE)
+
+  observeEvent(selected_research_source_summary(), {
+    summary <- selected_research_source_summary()
+    value <- if (nrow(summary) == 0) research_summary_template else summary$summary_text[[1]] %||% research_summary_template
+    updateTextAreaInput(session, "research_summary_text", value = value)
+  }, ignoreInit = FALSE)
+
+  normalize_research_ranked_queue <- function() {
+    ids <- dbGetQuery(con, "SELECT research_source_id FROM research_sources WHERE manual_sort_order IS NOT NULL ORDER BY manual_sort_order ASC, updated_at DESC")
+    if (nrow(ids) == 0) return(invisible(NULL))
+    timestamp <- now_utc()
+    for (i in seq_len(nrow(ids))) {
+      dbExecute(con, "UPDATE research_sources SET updated_at = ?, manual_sort_order = ? WHERE research_source_id = ?", params = list(timestamp, i, ids$research_source_id[[i]]))
+    }
+    invisible(NULL)
+  }
+
+  observeEvent(input$research_add_to_ranked, {
+    id <- research_input_integer(selected_research_source_id())
+    if (is.na(id)) {
+      article_lab_state$notice <- "Select an unranked source before adding it to the ranked queue."
+      return(invisible(NULL))
+    }
+    current <- dbGetQuery(con, "SELECT manual_sort_order FROM research_sources WHERE research_source_id = ? LIMIT 1", params = list(id))
+    if (nrow(current) == 0 || !is.na(current$manual_sort_order[[1]])) {
+      article_lab_state$notice <- "Select an unranked source before adding it to the ranked queue."
+      return(invisible(NULL))
+    }
+    max_sort <- dbGetQuery(con, "SELECT COALESCE(MAX(manual_sort_order), 0) AS max_sort FROM research_sources WHERE manual_sort_order IS NOT NULL")
+    dbExecute(con, "UPDATE research_sources SET updated_at = ?, manual_sort_order = ? WHERE research_source_id = ?", params = list(now_utc(), as.integer(max_sort$max_sort[[1]]) + 1L, id))
+    normalize_research_ranked_queue()
+    article_lab_state$notice <- "Source added to ranked queue."
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_remove_from_ranked, {
+    id <- research_input_integer(selected_research_source_id())
+    if (is.na(id)) {
+      article_lab_state$notice <- "Select a ranked source before removing it from the ranked queue."
+      return(invisible(NULL))
+    }
+    current <- dbGetQuery(con, "SELECT manual_sort_order FROM research_sources WHERE research_source_id = ? LIMIT 1", params = list(id))
+    if (nrow(current) == 0 || is.na(current$manual_sort_order[[1]])) {
+      article_lab_state$notice <- "Select a ranked source before removing it from the ranked queue."
+      return(invisible(NULL))
+    }
+    dbExecute(con, "UPDATE research_sources SET updated_at = ?, manual_sort_order = NULL WHERE research_source_id = ?", params = list(now_utc(), id))
+    normalize_research_ranked_queue()
+    article_lab_state$notice <- "Source removed from ranked queue."
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  move_ranked_source <- function(direction) {
+    id <- research_input_integer(selected_research_source_id())
+    rows <- dbGetQuery(con, "SELECT research_source_id FROM research_sources WHERE manual_sort_order IS NOT NULL ORDER BY manual_sort_order ASC, updated_at DESC")
+    if (is.na(id) || nrow(rows) < 2 || !(id %in% rows$research_source_id)) return(FALSE)
+    index <- match(id, rows$research_source_id)
+    swap_index <- index + direction
+    if (is.na(swap_index) || swap_index < 1L || swap_index > nrow(rows)) return(FALSE)
+    ids <- rows$research_source_id
+    ids[c(index, swap_index)] <- ids[c(swap_index, index)]
+    timestamp <- now_utc()
+    for (i in seq_along(ids)) {
+      dbExecute(con, "UPDATE research_sources SET updated_at = ?, manual_sort_order = ? WHERE research_source_id = ?", params = list(timestamp, i, ids[[i]]))
+    }
+    TRUE
+  }
+
+  observeEvent(input$research_ranked_move_up, {
+    if (move_ranked_source(-1L)) article_lab_state$notice <- "Ranked source moved up." else article_lab_state$notice <- "Select a ranked source that can move up."
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_ranked_move_down, {
+    if (move_ranked_source(1L)) article_lab_state$notice <- "Ranked source moved down." else article_lab_state$notice <- "Select a ranked source that can move down."
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_add_source, {
+    title <- research_input_value(input$research_new_source_title)
+    if (is.na(title)) {
+      article_lab_state$notice <- "Enter a source title before adding a research source."
+      return(invisible(NULL))
+    }
+    timestamp <- now_utc()
+    dbExecute(con, "
+      INSERT INTO research_sources
+        (created_at, updated_at, source_title, source_url, pdf_url, main_idea, abstract, source_type, source_name, manual_sort_order, status, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'paper', ?, ?, ?, ?)
+    ", params = list(timestamp, timestamp, title, research_input_value(input$research_new_source_url), research_input_value(input$research_new_pdf_url), research_input_value(input$research_new_source_main_idea), research_input_value(input$research_new_source_abstract), research_input_value(input$research_new_source_name), research_input_integer(input$research_new_source_sort), research_input_default(input$research_new_source_status, "new"), research_input_value(input$research_new_source_notes)))
+    article_lab_state$notice <- "Research source added."
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_save_source, {
+    rows <- selected_research_source()
+    if (nrow(rows) == 0) {
+      article_lab_state$notice <- "Select a source from the table to edit it."
+      return(invisible(NULL))
+    }
+    timestamp <- now_utc()
+    id <- rows$research_source_id[[1]]
+    dbExecute(con, "
+      UPDATE research_sources
+      SET updated_at = ?, source_title = ?, source_url = ?, pdf_url = ?, main_idea = ?, abstract = ?, manual_sort_order = ?, status = ?, notes = ?
+      WHERE research_source_id = ?
+    ", params = list(timestamp, research_input_default(input$research_edit_source_title, rows$source_title[[1]]), research_input_value(input$research_edit_source_url), research_input_value(input$research_edit_pdf_url), research_input_value(input$research_edit_source_main), research_input_value(input$research_edit_source_abstract), research_input_integer(input$research_edit_source_sort), research_input_default(input$research_edit_source_status, "new"), research_input_value(input$research_edit_source_notes), id))
+    article_lab_state$notice <- "Research source edits saved."
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_add_angle, {
+    source <- selected_research_source()
+    source_id <- if (nrow(source) == 0) NA_integer_ else source$research_source_id[[1]]
+    title <- research_input_value(input$research_new_angle_title)
+    if (is.na(source_id) || is.na(title)) {
+      article_lab_state$notice <- "Select a source and enter an angle title before creating an angle."
+      return(invisible(NULL))
+    }
+    timestamp <- now_utc()
+    dbExecute(con, "
+      INSERT INTO research_article_angles
+        (research_source_id, created_at, updated_at, angle_title, main_idea, manual_sort_order, status, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ", params = list(source_id, timestamp, timestamp, title, research_input_value(input$research_new_angle_main_idea), research_input_integer(input$research_new_angle_sort), research_input_default(input$research_new_angle_status, "idea"), research_input_value(input$research_new_angle_notes)))
+    article_lab_state$notice <- "Research angle created."
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_save_angle, {
+    rows <- selected_research_angle()
+    if (nrow(rows) == 0) return()
+    timestamp <- now_utc()
+    id <- rows$research_angle_id[[1]]
+    dbExecute(con, "
+      UPDATE research_article_angles
+      SET updated_at = ?, angle_title = ?, main_idea = ?, manual_sort_order = ?, status = ?, notes = ?
+      WHERE research_angle_id = ?
+    ", params = list(timestamp, research_input_default(input$research_edit_angle_title, rows$angle_title[[1]]), research_input_value(input$research_edit_angle_main), research_input_integer(input$research_edit_angle_sort), research_input_default(input$research_edit_angle_status, "idea"), research_input_value(input$research_edit_angle_notes), id))
+    article_lab_state$notice <- "Research angle edits saved."
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  save_research_summary <- function(status) {
+    source <- selected_research_source()
+    if (nrow(source) == 0) {
+      article_lab_state$notice <- "Select a source before saving a summary."
+      return(NULL)
+    }
+    summary_text <- research_multiline_value(input$research_summary_text)
+    if (is.na(summary_text)) {
+      article_lab_state$notice <- "Enter summary text before saving."
+      return(NULL)
+    }
+    timestamp <- now_utc()
+    source_id <- source$research_source_id[[1]]
+    if (identical(status, "draft")) {
+      existing <- load_research_source_summary(con, source_id, status = "draft")
+      if (nrow(existing) > 0) {
+        dbExecute(con, "UPDATE research_source_summaries SET updated_at = ?, summary_text = ?, status = 'draft' WHERE summary_id = ?", params = list(timestamp, summary_text, existing$summary_id[[1]]))
+        return(existing$summary_id[[1]])
+      }
+      dbExecute(con, "INSERT INTO research_source_summaries (research_source_id, created_at, updated_at, summary_text, status) VALUES (?, ?, ?, ?, 'draft')", params = list(source_id, timestamp, timestamp, summary_text))
+      return(dbGetQuery(con, "SELECT last_insert_rowid() AS summary_id")$summary_id[[1]])
+    }
+    dbExecute(con, "INSERT INTO research_source_summaries (research_source_id, created_at, updated_at, summary_text, status, confirmed_at) VALUES (?, ?, ?, ?, 'confirmed', ?)", params = list(source_id, timestamp, timestamp, summary_text, timestamp))
+    dbGetQuery(con, "SELECT last_insert_rowid() AS summary_id")$summary_id[[1]]
+  }
+
+  observeEvent(input$research_save_summary_draft, {
+    summary_id <- save_research_summary("draft")
+    if (!is.null(summary_id)) {
+      article_lab_state$notice <- sprintf("Saved summary draft %s.", summary_id)
+      research_refresh(research_refresh() + 1L)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_confirm_summary, {
+    summary_id <- save_research_summary("confirmed")
+    if (!is.null(summary_id)) {
+      article_lab_state$notice <- sprintf("Confirmed summary %s.", summary_id)
+      research_refresh(research_refresh() + 1L)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_download_pdf, {
+    source <- selected_research_source()
+    if (nrow(source) == 0) {
+      article_lab_state$notice <- "Select a source before downloading a PDF."
+      return(invisible(NULL))
+    }
+    source_id <- source$research_source_id[[1]]
+    url <- research_pdf_source_url(source)
+    if (is.na(url)) {
+      save_research_pdf_asset(con, source_id, "failed", error = "No PDF URL found. Add a PDF URL or use manual upload.")
+      article_lab_state$notice <- "No PDF URL found. Add a PDF URL or use manual upload."
+      research_refresh(research_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    original_filename <- basename(strsplit(url, "[?#]", perl = TRUE)[[1]][[1]])
+    if (!nzchar(original_filename) || identical(original_filename, "/")) original_filename <- NA_character_
+    destination <- research_pdf_local_path(source_id, source$source_title[[1]], original_filename)
+    temp_path <- tempfile(fileext = ".pdf")
+    result <- tryCatch({
+      utils::download.file(url, temp_path, mode = "wb", quiet = TRUE)
+      if (!research_file_is_pdf(temp_path)) stop("Downloaded file is not a PDF.", call. = FALSE)
+      if (!file.copy(temp_path, destination, overwrite = TRUE)) stop("Could not copy downloaded PDF into local folder.", call. = FALSE)
+      sha <- research_pdf_sha256(destination)
+      save_research_pdf_asset(con, source_id, "downloaded", source_url = url, local_path = destination, original_filename = original_filename, file_sha256 = sha, error = NA_character_)
+      sprintf("Downloaded PDF to %s.", destination)
+    }, error = function(e) {
+      save_research_pdf_asset(con, source_id, "failed", source_url = url, local_path = NA_character_, original_filename = original_filename, file_sha256 = NA_character_, error = conditionMessage(e))
+      sprintf("PDF download failed: %s", conditionMessage(e))
+    }, finally = {
+      if (file.exists(temp_path)) unlink(temp_path)
+    })
+    article_lab_state$notice <- result
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_pdf_upload, {
+    source <- selected_research_source()
+    upload <- input$research_pdf_upload
+    if (nrow(source) == 0 || is.null(upload) || nrow(upload) == 0) return(invisible(NULL))
+    source_id <- source$research_source_id[[1]]
+    original_filename <- upload$name[[1]]
+    destination <- research_pdf_local_path(source_id, source$source_title[[1]], original_filename)
+    result <- tryCatch({
+      if (!grepl("\\.pdf$", original_filename, ignore.case = TRUE) && !identical(upload$type[[1]], "application/pdf")) stop("Uploaded file is not a PDF.", call. = FALSE)
+      if (!research_file_is_pdf(upload$datapath[[1]])) stop("Uploaded file content is not a PDF.", call. = FALSE)
+      if (!file.copy(upload$datapath[[1]], destination, overwrite = TRUE)) stop("Could not copy uploaded PDF into local folder.", call. = FALSE)
+      sha <- research_pdf_sha256(destination)
+      save_research_pdf_asset(con, source_id, "uploaded", source_url = NA_character_, local_path = destination, original_filename = original_filename, file_sha256 = sha, error = NA_character_)
+      sprintf("Uploaded PDF to %s.", destination)
+    }, error = function(e) {
+      save_research_pdf_asset(con, source_id, "failed", source_url = NA_character_, local_path = NA_character_, original_filename = original_filename, file_sha256 = NA_character_, error = conditionMessage(e))
+      sprintf("PDF upload failed: %s", conditionMessage(e))
+    })
+    article_lab_state$notice <- result
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_clear_pdf, {
+    source <- selected_research_source()
+    if (nrow(source) == 0) {
+      article_lab_state$notice <- "Select a source before clearing a PDF asset."
+      return(invisible(NULL))
+    }
+    save_research_pdf_asset(con, source$research_source_id[[1]], "missing", source_url = NA_character_, local_path = NA_character_, original_filename = NA_character_, file_sha256 = NA_character_, error = NA_character_)
+    article_lab_state$notice <- "PDF asset cleared. Download or upload a replacement PDF."
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_generate_summary_draft, {
+    source <- selected_research_source()
+    asset <- selected_research_pdf_asset()
+    prompt_version <- input$research_summary_prompt_version
+    prompt_text <- article_lab_input_multiline(input$research_summary_api_prompt) %||% article_lab_default_research_summary_prompt
+    save_research_summary_prompt(con, prompt_version, prompt_text)
+    result <- tryCatch(
+      research_summary_api_request(
+        source = source,
+        asset = asset,
+        model = input$research_summary_model,
+        prompt_version = prompt_version,
+        prompt = prompt_text
+      ),
+      error = function(e) e
+    )
+    if (inherits(result, "error")) {
+      article_lab_state$notice <- paste("Summary generation failed:", conditionMessage(result))
+      return(invisible(NULL))
+    }
+
+    updateTextAreaInput(session, "research_summary_text", value = result$summary_text)
+    timestamp <- now_utc()
+    source_id <- source$research_source_id[[1]]
+    existing <- load_research_source_summary(con, source_id, status = "draft")
+    if (nrow(existing) > 0) {
+      dbExecute(con, "
+        UPDATE research_source_summaries
+        SET updated_at = ?, summary_text = ?, status = 'draft', model = ?, prompt_version = ?, raw_json = ?
+        WHERE summary_id = ?
+      ", params = list(timestamp, result$summary_text, result$model, result$prompt_version, result$raw_json, existing$summary_id[[1]]))
+      summary_id <- existing$summary_id[[1]]
+    } else {
+      dbExecute(con, "
+        INSERT INTO research_source_summaries
+          (research_source_id, created_at, updated_at, summary_text, status, model, prompt_version, raw_json)
+        VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)
+      ", params = list(source_id, timestamp, timestamp, result$summary_text, result$model, result$prompt_version, result$raw_json))
+      summary_id <- dbGetQuery(con, "SELECT last_insert_rowid() AS summary_id")$summary_id[[1]]
+    }
+    article_lab_state$notice <- sprintf("Generated and saved summary draft %s with model %s.", summary_id, result$model)
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  use_confirmed_summary_in_generate <- function(summary_id) {
+    rows <- confirmed_research_summaries()
+    summary_id_value <- research_input_integer(summary_id)
+    if (is.na(summary_id_value) || nrow(rows) == 0 || !(summary_id_value %in% rows$summary_id)) return(FALSE)
+    row <- rows[match(summary_id_value, rows$summary_id), , drop = FALSE]
+    prompt <- research_summary_prompt(row)
+    updateTextAreaInput(session, "article_lab_prompt", value = prompt)
+    updateTextInput(session, "article_lab_seed_topic", value = row$source_title[[1]] %||% "")
+    updateSelectInput(session, "article_lab_inspiration_source", selected = "")
+    updateSelectizeInput(session, "article_lab_research_summary_id", selected = as.character(summary_id_value))
+    active_section("generate")
+    TRUE
+  }
+
+  observeEvent(input$research_send_summary_to_generate, {
+    source <- selected_research_source()
+    if (nrow(source) == 0) {
+      article_lab_state$notice <- "Select a source before sending a summary to Generate."
+      return(invisible(NULL))
+    }
+    confirmed <- load_research_source_summary(con, source$research_source_id[[1]], status = "confirmed")
+    if (nrow(confirmed) == 0) {
+      article_lab_state$notice <- "Confirm this source summary before sending it to Generate."
+      return(invisible(NULL))
+    }
+    if (use_confirmed_summary_in_generate(confirmed$summary_id[[1]])) {
+      article_lab_state$notice <- sprintf("Loaded confirmed summary %s into Generate.", confirmed$summary_id[[1]])
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_send_to_title_lab, {
+    angle_id <- research_input_integer(input$research_send_to_title_lab)
+    angle <- dbGetQuery(con, "SELECT * FROM research_article_angles WHERE research_angle_id = ? LIMIT 1", params = list(angle_id))
+    if (nrow(angle) == 0 || is.na(angle$research_source_id[[1]])) return()
+    source <- dbGetQuery(con, "SELECT * FROM research_sources WHERE research_source_id = ? LIMIT 1", params = list(angle$research_source_id[[1]]))
+    if (nrow(source) == 0) return()
+    prompt <- research_title_prompt(source, angle)
+    inspiration <- paste0("research_angle:", angle_id)
+    generated <- generate_title_candidates(con, prompt, batch_size = input$article_lab_batch_size %||% 12L, seed_topic = angle$angle_title[[1]], inspiration_source = inspiration, model = input$article_lab_model %||% article_lab_default_model)
+    batch_id <- save_article_lab_batch(con, prompt, angle$angle_title[[1]], inspiration, input$article_lab_batch_size %||% 12L, generated$model %||% input$article_lab_model %||% article_lab_default_model, generated$titles$title, raw_json = generated$raw_json, generation_mode = generated$mode %||% "research_inbox")
+    dbExecute(con, "UPDATE research_article_angles SET updated_at = ?, status = 'sent_to_title_lab', article_lab_batch_id = ? WHERE research_angle_id = ?", params = list(now_utc(), batch_id, angle_id))
+    updateTextAreaInput(session, "article_lab_prompt", value = prompt)
+    updateTextInput(session, "article_lab_seed_topic", value = angle$angle_title[[1]])
+    updateSelectInput(session, "article_lab_inspiration_source", selected = "custom")
+    active_section("generate")
+    article_lab_state$notice <- sprintf("Sent research angle %s to Title Lab as batch %s.", angle_id, batch_id)
+    article_lab_refresh(article_lab_refresh() + 1L)
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
   output$article_lab_notice <- renderUI({
     notice <- article_lab_state$notice
     if (is.null(notice) || !nzchar(notice)) return(NULL)
     div(class = "lab-status-copy", notice)
+  })
+
+  output$research_summary_source_selector <- renderUI({
+    rows <- research_summary_sources()
+    choices <- if (nrow(rows) == 0) character() else setNames(
+      rows$research_source_id,
+      sprintf(
+        "%s%s · %s",
+        ifelse(is.na(rows$manual_sort_order), "", sprintf("#%s ", rows$manual_sort_order)),
+        rows$source_title,
+        rows$status
+      )
+    )
+    selected <- selected_research_source_id()
+    selectizeInput("research_summary_source_id", "Source", choices = choices, selected = selected, width = "100%")
+  })
+
+  output$research_summary_selected_source <- renderUI({
+    source <- selected_research_source()
+    if (nrow(source) == 0) return(div(class = "lab-status-copy", "Select a source to write or confirm a summary."))
+    rank_copy <- if (is.na(source$manual_sort_order[[1]])) "Unranked" else sprintf("Rank #%s", source$manual_sort_order[[1]])
+    main_idea <- research_input_value(source$main_idea[[1]])
+    abstract <- research_input_value(source$abstract[[1]])
+    div(
+      class = "lab-status-copy",
+      h3(source$source_title[[1]]),
+      HTML(sprintf("<strong>%s</strong> · status: %s · %s", htmltools::htmlEscape(rank_copy), htmltools::htmlEscape(source$status[[1]] %||% ""), research_links(source$source_url[[1]], source$pdf_url[[1]]))),
+      if (!is.na(main_idea)) p(strong("Main idea: "), main_idea),
+      if (!is.na(abstract)) p(strong("Abstract: "), abstract)
+    )
+  })
+
+  output$research_summary_pdf_status <- renderUI({
+    source <- selected_research_source()
+    if (nrow(source) == 0) return(NULL)
+    asset <- selected_research_pdf_asset()
+    status <- if (nrow(asset) == 0) "missing" else research_input_default(asset$status[[1]], "missing")
+    status_label <- research_pdf_status_labels[[status]] %||% status
+    local_path <- if (nrow(asset) == 0) NA_character_ else research_input_value(asset$local_path[[1]])
+    source_url <- if (nrow(asset) == 0) research_pdf_source_url(source) else research_input_value(asset$source_url[[1]])
+    error <- if (nrow(asset) == 0) NA_character_ else research_input_value(asset$error[[1]])
+    div(
+      class = "lab-card",
+      h3("PDF"),
+      p(strong("PDF status: "), status_label),
+      if (!is.na(local_path)) p(strong("Local path: "), local_path),
+      if (!is.na(source_url)) p(strong("Source URL used: "), source_url),
+      if (identical(status, "failed") && !is.na(error)) p(strong("Error: "), error)
+    )
+  })
+
+  output$research_summary_pdf_gate <- renderUI({
+    asset <- selected_research_pdf_asset()
+    ready <- nrow(asset) > 0 && asset$status[[1]] %in% c("downloaded", "uploaded") && !is.na(research_input_value(asset$local_path[[1]]))
+    copy <- if (isTRUE(ready)) "PDF ready for summary generation." else "Download or upload a PDF before generating an API summary."
+    div(class = "lab-status-copy", copy)
+  })
+
+  output$article_lab_research_summary_selector <- renderUI({
+    rows <- confirmed_research_summaries()
+    choices <- if (nrow(rows) == 0) character() else setNames(
+      rows$summary_id,
+      sprintf("%s · %s", rows$source_title, rows$confirmed_at %||% rows$updated_at)
+    )
+    empty_choice <- stats::setNames("", "")
+    selectizeInput("article_lab_research_summary_id", "Research summary inspiration", choices = c(empty_choice, choices), selected = "", width = "100%")
+  })
+
+  output$article_lab_effective_prompt <- renderUI({
+    effective <- article_lab_effective_generation_inputs()
+    summary_mode <- identical(effective$mode, "research_summary")
+    mode_copy <- if (summary_mode) {
+      sprintf(
+        "Research summary mode: Generate will use the manual/default prompt as title guidance, ignore the manual seed/topic and manual inspiration-source dropdown, and use confirmed summary %s (%s) as the article summary.",
+        effective$summary_id,
+        effective$source_title
+      )
+    } else {
+      "Manual mode: Generate will use the manual/default prompt textarea, optional seed/topic, and optional inspiration-source dropdown below."
+    }
+    request_additions <- paste(
+      sprintf("Batch size: %s", input$article_lab_batch_size %||% 12L),
+      sprintf("Model: %s", input$article_lab_model %||% article_lab_default_model),
+      sprintf("Seed topic: %s", article_lab_input_string(effective$seed_topic) %||% "(none)"),
+      sprintf("Inspiration source: %s", article_lab_input_string(effective$inspiration_source) %||% "(none)"),
+      sep = "\n"
+    )
+    div(
+      class = "lab-card",
+      h3("Prompt that will be used"),
+      p(class = "lab-status-copy", mode_copy),
+      tags$details(
+        open = if (summary_mode) "open" else NULL,
+        tags$summary("Show exact effective prompt"),
+        h4("Title helper wrapper"),
+        tags$pre(class = "lab-status-copy", paste(
+          "You generate Medium-style article title candidates for personal finance and investing.",
+          "Return valid JSON only in the shape {\"titles\": [\"...\", \"...\"]}.",
+          sprintf("Return exactly %s titles.", input$article_lab_batch_size %||% 12L),
+          sprintf("Every title must be at most %s characters, including spaces.", article_lab_title_max_chars),
+          sprintf("Prefer %s-%s characters when possible. Do not make titles long unless the extra words clearly improve clarity or curiosity.", article_lab_title_preferred_min_chars, article_lab_title_preferred_max_chars),
+          "Do not include explanations, numbering, markdown, or code fences.",
+          "Do not copy any example title verbatim.",
+          "Keep the titles credible, science-based, beginner-friendly, and not clickbait.",
+          "If a title would exceed the limit, rewrite it shorter instead of truncating it.",
+          sep = "\n"
+        )),
+        h4("Request fields"),
+        tags$pre(class = "lab-status-copy", request_additions),
+        if (summary_mode && nzchar(trimws(effective$manual_prompt %||% ""))) tagList(
+          h4("Manual/default prompt"),
+          tags$pre(class = "lab-status-copy", effective$manual_prompt)
+        ),
+        h4("Article summary"),
+        tags$pre(class = "lab-status-copy", effective$prompt)
+      )
+    )
+  })
+
+  output$research_ranked_sources_table <- DT::renderDT({
+    rows <- research_ranked_sources()
+    display <- if (nrow(rows) == 0) {
+      data.frame(research_source_id = integer(), Rank = integer(), Status = character(), Title = character(), Links = character(), Angles = integer(), check.names = FALSE)
+    } else {
+      source_title <- vapply(rows$source_title, research_input_default, character(1), default = "")
+      data.frame(
+        research_source_id = rows$research_source_id,
+        Rank = seq_len(nrow(rows)),
+        Status = rows$status,
+        Title = sprintf('<span class="research-source-title" title="%s">%s</span>', htmltools::htmlEscape(source_title), htmltools::htmlEscape(vapply(source_title, research_truncate, character(1), max_chars = 240L))),
+        Links = sprintf('<span class="research-source-links">%s</span>', mapply(research_links, rows$source_url, rows$pdf_url, USE.NAMES = FALSE)),
+        Angles = rows$angles_count,
+        check.names = FALSE
+      )
+    }
+    DT::datatable(display, rownames = FALSE, escape = FALSE, class = "compact stripe hover research-source-table", selection = list(mode = "single", target = "row"), options = list(pageLength = 100, autoWidth = FALSE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE), list(targets = 1, width = "6%"), list(targets = 2, width = "10%"), list(targets = 3, width = "72%"), list(targets = 4, width = "7%"), list(targets = 5, width = "5%"))))
+  })
+
+  output$research_unranked_sources_table <- DT::renderDT({
+    rows <- research_unranked_sources()
+    display <- if (nrow(rows) == 0) {
+      data.frame(research_source_id = integer(), Status = character(), Title = character(), `Main idea` = character(), Links = character(), Angles = integer(), check.names = FALSE)
+    } else {
+      source_title <- vapply(rows$source_title, research_input_default, character(1), default = "")
+      data.frame(
+        research_source_id = rows$research_source_id,
+        Status = rows$status,
+        Title = sprintf('<span class="research-source-title" title="%s">%s</span>', htmltools::htmlEscape(source_title), htmltools::htmlEscape(vapply(source_title, research_truncate, character(1), max_chars = 220L))),
+        `Main idea` = vapply(rows$main_idea, research_truncate, character(1), max_chars = 120L),
+        Links = sprintf('<span class="research-source-links">%s</span>', mapply(research_links, rows$source_url, rows$pdf_url, USE.NAMES = FALSE)),
+        Angles = rows$angles_count,
+        check.names = FALSE
+      )
+    }
+    DT::datatable(display, rownames = FALSE, escape = FALSE, class = "compact stripe hover research-source-table", selection = list(mode = "single", target = "row"), options = list(pageLength = 100, autoWidth = FALSE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE), list(targets = 1, width = "10%"), list(targets = 2, width = "55%"), list(targets = 3, width = "25%"), list(targets = 4, width = "6%"), list(targets = 5, width = "4%"))))
+  })
+
+  output$research_selected_source_summary <- renderUI({
+    row <- selected_research_source()
+    if (nrow(row) == 0) return(div(class = "lab-status-copy", "Select a ranked or unranked source to edit details and create angles."))
+    rank_label <- if (is.na(row$manual_sort_order[[1]])) "Unranked" else paste("Rank", row$manual_sort_order[[1]])
+    main_idea <- research_truncate(row$main_idea[[1]], max_chars = 220L)
+    div(
+      class = "research-selected-summary",
+      h3(row$source_title[[1]]),
+      div(class = "research-source-links", HTML(research_links(row$source_url[[1]], row$pdf_url[[1]]))),
+      div(class = "lab-status-copy", if (nzchar(main_idea)) main_idea else "No main idea saved yet."),
+      div(class = "lab-status-copy", sprintf("Status: %s · %s", row$status[[1]], rank_label))
+    )
+  })
+
+  output$research_angle_workspace <- renderUI({
+    row <- selected_research_source()
+    if (nrow(row) == 0) return(NULL)
+    tagList(
+      div(class = "lab-status-copy", "Lower angle sort number appears higher."),
+      DT::DTOutput("research_angles_table"),
+      h3("Create angle"),
+      div(class = "lab-grid", div(class = "lab-field", textInput("research_new_angle_title", "Angle title", width = "100%")), div(class = "lab-field", numericInput("research_new_angle_sort", "Sort order", value = NULL, width = "100%")), div(class = "lab-field", textInput("research_new_angle_status", "Status", value = "idea", width = "100%"))),
+      div(class = "lab-field", textAreaInput("research_new_angle_main_idea", "Angle main idea", width = "100%", height = "90px")),
+      div(class = "lab-field", textAreaInput("research_new_angle_notes", "Notes", width = "100%", height = "80px")),
+      div(class = "lab-actions", actionButton("research_add_angle", "Create angle from selected source", class = "lab-primary")),
+      uiOutput("research_selected_angle_editor"),
+      tags$details(
+        class = "research-source-details",
+        tags$summary("Edit source details"),
+        uiOutput("research_selected_source_editor")
+      )
+    )
+  })
+
+  output$research_selected_source_editor <- renderUI({
+    row <- selected_research_source()
+    if (nrow(row) == 0) return(div(class = "lab-status-copy", "Select a ranked or unranked source to edit details and create angles."))
+    div(
+      div(class = "lab-status-copy", sprintf("Editing source %s", row$research_source_id[[1]])),
+      div(class = "lab-grid", div(class = "lab-field", textInput("research_edit_source_title", "Source title", value = row$source_title[[1]], width = "100%")), div(class = "lab-field", textInput("research_edit_source_url", "Source URL", value = row$source_url[[1]] %||% "", width = "100%")), div(class = "lab-field", textInput("research_edit_pdf_url", "PDF URL", value = row$pdf_url[[1]] %||% "", width = "100%")), div(class = "lab-field", numericInput("research_edit_source_sort", "Sort order", value = research_numeric_default(row$manual_sort_order[[1]]), width = "100%")), div(class = "lab-field", textInput("research_edit_source_status", "Status", value = row$status[[1]], width = "100%"))),
+      div(class = "lab-field", textAreaInput("research_edit_source_main", "Main idea", value = row$main_idea[[1]] %||% "", width = "100%", height = "90px")),
+      div(class = "lab-field", textAreaInput("research_edit_source_abstract", "Abstract", value = row$abstract[[1]] %||% "", width = "100%", height = "90px")),
+      div(class = "lab-field", textAreaInput("research_edit_source_notes", "Notes", value = row$notes[[1]] %||% "", width = "100%", height = "80px")),
+      div(class = "lab-actions", actionButton("research_save_source", "Save selected source", class = "lab-primary"), actionButton("research_refresh_selected_source", "Refresh", class = "lab-secondary"))
+    )
+  })
+
+  output$research_angles_table <- DT::renderDT({
+    rows <- research_angles()
+    display <- if (nrow(rows) == 0) {
+      data.frame(research_angle_id = integer(), Sort = integer(), Status = character(), `Angle title` = character(), `Main idea` = character(), `Title Lab batch` = character(), Updated = character(), check.names = FALSE)
+    } else {
+      data.frame(
+        research_angle_id = rows$research_angle_id,
+        Sort = rows$manual_sort_order,
+        Status = rows$status,
+        `Angle title` = vapply(rows$angle_title, research_truncate, character(1), max_chars = 80L),
+        `Main idea` = vapply(rows$main_idea, research_truncate, character(1), max_chars = 110L),
+        `Title Lab batch` = rows$article_lab_batch_id,
+        Updated = rows$updated_at,
+        check.names = FALSE
+      )
+    }
+    DT::datatable(display, rownames = FALSE, escape = TRUE, selection = list(mode = "single", target = "row"), options = list(pageLength = 8, scrollX = TRUE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE))))
+  })
+
+  output$research_selected_angle_editor <- renderUI({
+    source <- selected_research_source()
+    if (nrow(source) == 0) return(div(class = "lab-status-copy", "Select a source to view and edit its angles."))
+    row <- selected_research_angle()
+    if (nrow(row) == 0) return(div(class = "lab-status-copy", "Select an angle from the table to edit it, or create a new angle below."))
+    id <- row$research_angle_id[[1]]
+    div(
+      h3("Selected angle"),
+      div(class = "lab-grid", div(class = "lab-field", textInput("research_edit_angle_title", "Angle title", value = row$angle_title[[1]], width = "100%")), div(class = "lab-field", numericInput("research_edit_angle_sort", "Sort order", value = research_numeric_default(row$manual_sort_order[[1]]), width = "100%")), div(class = "lab-field", textInput("research_edit_angle_status", "Status", value = row$status[[1]], width = "100%")), div(class = "lab-field", textInput("research_edit_angle_batch", "Article Lab batch", value = row$article_lab_batch_id[[1]] %||% "", width = "100%"))),
+      div(class = "lab-field", textAreaInput("research_edit_angle_main", "Main idea", value = row$main_idea[[1]] %||% "", width = "100%", height = "80px")),
+      div(class = "lab-field", textAreaInput("research_edit_angle_notes", "Notes", value = row$notes[[1]] %||% "", width = "100%", height = "70px")),
+      div(class = "lab-actions", actionButton("research_save_angle", "Save angle edits", class = "lab-secondary"), tags$button(type = "button", class = "btn btn-default action-button lab-primary", onclick = sprintf("Shiny.setInputValue('research_send_to_title_lab', '%s', {priority: 'event'})", id), "Send to Title Lab"))
+    )
   })
 
   output$article_lab_generate_button <- renderUI({
@@ -7767,17 +9246,37 @@ server <- function(input, output, session) {
       article_lab_state$is_generating <- FALSE
     }, add = TRUE)
 
+    selected_summary <- selected_generate_summary()
+    effective_inputs <- article_lab_effective_generation_inputs()
+    prompt_value <- effective_inputs$prompt
+    manual_prompt_value <- effective_inputs$manual_prompt
+    seed_topic_value <- effective_inputs$seed_topic
+    inspiration_value <- effective_inputs$inspiration_source
+
     generated <- generate_title_candidates(
       con = con,
-      prompt = input$article_lab_prompt,
+      prompt = prompt_value,
       batch_size = input$article_lab_batch_size,
-      seed_topic = input$article_lab_seed_topic,
-      inspiration_source = input$article_lab_inspiration_source,
-      model = input$article_lab_model
+      seed_topic = seed_topic_value,
+      inspiration_source = inspiration_value,
+      model = input$article_lab_model,
+      manual_prompt = manual_prompt_value
     )
     article_lab_state$draft <- generated$titles
     article_lab_state$draft_created_at <- now_utc()
-    article_lab_state$draft_meta <- generated
+    article_lab_state$draft_meta <- modifyList(generated, list(
+      prompt = prompt_value,
+      manual_prompt = manual_prompt_value,
+      seed_topic = seed_topic_value,
+      inspiration_source = inspiration_value,
+      notes_extra = if (nrow(selected_summary) > 0) paste(
+        sprintf("Research summary: %s.", selected_summary$summary_id[[1]]),
+        sprintf("Research source: %s.", selected_summary$research_source_id[[1]]),
+        sprintf("Source title: %s.", selected_summary$source_title[[1]] %||% ""),
+        sprintf("Source URL: %s.", selected_summary$source_url[[1]] %||% ""),
+        sprintf("PDF URL: %s.", selected_summary$pdf_url[[1]] %||% "")
+      ) else NULL
+    ))
     if (identical(generated$mode, "api")) {
       example_copy <- if (isTRUE(generated$example_titles_used > 0)) {
         sprintf(" Used %s top-performing title examples as inspiration.", generated$example_titles_used)
@@ -7785,7 +9284,7 @@ server <- function(input, output, session) {
         ""
       }
       retry_copy <- if (isTRUE(generated$retry_used)) {
-        " Strict mode triggered one automatic retry to shorten long titles."
+        " Strict mode triggered one automatic retry to shorten titles above the hard maximum."
       } else {
         ""
       }
@@ -7867,9 +9366,9 @@ server <- function(input, output, session) {
     )
 
     added_n <- sum(normalized_titles %in% new_manual_titles)
-    over_limit_n <- sum(article_lab_title_length(new_manual_titles) > article_lab_title_max_chars, na.rm = TRUE)
+    over_limit_n <- sum(article_lab_title_length(new_manual_titles) > article_lab_title_mobile_safe_chars, na.rm = TRUE)
     length_copy <- if (over_limit_n > 0) {
-      sprintf(" %s title%s exceed %s characters and were kept with their length flag.", over_limit_n, ifelse(over_limit_n == 1, "", "s"), article_lab_title_max_chars)
+      sprintf(" %s title%s exceed the %s-character mobile-safe length and were kept with their length flag.", over_limit_n, ifelse(over_limit_n == 1, "", "s"), article_lab_title_mobile_safe_chars)
     } else {
       ""
     }
@@ -7882,6 +9381,17 @@ server <- function(input, output, session) {
     updateTextAreaInput(session, "article_lab_manual_titles", value = "")
   }, ignoreInit = TRUE)
 
+  observeEvent(input$article_lab_save_prompt, {
+    prompt_text <- article_lab_input_multiline(input$article_lab_prompt)
+    if (is.na(prompt_text)) {
+      article_lab_state$notice <- "Enter a prompt before saving."
+      return(invisible(NULL))
+    }
+    save_article_lab_prompt(con, prompt_text)
+    saved_article_lab_prompt(prompt_text)
+    article_lab_state$notice <- "Saved manual/default generation prompt."
+  }, ignoreInit = TRUE)
+
   observeEvent(input$article_lab_save, {
     draft <- article_lab_state$draft
     draft_meta <- article_lab_state$draft_meta
@@ -7892,15 +9402,16 @@ server <- function(input, output, session) {
 
     batch_id <- save_article_lab_batch(
       con,
-      prompt = input$article_lab_prompt,
-      seed_topic = input$article_lab_seed_topic,
-      inspiration_source = input$article_lab_inspiration_source,
+      prompt = draft_meta$prompt %||% input$article_lab_prompt,
+      seed_topic = draft_meta$seed_topic %||% input$article_lab_seed_topic,
+      inspiration_source = draft_meta$inspiration_source %||% input$article_lab_inspiration_source,
       requested_batch_size = input$article_lab_batch_size,
       model = input$article_lab_model,
       titles = draft$title,
       raw_json = if (is.null(draft_meta$raw_json)) NA_character_ else draft_meta$raw_json,
       generation_mode = draft_meta$mode %||% "generated",
-      enforce_max_chars = !((draft_meta$mode %||% "") %in% c("manual", "mixed"))
+      enforce_max_chars = !((draft_meta$mode %||% "") %in% c("manual", "mixed")),
+      notes_extra = draft_meta$notes_extra
     )
     article_lab_state$draft <- NULL
     article_lab_state$draft_created_at <- NULL
@@ -8411,7 +9922,7 @@ server <- function(input, output, session) {
       approved_n <- if (nrow(selected_candidates) == 0) 0L else sum(selected_candidates$normalized_status == "approved_for_subtitle", na.rm = TRUE)
       subtitle_ready_n <- if (nrow(selected_candidates) == 0) 0L else sum(selected_candidates$normalized_status == "ready_for_thumbnail", na.rm = TRUE)
 
-      if (current_section %in% c("api_scoring", "subtitle_generation", "thumbnails")) {
+      if (current_section %in% c("research_inbox", "api_scoring", "subtitle_generation", "thumbnails")) {
         return(NULL)
       }
 

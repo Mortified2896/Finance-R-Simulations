@@ -2,7 +2,8 @@ import "dotenv/config";
 import fs from "node:fs/promises";
 import { createOpenAIClient, flushLangfuse, withLangfuseRun } from "./langfuse.mjs";
 
-const MAX_TITLE_CHARS = 45;
+const MAX_TITLE_CHARS = 140;
+const PREFERRED_TITLE_LENGTH = "40-75";
 
 function usage() {
   console.error("Usage: node scripts/writing_api/generate_titles.mjs <request.json>");
@@ -84,12 +85,13 @@ function parseTitles(rawText, requestedCount) {
   return normalizeTitles(lineCandidates, requestedCount);
 }
 
-function buildPrompt({ prompt, batchSize, seedTopic, inspirationSource, exampleTitles }) {
+function buildPrompt({ prompt, manualPrompt, batchSize, seedTopic, inspirationSource, exampleTitles }) {
   const sections = [
     "You generate Medium-style article title candidates for personal finance and investing.",
     "Return valid JSON only in the shape {\"titles\": [\"...\", \"...\"]}.",
     `Return exactly ${batchSize} titles.`,
     `Every title must be at most ${MAX_TITLE_CHARS} characters, including spaces.`,
+    `Prefer ${PREFERRED_TITLE_LENGTH} characters when possible. Do not make titles long unless the extra words clearly improve clarity or curiosity.`,
     "Do not include explanations, numbering, markdown, or code fences.",
     "Do not copy any example title verbatim.",
     "Keep the titles credible, science-based, beginner-friendly, and not clickbait.",
@@ -111,7 +113,11 @@ function buildPrompt({ prompt, batchSize, seedTopic, inspirationSource, exampleT
     );
   }
 
-  sections.push("User prompt:", prompt);
+  if (manualPrompt) {
+    sections.push("Manual/default prompt:", manualPrompt);
+  }
+
+  sections.push("Article summary:", prompt);
   return sections.join("\n\n");
 }
 
@@ -119,6 +125,7 @@ function buildRetryPrompt({ originalPrompt, batchSize, invalidTitles }) {
   return [
     "Your previous title candidates were too long.",
     `Rewrite them so every title is at most ${MAX_TITLE_CHARS} characters, including spaces.`,
+    `Prefer ${PREFERRED_TITLE_LENGTH} characters when possible. Do not make titles long unless the extra words clearly improve clarity or curiosity.`,
     `Return valid JSON only in the shape {\"titles\": [\"...\", \"...\"]}.`,
     `Return exactly ${batchSize} titles.`,
     "Do not explain anything.",
@@ -146,6 +153,7 @@ async function main() {
 
   const payload = JSON.parse(await fs.readFile(requestPath, "utf8"));
   const prompt = cleanText(payload.prompt);
+  const manualPrompt = cleanText(payload.manual_prompt);
   const model = cleanText(payload.model) ?? "gpt-5-mini";
   const seedTopic = cleanText(payload.seed_topic);
   const inspirationSource = cleanText(payload.inspiration_source);
@@ -162,6 +170,7 @@ async function main() {
 
   const builtPrompt = buildPrompt({
     prompt,
+    manualPrompt,
     batchSize,
     seedTopic,
     inspirationSource,

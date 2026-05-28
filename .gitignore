@@ -1,6 +1,7 @@
 # Local-only runtime and secrets
 .local_gitignored/
 .env
+.envrc
 *.log
 .DS_Store
 Rplots.pdf
@@ -46,6 +47,8 @@ data/analysis/thumbnail_api_scores_v1/
 data/analysis/title_api_score_samples/
 data/analysis/openai_headline_scoring/
 data/analysis/openai_headline_scoring_backup_before_resume/
+data/research_pdfs/
+apps/human_preview_rating_app/data/research_pdfs/
 
 # Generated queues, API outputs, and downloaded media
 data/analysis/**/*_queue.csv

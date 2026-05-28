@@ -213,13 +213,18 @@ invisible(dbWithTransaction(connection, {
   db_execute(connection, "
     UPDATE article_lab_title_candidates
     SET title_char_count = COALESCE(title_char_count, LENGTH(COALESCE(title, ''))),
-        title_length_flag = COALESCE(title_length_flag, CASE
+        title_length_flag = CASE
           WHEN LENGTH(COALESCE(title, '')) <= 45 THEN 'mobile_safe'
           WHEN LENGTH(COALESCE(title, '')) <= 60 THEN 'good'
-          WHEN LENGTH(COALESCE(title, '')) <= 75 THEN 'risky'
+          WHEN LENGTH(COALESCE(title, '')) <= 90 THEN 'long_but_allowed'
+          WHEN LENGTH(COALESCE(title, '')) <= 140 THEN 'very_long_but_allowed'
           ELSE 'too_long'
-        END)
-    WHERE title_char_count IS NULL OR title_length_flag IS NULL
+        END
+    WHERE title_char_count IS NULL
+       OR title_length_flag IS NULL
+       OR title_length_flag = 'risky'
+       OR (title_length_flag = 'too_long' AND LENGTH(COALESCE(title, '')) <= 140)
+       OR title_length_flag NOT IN ('mobile_safe', 'good', 'long_but_allowed', 'very_long_but_allowed', 'too_long')
   ")
 
   db_execute(connection, "
