@@ -1839,8 +1839,13 @@ article_lab_python_candidates <- function() {
     Sys.getenv("ARTICLE_LAB_PYTHON", unset = ""),
     Sys.getenv("WRITING_API_PYTHON", unset = "")
   ))
+  project_candidates <- clean_text(c(
+    file.path(project_root, ".local_gitignored", "article_lab_venv", "bin", "python"),
+    file.path(project_root, ".venv", "bin", "python")
+  ))
+  project_candidates <- project_candidates[file.exists(project_candidates)]
   path_candidates <- clean_text(c(Sys.which("python3"), Sys.which("python")))
-  unique(c(env_candidates[!is.na(env_candidates)], path_candidates[!is.na(path_candidates)]))
+  unique(c(env_candidates[!is.na(env_candidates)], project_candidates[!is.na(project_candidates)], path_candidates[!is.na(path_candidates)]))
 }
 
 article_lab_resolve_python <- function() {
@@ -1852,18 +1857,50 @@ article_lab_resolve_python <- function() {
       call. = FALSE
     )
   }
-  candidates[[1]]
+  checks <- lapply(candidates, function(candidate) {
+    check <- article_lab_python_package_check(candidate)
+    check$python_bin <- candidate
+    check
+  })
+  for (check in checks) {
+    if (isTRUE(check$ok)) {
+      message("Article Lab API scoring using Python: ", check$python_bin)
+      return(check$python_bin)
+    }
+  }
+
+  details <- vapply(checks, function(check) {
+    detail <- clean_text(check$stderr) %||% clean_text(check$stdout) %||% "package import check failed"
+    paste0(shQuote(check$python_bin), ": ", detail)
+  }, character(1))
+  stop(
+    paste0(
+      "No Python interpreter available to Article Lab API scoring can import the required package(s). ",
+      article_lab_python_setup_message(candidates[[1]]),
+      " Tried: ", paste(details, collapse = " | ")
+    ),
+    call. = FALSE
+  )
 }
 
 article_lab_python_package_check <- function(python_bin) {
   stdout_file <- tempfile(pattern = "article_lab_python_check_stdout_", fileext = ".log")
   stderr_file <- tempfile(pattern = "article_lab_python_check_stderr_", fileext = ".log")
   on.exit(unlink(c(stdout_file, stderr_file), force = TRUE), add = TRUE)
+  check_code <- paste(
+    "import os",
+    "import openai",
+    "tracing = all((os.environ.get(name) or '').strip() for name in ('LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY')) and ((os.environ.get('LANGFUSE_BASE_URL') or os.environ.get('LANGFUSE_HOST') or '').strip())",
+    "if tracing:",
+    "    import langfuse",
+    "    import langfuse.openai",
+    sep = "\n"
+  )
 
   # system2() does not preserve spaces inside -c code unless the argument is quoted explicitly.
   status <- suppressWarnings(system2(
     python_bin,
-    args = c("-c", shQuote("import openai")),
+    args = c("-c", shQuote(check_code)),
     stdout = stdout_file,
     stderr = stderr_file
   ))
@@ -2020,17 +2057,6 @@ article_lab_score_api_request <- function(candidates, model = NA_character_, pro
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
   if (nrow(candidates) == 0) return(list(scores = data.frame(), errors = list()))
   python_bin <- article_lab_resolve_python()
-  package_check <- article_lab_python_package_check(python_bin)
-  if (!isTRUE(package_check$ok)) {
-    detail <- clean_text(package_check$stderr) %||% clean_text(package_check$stdout)
-    stop(
-      paste0(
-        article_lab_python_setup_message(python_bin),
-        if (!is.null(detail)) paste0(" Python reported: ", detail) else ""
-      ),
-      call. = FALSE
-    )
-  }
 
   request_payload <- list(
     model = article_lab_input_string(model) %||% article_lab_default_score_model,
