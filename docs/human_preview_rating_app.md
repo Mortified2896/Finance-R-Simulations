@@ -57,6 +57,10 @@ Manual subtitle ideas are saved into the normal subtitle-candidate table and the
 
 That keeps manual and API-generated subtitle variants in the same approval flow for rejection, approval, and downstream thumbnail work.
 
+## Article Lab Model Selectors
+
+All Article Lab model selection fields must be dropdown selectors, not free-text inputs. Use the shared model choice list in the app and include any environment-configured default as an available option, so future model fields stay consistent while still honoring local overrides.
+
 ## Modes
 
 `feed_preview_1_5` is the original one-score workflow. It writes to `human_preview_ratings` and excludes articles that already have a row in that table.

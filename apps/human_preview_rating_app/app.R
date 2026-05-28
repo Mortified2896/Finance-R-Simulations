@@ -573,7 +573,7 @@ article_lab_default_model <- local({
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
-article_lab_title_generation_model_choices <- c(
+article_lab_model_choices <- c(
   "gpt-5",
   "gpt-5-mini",
   "gpt-5-nano",
@@ -584,20 +584,28 @@ article_lab_title_generation_model_choices <- c(
   "o3-mini",
   "o4-mini"
 )
-if (!article_lab_default_model %in% article_lab_title_generation_model_choices) {
-  article_lab_title_generation_model_choices <- c(article_lab_default_model, article_lab_title_generation_model_choices)
+article_lab_model_choices_with_default <- function(default_model) {
+  default_model <- as.character(default_model %||% "")
+  default_model <- trimws(default_model[[1]])
+  if (nzchar(default_model) && !default_model %in% article_lab_model_choices) {
+    return(c(default_model, article_lab_model_choices))
+  }
+  article_lab_model_choices
 }
+article_lab_title_generation_model_choices <- article_lab_model_choices_with_default(article_lab_default_model)
 article_lab_default_score_model <- local({
   configured <- Sys.getenv("OPENAI_TITLE_SCORING_MODEL", unset = "")
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
+article_lab_score_model_choices <- article_lab_model_choices_with_default(article_lab_default_score_model)
 article_lab_default_subtitle_model <- local({
   configured <- Sys.getenv("OPENAI_SUBTITLE_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
+article_lab_subtitle_model_choices <- article_lab_model_choices_with_default(article_lab_default_subtitle_model)
 article_lab_default_thumbnail_model <- local({
   configured <- Sys.getenv("OPENAI_THUMBNAIL_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_SUBTITLE_GENERATION_MODEL", unset = "")
@@ -605,25 +613,13 @@ article_lab_default_thumbnail_model <- local({
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
+article_lab_thumbnail_model_choices <- article_lab_model_choices_with_default(article_lab_default_thumbnail_model)
 article_lab_default_research_summary_model <- local({
   configured <- Sys.getenv("OPENAI_RESEARCH_SUMMARY_MODEL", unset = "")
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
-article_lab_research_summary_model_choices <- c(
-  "gpt-5",
-  "gpt-5-mini",
-  "gpt-5-nano",
-  "gpt-4.1",
-  "gpt-4.1-mini",
-  "gpt-4.1-nano",
-  "o3",
-  "o3-mini",
-  "o4-mini"
-)
-if (!article_lab_default_research_summary_model %in% article_lab_research_summary_model_choices) {
-  article_lab_research_summary_model_choices <- c(article_lab_default_research_summary_model, article_lab_research_summary_model_choices)
-}
+article_lab_research_summary_model_choices <- article_lab_model_choices_with_default(article_lab_default_research_summary_model)
 article_lab_default_research_summary_prompt_version <- "research_summary_v1"
 article_lab_research_summary_prompt_version_choices <- c(
   "research_summary_v1"
@@ -7693,7 +7689,7 @@ server <- function(input, output, session) {
         div(
           class = "lab-card",
           h2("Controls"),
-          div(class = "lab-grid", uiOutput("article_lab_batch_selector"), div(class = "lab-field", textInput("article_lab_score_model", "Model", value = article_lab_default_score_model, width = "100%")), div(class = "lab-field", textInput("article_lab_score_prompt_version", "Prompt version", value = article_lab_default_score_prompt_version, width = "100%")), div(class = "lab-field", textInput("article_lab_score_scope", "Scope", value = article_lab_default_score_scope, width = "100%"))),
+          div(class = "lab-grid", uiOutput("article_lab_batch_selector"), div(class = "lab-field", selectInput("article_lab_score_model", "Model", choices = article_lab_score_model_choices, selected = article_lab_default_score_model, width = "100%")), div(class = "lab-field", textInput("article_lab_score_prompt_version", "Prompt version", value = article_lab_default_score_prompt_version, width = "100%")), div(class = "lab-field", textInput("article_lab_score_scope", "Scope", value = article_lab_default_score_scope, width = "100%"))),
           div(
             class = "lab-actions",
             uiOutput("article_lab_score_button"),
@@ -7722,7 +7718,7 @@ server <- function(input, output, session) {
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
-            div(class = "lab-field", textInput("article_lab_subtitle_model", "Model", value = article_lab_default_subtitle_model, width = "100%")),
+            div(class = "lab-field", selectInput("article_lab_subtitle_model", "Model", choices = article_lab_subtitle_model_choices, selected = article_lab_default_subtitle_model, width = "100%")),
             div(class = "lab-field", numericInput("article_lab_subtitle_variants_per_title", "Subtitle candidates per title", value = 4L, min = 1L, max = 8L, width = "100%"))
           ),
           div(
@@ -7774,7 +7770,7 @@ server <- function(input, output, session) {
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
-            div(class = "lab-field", textInput("article_lab_thumbnail_model", "Model", value = article_lab_default_thumbnail_model, width = "100%")),
+            div(class = "lab-field", selectInput("article_lab_thumbnail_model", "Model", choices = article_lab_thumbnail_model_choices, selected = article_lab_default_thumbnail_model, width = "100%")),
             div(class = "lab-field", numericInput("article_lab_thumbnail_variants_per_package", "Thumbnail candidates per package", value = article_lab_default_thumbnail_variants, min = 1L, max = 4L, width = "100%"))
           ),
           div(
