@@ -58,7 +58,13 @@ function parseResults(rawText, variantsPerTitle) {
 
 function buildPrompt({ prompt, candidates, variantsPerTitle }) {
   const titleList = candidates
-    .map((entry, index) => `${index + 1}. candidate_id=${entry.candidate_id} | batch_id=${entry.batch_id} | title=${entry.title}`)
+    .map((entry, index) => {
+      const parts = [`${index + 1}. candidate_id=${entry.candidate_id} | batch_id=${entry.batch_id} | title=${entry.title}`];
+      if (entry.article_summary) {
+        parts.push(`Attached article summary:\n${entry.article_summary}`);
+      }
+      return parts.join("\n");
+    })
     .join("\n");
 
   const basePrompt = cleanText(prompt) || [
@@ -106,7 +112,8 @@ async function main() {
         .map((entry) => ({
           candidate_id: cleanText(entry.candidate_id),
           batch_id: cleanText(entry.batch_id),
-          title: cleanText(entry.title)
+          title: cleanText(entry.title),
+          article_summary: cleanText(entry.article_summary)
         }))
         .filter((entry) => entry.candidate_id && entry.batch_id && entry.title)
     : [];

@@ -1506,6 +1506,47 @@ research_summary_prompt <- function(summary_row) {
   )
 }
 
+article_lab_research_summary_id_from_source <- function(inspiration_source) {
+  value <- article_lab_input_string(inspiration_source)
+  if (length(value) != 1L || is.na(value) || !isTRUE(grepl("^research_summary:[0-9]+$", value))) return(NA_integer_)
+  suppressWarnings(as.integer(sub("^research_summary:", "", value)))
+}
+
+load_article_lab_batch_summary_contexts <- function(con, batch_ids) {
+  batch_ids <- clean_text(batch_ids)
+  batch_ids <- unique(batch_ids[!is.na(batch_ids)])
+  if (length(batch_ids) == 0 || !dbExistsTable(con, "article_lab_title_batches")) return(data.frame())
+  placeholders <- paste(rep("?", length(batch_ids)), collapse = ", ")
+  batches <- dbGetQuery(
+    con,
+    sprintf("SELECT batch_id, inspiration_source FROM article_lab_title_batches WHERE batch_id IN (%s)", placeholders),
+    params = as.list(batch_ids)
+  )
+  if (nrow(batches) == 0) return(data.frame())
+  batches$summary_id <- vapply(batches$inspiration_source, article_lab_research_summary_id_from_source, integer(1))
+  batches <- batches[!is.na(batches$summary_id), , drop = FALSE]
+  if (nrow(batches) == 0 || !dbExistsTable(con, "research_source_summaries") || !dbExistsTable(con, "research_sources")) return(data.frame())
+
+  summary_ids <- unique(batches$summary_id)
+  summary_placeholders <- paste(rep("?", length(summary_ids)), collapse = ", ")
+  summaries <- dbGetQuery(
+    con,
+    sprintf(
+      "SELECT ss.summary_id, ss.summary_text, s.source_title, s.source_url, s.pdf_url
+       FROM research_source_summaries ss
+       JOIN research_sources s ON s.research_source_id = ss.research_source_id
+       WHERE ss.summary_id IN (%s)",
+      summary_placeholders
+    ),
+    params = as.list(summary_ids)
+  )
+  if (nrow(summaries) == 0) return(data.frame())
+
+  contexts <- merge(batches[, c("batch_id", "summary_id"), drop = FALSE], summaries, by = "summary_id", all.x = FALSE, all.y = FALSE)
+  contexts$article_summary <- vapply(seq_len(nrow(contexts)), function(i) research_summary_prompt(contexts[i, , drop = FALSE]), character(1))
+  contexts[, c("batch_id", "summary_id", "source_title", "article_summary"), drop = FALSE]
+}
+
 research_pdf_dir <- file.path(project_root, "data", "research_pdfs")
 
 research_pdf_status_labels <- c(
@@ -2392,10 +2433,12 @@ article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L
     prompt = article_lab_input_string(prompt) %||% article_lab_default_subtitle_prompt,
     variants_per_title = max(1L, min(8L, suppressWarnings(as.integer(variants_per_title)) %||% 4L)),
     candidates = unname(lapply(seq_len(nrow(candidates)), function(i) {
+      article_summary <- if ("article_summary" %in% names(candidates)) article_lab_input_multiline(candidates$article_summary[[i]]) else NA_character_
       list(
         candidate_id = candidates$candidate_id[[i]],
         batch_id = candidates$batch_id[[i]],
-        title = candidates$title[[i]]
+        title = candidates$title[[i]],
+        article_summary = article_summary
       )
     }))
   )
@@ -3022,6 +3065,13 @@ article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model 
   skipped_n <- length(candidate_ids) - nrow(eligible)
   if (nrow(eligible) == 0) {
     return(list(generated_n = 0L, title_n = 0L, skipped_n = skipped_n, batch_ids = unique(rows$batch_id), mode = "none", model = article_lab_default_subtitle_model))
+  }
+
+  summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(eligible$batch_id))
+  eligible$article_summary <- NA_character_
+  if (nrow(summary_contexts) > 0) {
+    matched_summary <- summary_contexts$article_summary[match(eligible$batch_id, summary_contexts$batch_id)]
+    eligible$article_summary <- matched_summary
   }
 
   existing_rows <- dbGetQuery(
@@ -7680,6 +7730,7 @@ server <- function(input, output, session) {
             uiOutput("article_lab_subtitle_generate_button"),
             actionButton("article_lab_refresh_subtitles", "Refresh", class = "lab-secondary")
           ),
+          uiOutput("article_lab_subtitle_effective_prompt"),
           tags$hr(class = "lab-divider"),
           div(
             class = "lab-grid",
@@ -8928,6 +8979,60 @@ server <- function(input, output, session) {
         ),
         h4("Article summary"),
         tags$pre(class = "lab-status-copy", effective$prompt)
+      )
+    )
+  })
+
+  output$article_lab_subtitle_effective_prompt <- renderUI({
+    targets <- article_lab_subtitle_target_rows()
+    summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(targets$batch_id))
+    has_summary <- nrow(summary_contexts) > 0
+    variants_per_title <- max(1L, min(8L, suppressWarnings(as.integer(input$article_lab_subtitle_variants_per_title)) %||% 4L))
+    base_prompt <- article_lab_input_multiline(input$article_lab_subtitle_prompt) %||% article_lab_default_subtitle_prompt
+    request_additions <- paste(
+      sprintf("Model: %s", article_lab_input_string(input$article_lab_subtitle_model) %||% article_lab_default_subtitle_model),
+      sprintf("Subtitle candidates per title: %s", variants_per_title),
+      sprintf("Max subtitle characters: %s", article_lab_subtitle_max_chars),
+      sep = "\n"
+    )
+    title_list <- if (nrow(targets) == 0) {
+      "(No eligible approved titles in the current batch filter.)"
+    } else {
+      paste(vapply(seq_len(nrow(targets)), function(i) {
+        sprintf("%s. candidate_id=%s | batch_id=%s | title=%s", i, targets$candidate_id[[i]], targets$batch_id[[i]], targets$title[[i]])
+      }, character(1)), collapse = "\n")
+    }
+    summary_copy <- if (has_summary) {
+      "Subtitle generation will append the confirmed article summary attached to each title's source batch."
+    } else {
+      "No attached research summary was found for the eligible titles in the current batch filter. Subtitle generation will use the base prompt and titles only."
+    }
+
+    div(
+      class = "lab-card",
+      h3("Prompt that will be used"),
+      p(class = "lab-status-copy", summary_copy),
+      tags$details(
+        open = if (has_summary) "open" else NULL,
+        tags$summary("Show exact effective prompt"),
+        h4("Subtitle prompt"),
+        tags$pre(class = "lab-status-copy", base_prompt),
+        h4("Request fields"),
+        tags$pre(class = "lab-status-copy", request_additions),
+        h4("Titles"),
+        tags$pre(class = "lab-status-copy", title_list),
+        if (has_summary) tagList(
+          h4("Attached article summaries"),
+          tags$pre(class = "lab-status-copy", paste(vapply(seq_len(nrow(summary_contexts)), function(i) {
+            paste(
+              sprintf("Batch: %s", summary_contexts$batch_id[[i]]),
+              sprintf("Summary ID: %s", summary_contexts$summary_id[[i]]),
+              sprintf("Source title: %s", summary_contexts$source_title[[i]] %||% ""),
+              summary_contexts$article_summary[[i]],
+              sep = "\n"
+            )
+          }, character(1)), collapse = "\n\n---\n\n"))
+        )
       )
     )
   })
