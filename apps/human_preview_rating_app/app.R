@@ -126,6 +126,40 @@ first_value <- function(row, column, default = NA_character_) {
   if (is.null(x) || length(x) == 0 || (length(x) == 1 && is.na(x))) y else x
 }
 
+article_lab_format_duration <- function(seconds) {
+  seconds <- suppressWarnings(as.numeric(seconds))
+  if (is.na(seconds) || seconds < 0) seconds <- 0
+  seconds <- as.integer(round(seconds))
+  minutes <- seconds %/% 60L
+  remaining_seconds <- seconds %% 60L
+  if (minutes <= 0L) return(sprintf("%s sec", remaining_seconds))
+  if (remaining_seconds == 0L) return(sprintf("%s min", minutes))
+  sprintf("%s min %s sec", minutes, remaining_seconds)
+}
+
+article_lab_thumbnail_estimate <- function(total_expected) {
+  total_expected <- suppressWarnings(as.integer(total_expected))
+  if (is.na(total_expected) || total_expected < 1L) total_expected <- 1L
+  list(
+    total_expected = total_expected,
+    lower_seconds = total_expected * 45,
+    upper_seconds = total_expected * 90,
+    label = sprintf(
+      "%s-%s",
+      article_lab_format_duration(total_expected * 45),
+      article_lab_format_duration(total_expected * 90)
+    )
+  )
+}
+
+article_lab_estimate_comparison <- function(actual_seconds, lower_seconds, upper_seconds) {
+  actual_seconds <- suppressWarnings(as.numeric(actual_seconds))
+  lower_seconds <- suppressWarnings(as.numeric(lower_seconds))
+  upper_seconds <- suppressWarnings(as.numeric(upper_seconds))
+  if (is.na(actual_seconds) || is.na(lower_seconds) || is.na(upper_seconds)) return("within estimate")
+  if (actual_seconds < lower_seconds) "faster than expected" else if (actual_seconds > upper_seconds) "slower than expected" else "within estimate"
+}
+
 displayed_subtitle_for_field <- function(item, field) {
   if (!is.null(field) && !is.na(field) && field %in% title_isolation_dimension_fields) {
     return(title_only_placeholder_subtitle)
@@ -584,13 +618,13 @@ article_lab_model_choices <- c(
   "o3-mini",
   "o4-mini"
 )
-article_lab_model_choices_with_default <- function(default_model) {
+article_lab_model_choices_with_default <- function(default_model, base_choices = article_lab_model_choices) {
   default_model <- as.character(default_model %||% "")
   default_model <- trimws(default_model[[1]])
-  if (nzchar(default_model) && !default_model %in% article_lab_model_choices) {
-    return(c(default_model, article_lab_model_choices))
+  if (nzchar(default_model) && !default_model %in% base_choices) {
+    return(c(default_model, base_choices))
   }
-  article_lab_model_choices
+  base_choices
 }
 article_lab_title_generation_model_choices <- article_lab_model_choices_with_default(article_lab_default_model)
 article_lab_default_score_model <- local({
@@ -608,12 +642,21 @@ article_lab_default_subtitle_model <- local({
 article_lab_subtitle_model_choices <- article_lab_model_choices_with_default(article_lab_default_subtitle_model)
 article_lab_default_thumbnail_model <- local({
   configured <- Sys.getenv("OPENAI_THUMBNAIL_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_THUMBNAIL_RESPONSES_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_SUBTITLE_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5.5"
+  configured
+})
+article_lab_thumbnail_model_choices <- article_lab_model_choices_with_default(article_lab_default_thumbnail_model, base_choices = c("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"))
+article_lab_default_outline_model <- local({
+  configured <- Sys.getenv("OPENAI_OUTLINE_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_SUBTITLE_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
-article_lab_thumbnail_model_choices <- article_lab_model_choices_with_default(article_lab_default_thumbnail_model)
+article_lab_outline_model_choices <- article_lab_model_choices_with_default(article_lab_default_outline_model)
 article_lab_default_research_summary_model <- local({
   configured <- Sys.getenv("OPENAI_RESEARCH_SUMMARY_MODEL", unset = "")
   if (!nzchar(configured)) configured <- "gpt-5-mini"
@@ -670,6 +713,12 @@ article_lab_default_thumbnail_prompt <- paste(
   "Keep the concept aligned with the title and subtitle without adding clickbait or clutter.",
   sep = "\n"
 )
+article_lab_default_outline_prompt <- paste(
+  "Generate a practical Medium article outline for the approved title, subtitle, and thumbnail concept.",
+  "Use Markdown headings and bullets. Include a short hook, 4-6 main sections, key points for each section, and a concise closing angle.",
+  "Keep it reader-facing, credible, specific, and useful. Do not draft the full article yet.",
+  sep = "\n"
+)
 article_lab_default_score_prompt_version <- "v2_2"
 article_lab_default_score_scope <- "title_only"
 article_lab_all_batches_value <- "__all_article_lab_batches__"
@@ -690,6 +739,7 @@ article_lab_candidate_status_values <- c(
   "approved_for_subtitle",
   "ready_for_thumbnail",
   "ready_for_outline",
+  "ready_for_draft",
   "archived",
   "rejected"
 )
@@ -702,6 +752,7 @@ article_lab_candidate_status_labels <- c(
   approved_for_subtitle = "Approved",
   ready_for_thumbnail = "Ready for thumbnail",
   ready_for_outline = "Ready for outline",
+  ready_for_draft = "Ready for draft",
   archived = "Archived",
   rejected = "Rejected",
   draft = "Draft"
@@ -1069,6 +1120,36 @@ ensure_article_lab_schema <- function(con) {
   db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "rejected_at", "TEXT")
 
   dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_outlines (
+      outline_id TEXT PRIMARY KEY,
+      thumbnail_id TEXT NOT NULL,
+      subtitle_id TEXT NOT NULL,
+      candidate_id TEXT NOT NULL,
+      batch_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      outline_text TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      notes TEXT,
+      model TEXT,
+      generation_mode TEXT NOT NULL DEFAULT 'generated',
+      raw_json TEXT,
+      approved_at TEXT,
+      FOREIGN KEY(thumbnail_id) REFERENCES article_lab_thumbnail_candidates(thumbnail_id),
+      FOREIGN KEY(subtitle_id) REFERENCES article_lab_subtitle_candidates(subtitle_id),
+      FOREIGN KEY(candidate_id) REFERENCES article_lab_title_candidates(candidate_id),
+      FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
+    )
+  ")
+
+  db_add_column_if_missing(con, "article_lab_outlines", "updated_at", "TEXT")
+  db_add_column_if_missing(con, "article_lab_outlines", "notes", "TEXT")
+  db_add_column_if_missing(con, "article_lab_outlines", "model", "TEXT")
+  db_add_column_if_missing(con, "article_lab_outlines", "generation_mode", "TEXT")
+  db_add_column_if_missing(con, "article_lab_outlines", "raw_json", "TEXT")
+  db_add_column_if_missing(con, "article_lab_outlines", "approved_at", "TEXT")
+
+  dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_article_lab_title_batches_created_at
     ON article_lab_title_batches (created_at, batch_id)
   ")
@@ -1122,6 +1203,22 @@ ensure_article_lab_schema <- function(con) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_article_lab_thumbnail_candidates_one_approved_per_package
     ON article_lab_thumbnail_candidates (subtitle_id)
     WHERE status = 'approved'
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_outlines_batch
+    ON article_lab_outlines (batch_id, thumbnail_id, updated_at)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_outlines_status
+    ON article_lab_outlines (status, candidate_id, updated_at)
+  ")
+
+  dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_article_lab_outlines_one_active_per_thumbnail
+    ON article_lab_outlines (thumbnail_id)
+    WHERE status IN ('draft', 'approved')
   ")
 
   dbExecute(con, "
@@ -1332,6 +1429,10 @@ article_lab_batch_id <- function() {
 
 article_lab_candidate_id <- function(batch_id, index) {
   paste0("alc_", batch_id, "_", sprintf("%02d", as.integer(index)))
+}
+
+article_lab_outline_id <- function(thumbnail_id) {
+  paste0("alo_", gsub("[^A-Za-z0-9]+", "_", thumbnail_id), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
 }
 
 research_workflow_sort_sql <- "CASE WHEN manual_sort_order IS NULL THEN 1 ELSE 0 END, manual_sort_order ASC, updated_at DESC"
@@ -2411,36 +2512,235 @@ stub_thumbnail_candidates_for_package <- function(title, subtitle, prompt = NA_c
   )
 }
 
+article_lab_thumbnail_api_request <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, prompt = NA_character_) {
+  helper_path <- file.path("scripts", "writing_api", "generate_thumbnails.mjs")
+  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_thumbnails.mjs", call. = FALSE)
+  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+  if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_thumbnail_model, mode = "api", raw_json = NULL))
+
+  request_payload <- list(
+    model = article_lab_input_string(model) %||% article_lab_default_thumbnail_model,
+    prompt = article_lab_input_string(prompt) %||% article_lab_default_thumbnail_prompt,
+    variants_per_package = max(1L, min(4L, suppressWarnings(as.integer(variants_per_package)) %||% article_lab_default_thumbnail_variants)),
+    packages = unname(lapply(seq_len(nrow(packages)), function(i) {
+      list(
+        subtitle_id = packages$subtitle_id[[i]],
+        candidate_id = packages$candidate_id[[i]],
+        batch_id = packages$batch_id[[i]],
+        title = packages$title[[i]],
+        subtitle = packages$subtitle[[i]]
+      )
+    }))
+  )
+
+  request_file <- tempfile(pattern = "article_lab_thumbnail_request_", fileext = ".json")
+  stdout_file <- tempfile(pattern = "article_lab_thumbnail_stdout_", fileext = ".json")
+  stderr_file <- tempfile(pattern = "article_lab_thumbnail_stderr_", fileext = ".log")
+  on.exit(unlink(c(request_file, stdout_file, stderr_file), force = TRUE), add = TRUE)
+
+  write_json(request_payload, request_file, auto_unbox = TRUE, pretty = FALSE, null = "null")
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2(
+    "node",
+    args = c(helper_path, request_file),
+    stdout = stdout_file,
+    stderr = stderr_file
+  )
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
+    stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Thumbnail generation helper failed.", call. = FALSE)
+  }
+  if (!nzchar(trimws(stdout_text))) stop("Thumbnail generation helper returned no output.", call. = FALSE)
+
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  result_rows <- lapply(parsed$results %||% list(), function(entry) {
+    thumbnails <- entry$thumbnails %||% list()
+    if (length(thumbnails) == 0) return(NULL)
+    rows <- lapply(thumbnails, function(thumbnail) {
+      data.frame(
+        subtitle_id = article_lab_input_string(entry$subtitle_id),
+        candidate_id = article_lab_input_string(entry$candidate_id),
+        batch_id = article_lab_input_string(entry$batch_id),
+        title = article_lab_input_string(entry$title),
+        subtitle = article_lab_input_string(entry$subtitle),
+        thumbnail_label = article_lab_input_string(thumbnail$thumbnail_label) %||% "API concept",
+        thumbnail_data_uri = article_lab_input_string(thumbnail$thumbnail_data_uri),
+        created_at = article_lab_input_string(thumbnail$created_at) %||% now_utc(),
+        model = article_lab_input_string(thumbnail$model) %||% article_lab_input_string(parsed$model) %||% request_payload$model,
+        generation_mode = article_lab_input_string(thumbnail$generation_mode) %||% "api",
+        raw_json = if (is.null(thumbnail$raw_json)) stdout_text else toJSON(thumbnail$raw_json, auto_unbox = TRUE, null = "null"),
+        stringsAsFactors = FALSE,
+        check.names = FALSE
+      )
+    })
+    do.call(rbind, rows)
+  })
+  result_rows <- Filter(Negate(is.null), result_rows)
+
+  list(
+    rows = if (length(result_rows) == 0) data.frame() else do.call(rbind, result_rows),
+    model = article_lab_input_string(parsed$model) %||% request_payload$model,
+    mode = article_lab_input_string(parsed$mode) %||% "api",
+    raw_json = stdout_text
+  )
+}
+
 generate_thumbnail_candidates <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, prompt = NA_character_) {
-  rows <- lapply(seq_len(nrow(packages)), function(i) {
-    variants <- stub_thumbnail_candidates_for_package(
-      title = packages$title[[i]],
-      subtitle = packages$subtitle[[i]],
-      prompt = prompt,
-      count = variants_per_package
-    )
-    if (nrow(variants) == 0) return(NULL)
+  tryCatch(
+    article_lab_thumbnail_api_request(packages, variants_per_package = variants_per_package, model = model, prompt = prompt),
+    error = function(e) {
+      rows <- lapply(seq_len(nrow(packages)), function(i) {
+        variants <- stub_thumbnail_candidates_for_package(
+          title = packages$title[[i]],
+          subtitle = packages$subtitle[[i]],
+          prompt = prompt,
+          count = variants_per_package
+        )
+        if (nrow(variants) == 0) return(NULL)
+        data.frame(
+          subtitle_id = rep(packages$subtitle_id[[i]], nrow(variants)),
+          candidate_id = rep(packages$candidate_id[[i]], nrow(variants)),
+          batch_id = rep(packages$batch_id[[i]], nrow(variants)),
+          title = rep(packages$title[[i]], nrow(variants)),
+          subtitle = rep(packages$subtitle[[i]], nrow(variants)),
+          thumbnail_label = variants$thumbnail_label,
+          thumbnail_data_uri = variants$thumbnail_data_uri,
+          created_at = variants$created_at,
+          model = rep(article_lab_input_string(model) %||% article_lab_default_thumbnail_model, nrow(variants)),
+          generation_mode = variants$generation_mode,
+          raw_json = variants$raw_json,
+          stringsAsFactors = FALSE,
+          check.names = FALSE
+        )
+      })
+      rows <- Filter(Negate(is.null), rows)
+      list(
+        rows = if (length(rows) == 0) data.frame() else do.call(rbind, rows),
+        model = article_lab_input_string(model) %||% article_lab_default_thumbnail_model,
+        mode = "stub",
+        raw_json = article_lab_input_string(prompt) %||% article_lab_default_thumbnail_prompt,
+        fallback_reason = conditionMessage(e)
+      )
+    }
+  )
+}
+
+stub_outline_for_package <- function(title, subtitle, thumbnail_label = NA_character_) {
+  title <- article_lab_input_string(title) %||% "Working title"
+  subtitle <- article_lab_input_string(subtitle) %||% "Working subtitle"
+  thumbnail_label <- article_lab_input_string(thumbnail_label) %||% "approved thumbnail"
+  paste(
+    "# Outline",
+    "",
+    paste0("## Working title: ", title),
+    paste0("Subtitle: ", subtitle),
+    paste0("Thumbnail angle: ", thumbnail_label),
+    "",
+    "## Hook",
+    "- Open with the reader problem or tension the title promises to resolve.",
+    "- Make the stakes concrete without overstating the evidence.",
+    "",
+    "## Main sections",
+    "1. Frame the core mistake or question.",
+    "2. Explain the mechanism in plain language.",
+    "3. Show the practical tradeoffs for an everyday investor.",
+    "4. Give a simple decision framework or checklist.",
+    "5. Address caveats, uncertainty, and cases where the advice may not apply.",
+    "",
+    "## Close",
+    "- End with a measured takeaway and one practical next step.",
+    sep = "\n"
+  )
+}
+
+article_lab_outline_api_request <- function(packages, model = NA_character_, prompt = NA_character_) {
+  helper_path <- file.path("scripts", "writing_api", "generate_outlines.mjs")
+  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_outlines.mjs", call. = FALSE)
+  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+  if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_outline_model, mode = "api", raw_json = NULL))
+
+  request_payload <- list(
+    model = article_lab_input_string(model) %||% article_lab_default_outline_model,
+    prompt = article_lab_input_multiline(prompt) %||% article_lab_default_outline_prompt,
+    packages = unname(lapply(seq_len(nrow(packages)), function(i) {
+      list(
+        thumbnail_id = packages$thumbnail_id[[i]],
+        subtitle_id = packages$subtitle_id[[i]],
+        candidate_id = packages$candidate_id[[i]],
+        batch_id = packages$batch_id[[i]],
+        title = packages$title[[i]],
+        subtitle = packages$subtitle[[i]],
+        thumbnail_label = packages$thumbnail_label[[i]]
+      )
+    }))
+  )
+
+  request_file <- tempfile(pattern = "article_lab_outline_request_", fileext = ".json")
+  stdout_file <- tempfile(pattern = "article_lab_outline_stdout_", fileext = ".json")
+  stderr_file <- tempfile(pattern = "article_lab_outline_stderr_", fileext = ".log")
+  on.exit(unlink(c(request_file, stdout_file, stderr_file), force = TRUE), add = TRUE)
+
+  write_json(request_payload, request_file, auto_unbox = TRUE, pretty = FALSE, null = "null")
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2("node", args = c(helper_path, request_file), stdout = stdout_file, stderr = stderr_file)
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
+    stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Outline generation helper failed.", call. = FALSE)
+  }
+  if (!nzchar(trimws(stdout_text))) stop("Outline generation helper returned no output.", call. = FALSE)
+
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  result_rows <- lapply(parsed$results %||% list(), function(entry) {
     data.frame(
-      subtitle_id = rep(packages$subtitle_id[[i]], nrow(variants)),
-      candidate_id = rep(packages$candidate_id[[i]], nrow(variants)),
-      batch_id = rep(packages$batch_id[[i]], nrow(variants)),
-      title = rep(packages$title[[i]], nrow(variants)),
-      subtitle = rep(packages$subtitle[[i]], nrow(variants)),
-      thumbnail_label = variants$thumbnail_label,
-      thumbnail_data_uri = variants$thumbnail_data_uri,
-      created_at = variants$created_at,
-      model = rep(article_lab_input_string(model) %||% article_lab_default_thumbnail_model, nrow(variants)),
-      generation_mode = variants$generation_mode,
-      raw_json = variants$raw_json,
+      thumbnail_id = article_lab_input_string(entry$thumbnail_id),
+      subtitle_id = article_lab_input_string(entry$subtitle_id),
+      candidate_id = article_lab_input_string(entry$candidate_id),
+      batch_id = article_lab_input_string(entry$batch_id),
+      outline_text = article_lab_input_multiline(entry$outline_text),
+      created_at = now_utc(),
+      model = article_lab_input_string(parsed$model) %||% request_payload$model,
+      generation_mode = "api",
+      raw_json = stdout_text,
       stringsAsFactors = FALSE,
       check.names = FALSE
     )
   })
-  rows <- Filter(Negate(is.null), rows)
+  result_rows <- Filter(function(row) nrow(row) > 0 && !is.na(row$outline_text[[1]]), result_rows)
   list(
-    rows = if (length(rows) == 0) data.frame() else do.call(rbind, rows),
-    model = article_lab_input_string(model) %||% article_lab_default_thumbnail_model,
-    mode = "stub"
+    rows = if (length(result_rows) == 0) data.frame() else do.call(rbind, result_rows),
+    model = article_lab_input_string(parsed$model) %||% request_payload$model,
+    mode = article_lab_input_string(parsed$mode) %||% "api",
+    raw_json = stdout_text
+  )
+}
+
+generate_outline_drafts <- function(packages, model = NA_character_, prompt = NA_character_) {
+  tryCatch(
+    article_lab_outline_api_request(packages, model = model, prompt = prompt),
+    error = function(e) {
+      rows <- lapply(seq_len(nrow(packages)), function(i) {
+        data.frame(
+          thumbnail_id = packages$thumbnail_id[[i]],
+          subtitle_id = packages$subtitle_id[[i]],
+          candidate_id = packages$candidate_id[[i]],
+          batch_id = packages$batch_id[[i]],
+          outline_text = stub_outline_for_package(packages$title[[i]], packages$subtitle[[i]], packages$thumbnail_label[[i]]),
+          created_at = now_utc(),
+          model = article_lab_input_string(model) %||% article_lab_default_outline_model,
+          generation_mode = "stub",
+          raw_json = toJSON(list(prompt = article_lab_input_multiline(prompt), fallback_reason = conditionMessage(e)), auto_unbox = TRUE, null = "null"),
+          stringsAsFactors = FALSE,
+          check.names = FALSE
+        )
+      })
+      list(rows = do.call(rbind, rows), model = article_lab_input_string(model) %||% article_lab_default_outline_model, mode = "stub", fallback_reason = conditionMessage(e))
+    }
   )
 }
 
@@ -2922,12 +3222,23 @@ load_article_lab_ready_for_outline_rows <- function(con, batch_id) {
       t.notes,
       s.subtitle,
       c.title,
-      c.status
+      c.status,
+      o.outline_id,
+      o.outline_text,
+      o.status AS outline_status,
+      o.notes AS outline_notes,
+      o.model AS outline_model,
+      o.generation_mode AS outline_generation_mode,
+      o.updated_at AS outline_updated_at,
+      o.approved_at AS outline_approved_at
     FROM article_lab_thumbnail_candidates t
     INNER JOIN article_lab_subtitle_candidates s
       ON s.subtitle_id = t.subtitle_id
     INNER JOIN article_lab_title_candidates c
       ON c.candidate_id = t.candidate_id
+    LEFT JOIN article_lab_outlines o
+      ON o.thumbnail_id = t.thumbnail_id
+     AND o.status IN ('draft', 'approved')
     WHERE t.status = 'approved'
       AND c.archived = 0
     ORDER BY t.created_at DESC, t.thumbnail_id DESC
@@ -2943,12 +3254,23 @@ load_article_lab_ready_for_outline_rows <- function(con, batch_id) {
       t.notes,
       s.subtitle,
       c.title,
-      c.status
+      c.status,
+      o.outline_id,
+      o.outline_text,
+      o.status AS outline_status,
+      o.notes AS outline_notes,
+      o.model AS outline_model,
+      o.generation_mode AS outline_generation_mode,
+      o.updated_at AS outline_updated_at,
+      o.approved_at AS outline_approved_at
     FROM article_lab_thumbnail_candidates t
     INNER JOIN article_lab_subtitle_candidates s
       ON s.subtitle_id = t.subtitle_id
     INNER JOIN article_lab_title_candidates c
       ON c.candidate_id = t.candidate_id
+    LEFT JOIN article_lab_outlines o
+      ON o.thumbnail_id = t.thumbnail_id
+     AND o.status IN ('draft', 'approved')
     WHERE t.status = 'approved'
       AND c.archived = 0
       AND t.batch_id = ?
@@ -3077,6 +3399,99 @@ article_lab_sync_title_thumbnail_stage <- function(con, candidate_ids) {
     }
   }
   invisible(NULL)
+}
+
+article_lab_insert_outline_drafts <- function(con, outline_rows) {
+  if (nrow(outline_rows) == 0) return(0L)
+  inserted_n <- 0L
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_len(nrow(outline_rows))) {
+      existing <- dbGetQuery(
+        con,
+        "SELECT outline_id FROM article_lab_outlines WHERE thumbnail_id = ? AND status IN ('draft', 'approved') LIMIT 1",
+        params = list(outline_rows$thumbnail_id[[i]])
+      )
+      if (nrow(existing) > 0) next
+      timestamp <- outline_rows$created_at[[i]] %||% now_utc()
+      dbExecute(
+        con,
+        "INSERT INTO article_lab_outlines
+         (outline_id, thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, updated_at, outline_text, status, notes, model, generation_mode, raw_json, approved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', NULL, ?, ?, ?, NULL)",
+        params = list(
+          article_lab_outline_id(outline_rows$thumbnail_id[[i]]),
+          outline_rows$thumbnail_id[[i]], outline_rows$subtitle_id[[i]], outline_rows$candidate_id[[i]], outline_rows$batch_id[[i]],
+          timestamp, timestamp, outline_rows$outline_text[[i]], outline_rows$model[[i]], outline_rows$generation_mode[[i]], outline_rows$raw_json[[i]]
+        )
+      )
+      inserted_n <- inserted_n + 1L
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  inserted_n
+}
+
+article_lab_update_outlines <- function(con, outline_updates) {
+  if (length(outline_updates) == 0) return(0L)
+  updated_n <- 0L
+  timestamp <- now_utc()
+  dbBegin(con)
+  tryCatch({
+    for (entry in outline_updates) {
+      outline_id <- clean_text(entry$outline_id)
+      if (length(outline_id) == 0 || is.na(outline_id[[1]])) next
+      outline_text <- article_lab_input_multiline(entry$outline_text)
+      if (is.na(outline_text)) next
+      dbExecute(
+        con,
+        "UPDATE article_lab_outlines SET outline_text = ?, notes = ?, updated_at = ? WHERE outline_id = ? AND status = 'draft'",
+        params = list(outline_text, clean_text(entry$notes), timestamp, outline_id[[1]])
+      )
+      updated_n <- updated_n + 1L
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  updated_n
+}
+
+article_lab_approve_outlines <- function(con, outline_ids) {
+  outline_ids <- clean_text(outline_ids)
+  outline_ids <- unique(outline_ids[!is.na(outline_ids)])
+  if (length(outline_ids) == 0) return(list(approved_n = 0L, candidate_ids = character()))
+  placeholders <- paste(rep("?", length(outline_ids)), collapse = ", ")
+  rows <- dbGetQuery(
+    con,
+    sprintf("SELECT outline_id, candidate_id, batch_id FROM article_lab_outlines WHERE outline_id IN (%s) AND status = 'draft'", placeholders),
+    params = as.list(outline_ids)
+  )
+  if (nrow(rows) == 0) return(list(approved_n = 0L, candidate_ids = character()))
+  timestamp <- now_utc()
+  dbBegin(con)
+  tryCatch({
+    dbExecute(
+      con,
+      sprintf("UPDATE article_lab_outlines SET status = 'approved', approved_at = ?, updated_at = ? WHERE outline_id IN (%s)", paste(rep("?", nrow(rows)), collapse = ", ")),
+      params = c(list(timestamp, timestamp), as.list(rows$outline_id))
+    )
+    dbExecute(
+      con,
+      sprintf("UPDATE article_lab_title_candidates SET status = 'ready_for_draft', promoted = 0, ready_for_human_rating = 0, archived = 0 WHERE candidate_id IN (%s)", paste(rep("?", length(unique(rows$candidate_id))), collapse = ", ")),
+      params = as.list(unique(rows$candidate_id))
+    )
+    for (batch_id in unique(rows$batch_id)) article_lab_update_batch_status(con, batch_id)
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  list(approved_n = nrow(rows), candidate_ids = unique(rows$candidate_id))
 }
 
 article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model = NA_character_, prompt = NA_character_, variants_per_title = 4L) {
@@ -3530,7 +3945,8 @@ article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, mode
     skipped_n = skipped_n,
     batch_ids = unique(thumbnail_rows$batch_id),
     mode = generated$mode %||% "generated",
-    model = generated$model %||% article_lab_default_thumbnail_model
+    model = generated$model %||% article_lab_default_thumbnail_model,
+    fallback_reason = generated$fallback_reason %||% NULL
   )
 }
 
@@ -3697,6 +4113,7 @@ article_lab_update_batch_status <- function(con, batch_id) {
       COALESCE(SUM(CASE WHEN status = 'approved_for_subtitle' OR promoted = 1 THEN 1 ELSE 0 END), 0) AS approved_n,
       COALESCE(SUM(CASE WHEN status = 'ready_for_thumbnail' THEN 1 ELSE 0 END), 0) AS subtitle_ready_n,
       COALESCE(SUM(CASE WHEN status = 'ready_for_outline' THEN 1 ELSE 0 END), 0) AS outline_ready_n,
+      COALESCE(SUM(CASE WHEN status = 'ready_for_draft' THEN 1 ELSE 0 END), 0) AS draft_ready_n,
       COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) AS archived_n,
       COUNT(*) AS total_n
     FROM article_lab_title_candidates
@@ -3706,7 +4123,9 @@ article_lab_update_batch_status <- function(con, batch_id) {
   )
   if (nrow(status_rows) == 0) return(invisible(NULL))
   row <- status_rows[1, , drop = FALSE]
-  batch_status <- if (row$outline_ready_n[[1]] > 0) {
+  batch_status <- if (row$draft_ready_n[[1]] > 0) {
+    "ready_for_draft"
+  } else if (row$outline_ready_n[[1]] > 0) {
     "ready_for_outline"
   } else if (row$subtitle_ready_n[[1]] > 0) {
     "ready_for_thumbnail"
@@ -4449,6 +4868,7 @@ article_lab_overview <- function(con) {
       approved_for_subtitle = 0L,
       ready_for_thumbnail = 0L,
       ready_for_outline = 0L,
+      ready_for_draft = 0L,
       rejected = 0L,
       archived = 0L
     ))
@@ -4465,6 +4885,7 @@ article_lab_overview <- function(con) {
       COALESCE(SUM(CASE WHEN status = 'approved_for_subtitle' OR promoted = 1 THEN 1 ELSE 0 END), 0) AS approved_for_subtitle,
       COALESCE(SUM(CASE WHEN status = 'ready_for_thumbnail' THEN 1 ELSE 0 END), 0) AS ready_for_thumbnail,
       COALESCE(SUM(CASE WHEN status = 'ready_for_outline' THEN 1 ELSE 0 END), 0) AS ready_for_outline,
+      COALESCE(SUM(CASE WHEN status = 'ready_for_draft' THEN 1 ELSE 0 END), 0) AS ready_for_draft,
       COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected,
       COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) AS archived
     FROM article_lab_title_candidates
@@ -4892,9 +5313,16 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
     class = "thumbnail-preview-grid",
     lapply(seq_len(nrow(rows)), function(i) {
       row <- rows[i, , drop = FALSE]
+      has_outline <- !is.na(row$outline_id[[1]]) && nzchar(row$outline_id[[1]])
+      outline_status <- clean_text(row$outline_status[[1]]) %||% "none"
       div(
-        class = "thumbnail-preview-card approved",
-        div(class = "thumbnail-preview-topbar", article_lab_thumbnail_badge("approved")),
+        class = paste("thumbnail-preview-card approved", if (has_outline) paste0("outline-", outline_status) else "outline-missing"),
+        div(
+          class = "thumbnail-preview-topbar",
+          article_lab_thumbnail_badge("approved"),
+          if (!has_outline) checkboxInput(article_lab_row_input_id("article_lab_outline_packages", row$thumbnail_id[[1]]), "Generate outline", value = FALSE),
+          if (has_outline && identical(outline_status, "draft")) checkboxInput(article_lab_row_input_id("article_lab_outline_candidates", row$outline_id[[1]]), "Approve outline", value = FALSE)
+        ),
         div(
           class = "thumbnail-preview-shell",
           div(
@@ -4911,7 +5339,28 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
               alt = paste("Approved thumbnail for", row$title[[1]])
             )
           )
-        )
+        ),
+        if (has_outline) {
+          div(
+            class = "lab-outline-editor",
+            div(class = "lab-status-copy", sprintf("Outline status: %s", article_lab_status_label(outline_status))),
+            textAreaInput(
+              article_lab_row_input_id("article_lab_outline_text", row$outline_id[[1]]),
+              "Outline draft",
+              value = row$outline_text[[1]] %||% "",
+              width = "100%",
+              height = "320px"
+            ),
+            textInput(
+              article_lab_row_input_id("article_lab_outline_notes", row$outline_id[[1]]),
+              "Review notes",
+              value = row$outline_notes[[1]] %||% "",
+              width = "100%"
+            )
+          )
+        } else {
+          div(class = "lab-status-copy", "No outline draft yet. Select this package and generate an outline.")
+        }
       )
     })
   )
@@ -7412,6 +7861,60 @@ ui <- fluidPage(
 
       window.articleLabSyncSelections = articleLabSyncSelections;
 
+      let articleLabThumbnailTimer = null;
+
+      function articleLabFormatDuration(totalSeconds) {
+        totalSeconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        if (minutes <= 0) return seconds + ' sec';
+        if (seconds === 0) return minutes + ' min';
+        return minutes + ' min ' + seconds + ' sec';
+      }
+
+      function articleLabFormatClock(timestamp) {
+        const date = new Date(timestamp);
+        if (Number.isNaN(date.getTime())) return '';
+        return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      }
+
+      function articleLabSetThumbnailStatus(copy) {
+        const target = document.getElementById('article_lab_thumbnail_timer');
+        if (target) target.textContent = copy || '';
+      }
+
+      function articleLabStartThumbnailTimer(payload) {
+        if (articleLabThumbnailTimer) window.clearInterval(articleLabThumbnailTimer);
+        const startedAt = payload && payload.started_at ? new Date(payload.started_at) : new Date();
+        const totalExpected = Math.max(1, Number(payload && payload.total_expected) || 1);
+        const estimateLabel = payload && payload.estimate_label ? payload.estimate_label : '';
+        const upperSeconds = Math.max(1, Number(payload && payload.upper_seconds) || 1);
+        const startedLabel = articleLabFormatClock(startedAt);
+        const render = function() {
+          const elapsedSeconds = Math.max(0, (Date.now() - startedAt.getTime()) / 1000);
+          let copy = 'Generating thumbnails: requested ' + totalExpected + ' thumbnail' + (totalExpected === 1 ? '' : 's') + '.';
+          if (startedLabel) copy += ' Started ' + startedLabel + '.';
+          if (estimateLabel) copy += ' Initial estimate: ' + estimateLabel + '.';
+          copy += ' Elapsed: ' + articleLabFormatDuration(elapsedSeconds) + '.';
+          if (elapsedSeconds > upperSeconds) {
+            copy += ' Still running, slower than the initial estimate. True completed/remaining progress is not available until this blocking OpenAI call finishes.';
+          } else {
+            copy += ' Waiting for OpenAI; true completed/remaining progress is not available during this blocking call.';
+          }
+          articleLabSetThumbnailStatus(copy);
+        };
+        render();
+        articleLabThumbnailTimer = window.setInterval(render, 1000);
+      }
+
+      function articleLabStopThumbnailTimer(payload) {
+        if (articleLabThumbnailTimer) {
+          window.clearInterval(articleLabThumbnailTimer);
+          articleLabThumbnailTimer = null;
+        }
+        articleLabSetThumbnailStatus(payload && payload.message ? payload.message : '');
+      }
+
       function setWorkflowLayout(layoutName) {
         const appShell = document.querySelector('.app-shell');
         const main = document.querySelector('.main');
@@ -7564,10 +8067,14 @@ ui <- fluidPage(
       if (window.Shiny && Shiny.addCustomMessageHandler) {
         Shiny.addCustomMessageHandler('clearRatingFocus', handleClearRatingFocus);
         Shiny.addCustomMessageHandler('setWorkflowLayout', setWorkflowLayout);
+        Shiny.addCustomMessageHandler('articleLabStartThumbnailTimer', articleLabStartThumbnailTimer);
+        Shiny.addCustomMessageHandler('articleLabStopThumbnailTimer', articleLabStopThumbnailTimer);
       } else {
         document.addEventListener('shiny:connected', function() {
           Shiny.addCustomMessageHandler('clearRatingFocus', handleClearRatingFocus);
           Shiny.addCustomMessageHandler('setWorkflowLayout', setWorkflowLayout);
+          Shiny.addCustomMessageHandler('articleLabStartThumbnailTimer', articleLabStartThumbnailTimer);
+          Shiny.addCustomMessageHandler('articleLabStopThumbnailTimer', articleLabStopThumbnailTimer);
         }, { once: true });
       }
     ")))
@@ -7612,6 +8119,8 @@ server <- function(input, output, session) {
     is_scoring = FALSE,
     is_generating_subtitles = FALSE,
     is_generating_thumbnails = FALSE,
+    thumbnail_generation_started_at = NULL,
+    thumbnail_generation_estimate = NULL,
     notice = NULL
   )
   article_lab_refresh <- reactiveVal(0L)
@@ -7936,7 +8445,7 @@ server <- function(input, output, session) {
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
-            div(class = "lab-field", selectInput("article_lab_thumbnail_model", "Model", choices = article_lab_thumbnail_model_choices, selected = article_lab_default_thumbnail_model, width = "100%")),
+            div(class = "lab-field", selectInput("article_lab_thumbnail_model", "Responses generation model", choices = article_lab_thumbnail_model_choices, selected = article_lab_default_thumbnail_model, width = "100%")),
             div(class = "lab-field", numericInput("article_lab_thumbnail_variants_per_package", "Thumbnail candidates per package", value = article_lab_default_thumbnail_variants, min = 1L, max = 4L, width = "100%"))
           ),
           div(
@@ -7945,11 +8454,43 @@ server <- function(input, output, session) {
             actionButton("article_lab_refresh_thumbnails", "Refresh", class = "lab-secondary")
           ),
           uiOutput("article_lab_thumbnail_effective_prompt"),
+          div(id = "article_lab_thumbnail_timer", class = "lab-status-copy"),
           div(class = "lab-status-copy", "Generate thumbnail candidates for approved title/subtitle packages, then approve one preview card per package."),
           uiOutput("article_lab_notice")
         )
         ,
         uiOutput("article_lab_thumbnail_sections")
+      )
+
+      outline_panel <- tagList(
+        div(
+          class = "lab-card",
+          h2("Controls"),
+          div(
+            class = "lab-field",
+            textAreaInput("article_lab_outline_prompt", "Prompt", value = article_lab_default_outline_prompt, width = "100%", height = "150px")
+          ),
+          div(
+            class = "lab-grid",
+            uiOutput("article_lab_batch_selector"),
+            div(class = "lab-field", selectInput("article_lab_outline_model", "Model", choices = article_lab_outline_model_choices, selected = article_lab_default_outline_model, width = "100%"))
+          ),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_generate_outlines", "Generate selected outline(s)", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_outline_packages');"),
+            actionButton("article_lab_save_outlines", "Save outline edits", class = "lab-secondary"),
+            actionButton("article_lab_approve_outlines", "Approve selected outline(s)", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_outline_candidates');"),
+            actionButton("article_lab_refresh_outlines", "Refresh", class = "lab-secondary")
+          ),
+          div(class = "lab-status-copy", "Generate an outline from approved packages, edit/review it here, then approve it to move the package to draft-ready."),
+          uiOutput("article_lab_notice")
+        ),
+        article_lab_section_card(
+          "Ready for Outline",
+          "Approved title/subtitle/thumbnail packages are available here for the next drafting step.",
+          article_lab_ready_for_outline_table_ui(article_lab_ready_for_outline_rows()),
+          count = nrow(article_lab_ready_for_outline_rows())
+        )
       )
 
       placeholder_panel <- function(copy) {
@@ -8043,12 +8584,7 @@ server <- function(input, output, session) {
         api_scoring = api_score_panel,
         subtitle_generation = subtitle_generation_panel,
         thumbnails = thumbnail_panel,
-        outline = article_lab_section_card(
-          "Ready for Outline",
-          "Approved title/subtitle/thumbnail packages are available here for the next drafting step.",
-          article_lab_ready_for_outline_table_ui(article_lab_ready_for_outline_rows()),
-          count = nrow(article_lab_ready_for_outline_rows())
-        ),
+        outline = outline_panel,
         full_text = placeholder_panel("Full article drafting workflow routing is now exposed here."),
         review_publish = placeholder_panel("Final review and publish workflow routing is now exposed here."),
         settings = placeholder_panel("Settings remain available from the sidebar."),
@@ -8529,6 +9065,20 @@ server <- function(input, output, session) {
       list(
         thumbnail_id = thumbnail_id,
         notes = input[[article_lab_row_input_id(prefix, thumbnail_id)]] %||% rows$notes[[i]]
+      )
+    })
+  }
+
+  collect_outline_updates <- function(rows) {
+    if (nrow(rows) == 0 || !("outline_id" %in% names(rows))) return(list())
+    rows <- rows[!is.na(rows$outline_id) & nzchar(rows$outline_id) & rows$outline_status == "draft", , drop = FALSE]
+    if (nrow(rows) == 0) return(list())
+    lapply(seq_len(nrow(rows)), function(i) {
+      outline_id <- rows$outline_id[[i]]
+      list(
+        outline_id = outline_id,
+        outline_text = input[[article_lab_row_input_id("article_lab_outline_text", outline_id)]] %||% rows$outline_text[[i]],
+        notes = input[[article_lab_row_input_id("article_lab_outline_notes", outline_id)]] %||% rows$outline_notes[[i]]
       )
     })
   }
@@ -9328,6 +9878,7 @@ server <- function(input, output, session) {
     }
     request_additions <- paste(
       sprintf("Model: %s", article_lab_input_string(input$article_lab_thumbnail_model) %||% article_lab_default_thumbnail_model),
+      "Image generation: Responses API built-in image_generation tool",
       sprintf("Thumbnail candidates per package: %s", variants_per_package),
       sep = "\n"
     )
@@ -9350,7 +9901,7 @@ server <- function(input, output, session) {
     div(
       class = "lab-card",
       h3("Prompt that will be sent to the API"),
-      p(class = "lab-status-copy", "Thumbnail generation sends this prompt plus the selected title/subtitle package context."),
+      p(class = "lab-status-copy", "Thumbnail generation sends this prompt plus the selected title/subtitle package context to the selected Responses model, which calls the built-in image_generation tool."),
       tags$details(
         open = if (nrow(selected_packages) > 0) "open" else NULL,
         tags$summary("Show exact thumbnail API prompt"),
@@ -10319,6 +10870,8 @@ server <- function(input, output, session) {
     article_lab_state$is_generating_thumbnails <- TRUE
     on.exit({
       article_lab_state$is_generating_thumbnails <- FALSE
+      article_lab_state$thumbnail_generation_started_at <- NULL
+      article_lab_state$thumbnail_generation_estimate <- NULL
     }, add = TRUE)
 
     package_rows <- article_lab_thumbnail_package_rows()
@@ -10337,29 +10890,77 @@ server <- function(input, output, session) {
       return(invisible(NULL))
     }
 
+    variants_per_package <- max(1L, min(4L, suppressWarnings(as.integer(input$article_lab_thumbnail_variants_per_package)) %||% article_lab_default_thumbnail_variants))
+    estimate <- article_lab_thumbnail_estimate(length(selected_ids) * variants_per_package)
+    started_at <- Sys.time()
+    article_lab_state$thumbnail_generation_started_at <- started_at
+    article_lab_state$thumbnail_generation_estimate <- estimate
+    article_lab_state$notice <- sprintf(
+      "Generating thumbnails: requested %s thumbnail%s for %s selected package%s. Initial estimate: %s. Waiting for OpenAI; live completed/remaining progress is not available during this blocking call.",
+      estimate$total_expected,
+      ifelse(estimate$total_expected == 1L, "", "s"),
+      length(selected_ids),
+      ifelse(length(selected_ids) == 1L, "", "s"),
+      estimate$label
+    )
+    session$sendCustomMessage(
+      "articleLabStartThumbnailTimer",
+      list(
+        total_expected = estimate$total_expected,
+        estimate_label = estimate$label,
+        lower_seconds = estimate$lower_seconds,
+        upper_seconds = estimate$upper_seconds,
+        started_at = paste0(format(as.POSIXct(started_at, tz = "UTC"), "%Y-%m-%dT%H:%M:%OS3", tz = "UTC"), "Z")
+      )
+    )
+    if (is.function(session$flushReact)) session$flushReact()
+
     result <- tryCatch(
       article_lab_generate_thumbnails_for_packages(
         con,
         subtitle_ids = selected_ids,
         model = input$article_lab_thumbnail_model,
         prompt = input$article_lab_thumbnail_prompt,
-        variants_per_package = input$article_lab_thumbnail_variants_per_package
+        variants_per_package = variants_per_package
       ),
       error = function(e) e
     )
+    actual_seconds <- as.numeric(difftime(Sys.time(), started_at, units = "secs"))
+    comparison <- article_lab_estimate_comparison(actual_seconds, estimate$lower_seconds, estimate$upper_seconds)
+    timing_copy <- sprintf(
+      "Thumbnail generation finished in %s. Initial estimate was %s, so this run was %s.",
+      article_lab_format_duration(actual_seconds),
+      estimate$label,
+      comparison
+    )
     if (inherits(result, "error")) {
-      article_lab_state$notice <- paste("Thumbnail generation failed:", conditionMessage(result))
+      article_lab_state$notice <- paste(timing_copy, "Thumbnail generation failed:", conditionMessage(result))
+      session$sendCustomMessage("articleLabStopThumbnailTimer", list(message = article_lab_state$notice))
     } else {
+      mode_label <- result$mode %||% "unknown"
+      fallback_count <- if (identical(mode_label, "stub")) result$generated_n else 0L
+      failure_count <- 0L
+      fallback_copy <- if (identical(mode_label, "stub") && !is.null(result$fallback_reason) && nzchar(result$fallback_reason)) {
+        sprintf(" Stub fallback reason: %s", result$fallback_reason)
+      } else {
+        ""
+      }
       article_lab_state$notice <- sprintf(
-        "Generated %s thumbnail candidate%s for %s selected package%s using model %s. %s selected package%s were skipped because they were not eligible or already had active thumbnail candidates.",
+        "%s Generated %s thumbnail candidate%s for %s selected package%s using model %s in %s mode. Fallback count: %s. Failure count: %s. %s selected package%s were skipped because they were not eligible or already had active thumbnail candidates.%s",
+        timing_copy,
         result$generated_n,
         ifelse(result$generated_n == 1, "", "s"),
         result$package_n,
         ifelse(result$package_n == 1, "", "s"),
         result$model %||% article_lab_default_thumbnail_model,
+        mode_label,
+        fallback_count,
+        failure_count,
         result$skipped_n,
-        ifelse(result$skipped_n == 1, "", "s")
+        ifelse(result$skipped_n == 1, "", "s"),
+        fallback_copy
       )
+      session$sendCustomMessage("articleLabStopThumbnailTimer", list(message = article_lab_state$notice))
       article_lab_refresh(article_lab_refresh() + 1L)
     }
   }, ignoreInit = TRUE)
@@ -10449,6 +11050,76 @@ server <- function(input, output, session) {
       result$rejected_n,
       ifelse(result$rejected_n == 1, "", "s")
     )
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_generate_outlines, {
+    outline_rows <- article_lab_ready_for_outline_rows()
+    article_lab_update_outlines(con, collect_outline_updates(outline_rows))
+    selected_ids <- collect_selected_ids(
+      outline_rows,
+      "article_lab_outline_packages",
+      snapshot_ids = input$article_lab_outline_packages_selected_snapshot,
+      key_col = "thumbnail_id"
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one approved package without an outline before generating."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    selected_rows <- outline_rows[outline_rows$thumbnail_id %in% selected_ids & (is.na(outline_rows$outline_id) | !nzchar(outline_rows$outline_id)), , drop = FALSE]
+    if (nrow(selected_rows) == 0) {
+      article_lab_state$notice <- "Selected packages already have active outline drafts."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- generate_outline_drafts(selected_rows, model = input$article_lab_outline_model, prompt = input$article_lab_outline_prompt)
+    inserted_n <- article_lab_insert_outline_drafts(con, result$rows)
+    article_lab_state$notice <- sprintf(
+      "Generated %s outline draft%s using model %s in %s mode.",
+      inserted_n,
+      ifelse(inserted_n == 1L, "", "s"),
+      result$model %||% article_lab_default_outline_model,
+      result$mode %||% "unknown"
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_save_outlines, {
+    updated_n <- article_lab_update_outlines(con, collect_outline_updates(article_lab_ready_for_outline_rows()))
+    article_lab_state$notice <- sprintf("Saved %s editable outline%s.", updated_n, ifelse(updated_n == 1L, "", "s"))
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_approve_outlines, {
+    outline_rows <- article_lab_ready_for_outline_rows()
+    article_lab_update_outlines(con, collect_outline_updates(outline_rows))
+    draft_rows <- outline_rows[!is.na(outline_rows$outline_id) & nzchar(outline_rows$outline_id) & outline_rows$outline_status == "draft", , drop = FALSE]
+    selected_ids <- collect_selected_ids(
+      draft_rows,
+      "article_lab_outline_candidates",
+      snapshot_ids = input$article_lab_outline_candidates_selected_snapshot,
+      key_col = "outline_id"
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one outline draft before approving it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_approve_outlines(con, selected_ids)
+    article_lab_state$notice <- sprintf(
+      "Approved %s outline%s. %s package%s moved to draft-ready.",
+      result$approved_n,
+      ifelse(result$approved_n == 1L, "", "s"),
+      length(result$candidate_ids),
+      ifelse(length(result$candidate_ids) == 1L, "", "s")
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_refresh_outlines, {
+    updated_n <- article_lab_update_outlines(con, collect_outline_updates(article_lab_ready_for_outline_rows()))
+    article_lab_state$notice <- sprintf("Refreshed Outline and saved %s editable outline%s.", updated_n, ifelse(updated_n == 1L, "", "s"))
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 

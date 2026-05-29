@@ -34,6 +34,7 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `analyze_medium_title_api_scores_v2.R`: evaluates stored title/subtitle API scores.
 - `export_medium_analysis_v2_chatgpt_snapshot.R`: exports a clean combined V2 snapshot with dataset rows joined to current API and human rating fields.
 - `score_medium_thumbnails_api_v1.py`: thumbnail API scoring.
+- `writing_api/generate_outlines.mjs`: Article Lab outline generation for approved title/subtitle/thumbnail packages.
 - `analyze_medium_thumbnail_api_scores_v1.R`: evaluates stored thumbnail API scores.
 - `audit_medium_thumbnail_assets_v1.R`: checks thumbnail asset availability.
 - `audit_medium_thumbnail_mapping.R`: audits dataset-to-queue thumbnail mappings and stored human/API thumbnail paths.
