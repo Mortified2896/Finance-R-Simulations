@@ -7844,7 +7844,7 @@ ui <- fluidPage(
 
       function articleLabSyncSelections(groupName) {
         if (!groupName || typeof Shiny === 'undefined' || typeof Shiny.setInputValue !== 'function') return;
-        const rows = Array.from(document.querySelectorAll('tr[data-selection-group=\"' + groupName + '\"]'));
+        const rows = Array.from(document.querySelectorAll('[data-selection-group=\"' + groupName + '\"]'));
         const selectedIds = rows
           .filter(function(row) {
             const checkbox = row.querySelector('input[type=\"checkbox\"]');
