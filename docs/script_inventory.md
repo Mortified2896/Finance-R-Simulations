@@ -37,6 +37,7 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `writing_api/generate_thumbnails.mjs`: Article Lab thumbnail image generation via the OpenAI Responses API image generation tool.
 - `writing_api/generate_outlines.mjs`: Article Lab outline generation for approved title/subtitle/thumbnail packages.
 - `writing_api/generate_full_text.mjs`: Article Lab full article draft generation from approved outlines, with PDF-first source context and summary fallback.
+- `writing_api/generate_medium_tags.mjs`: Review & Publish Medium tag generation from approved full article drafts.
 - `analyze_medium_thumbnail_api_scores_v1.R`: evaluates stored thumbnail API scores.
 - `audit_medium_thumbnail_assets_v1.R`: checks thumbnail asset availability.
 - `audit_medium_thumbnail_mapping.R`: audits dataset-to-queue thumbnail mappings and stored human/API thumbnail paths.

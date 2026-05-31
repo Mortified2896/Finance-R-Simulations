@@ -770,6 +770,21 @@ article_lab_default_full_text_prompt <- paste(
   sep = "\n"
 )
 article_lab_full_text_prompt_key <- "full_text_default"
+article_lab_default_medium_tags_prompt <- paste(
+  "Generate Medium tags for the approved article package.",
+  "Return valid JSON only in the shape {\"tags\":[\"...\",\"...\"]}.",
+  "Return exactly 5 tags unless fewer are clearly appropriate.",
+  "Each tag must be short, specific, Medium-friendly, and useful for personal finance or investing readers.",
+  "Do not include hashtags, numbering, markdown, or explanations.",
+  sep = "\n"
+)
+article_lab_default_medium_tags_model <- local({
+  configured <- Sys.getenv("OPENAI_MEDIUM_TAGS_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5-mini"
+  configured
+})
+article_lab_medium_tags_model_choices <- article_lab_model_choices_with_default(article_lab_default_medium_tags_model)
 article_lab_default_score_prompt_version <- "v2_2"
 article_lab_default_score_scope <- "title_only"
 article_lab_all_batches_value <- "__all_article_lab_batches__"
@@ -819,6 +834,36 @@ article_lab_thumbnail_status_labels <- c(
   generated = "Generated",
   approved = "Approved",
   rejected = "Rejected"
+)
+article_lab_publish_target_choices <- c(
+  "Publish on my own Medium profile",
+  "Submit to Medium publication",
+  "Publish on own website",
+  "Both Medium and own website",
+  "Do not publish yet"
+)
+article_lab_monetization_choices <- c(
+  "Member-only / monetized",
+  "Free article",
+  "Undecided"
+)
+article_lab_publish_status_values <- c(
+  "ready_for_review_publish",
+  "ready_to_publish",
+  "submitted",
+  "published",
+  "needs_changes",
+  "rejected",
+  "archived"
+)
+article_lab_publish_status_labels <- c(
+  ready_for_review_publish = "Ready for Review & Publish",
+  ready_to_publish = "Ready to publish",
+  submitted = "Submitted",
+  published = "Published",
+  needs_changes = "Needs changes",
+  rejected = "Rejected",
+  archived = "Archived"
 )
 article_lab_workflow_sections <- c(
   "research_inbox",
@@ -886,9 +931,9 @@ article_lab_page_meta <- list(
   ),
   review_publish = list(
     nav_title = "Review & Publish",
-    nav_subtitle = "Review and publish",
+    nav_subtitle = "Prepare publishing",
     title = "Article Lab \u2013 Review & Publish",
-    subtitle = "Review the final article package before publishing."
+    subtitle = "Set publishing metadata, export/copy the approved draft, and track publishing status."
   ),
   settings = list(
     nav_title = "Settings",
@@ -1001,6 +1046,14 @@ article_lab_thumbnail_status_label <- function(status) {
   if (is.null(status)) return("Unknown")
   if (!(status %in% names(article_lab_thumbnail_status_labels))) return(status)
   label <- article_lab_thumbnail_status_labels[[status]]
+  if (is.null(label) || is.na(label) || !nzchar(label)) status else label
+}
+
+article_lab_publish_status_label <- function(status) {
+  status <- article_lab_input_string(status)
+  if (is.null(status)) return("Unknown")
+  if (!(status %in% names(article_lab_publish_status_labels))) return(status)
+  label <- article_lab_publish_status_labels[[status]]
   if (is.null(label) || is.na(label) || !nzchar(label)) status else label
 }
 
@@ -1273,6 +1326,63 @@ ensure_article_lab_schema <- function(con) {
   for (column_name in names(revision_columns)) db_add_column_if_missing(con, "article_lab_full_text_draft_revisions", column_name, revision_columns[[column_name]])
 
   dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_publications (
+      publication_id TEXT PRIMARY KEY,
+      publication_name TEXT NOT NULL,
+      platform TEXT NOT NULL DEFAULT 'Medium',
+      submission_notes TEXT,
+      submission_url TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  ")
+
+  publication_columns <- list(
+    publication_name = "TEXT NOT NULL DEFAULT ''", platform = "TEXT NOT NULL DEFAULT 'Medium'",
+    submission_notes = "TEXT", submission_url = "TEXT", is_active = "INTEGER NOT NULL DEFAULT 1",
+    created_at = "TEXT NOT NULL DEFAULT ''", updated_at = "TEXT NOT NULL DEFAULT ''"
+  )
+  for (column_name in names(publication_columns)) db_add_column_if_missing(con, "article_lab_publications", column_name, publication_columns[[column_name]])
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_publish_settings (
+      publish_settings_id TEXT PRIMARY KEY,
+      full_text_draft_id TEXT NOT NULL,
+      thumbnail_id TEXT,
+      subtitle_id TEXT,
+      candidate_id TEXT,
+      batch_id TEXT,
+      medium_tags_json TEXT,
+      publishing_target TEXT,
+      publication_id TEXT,
+      publication_name_snapshot TEXT,
+      monetization TEXT,
+      canonical_url TEXT,
+      featured_image_alt_text TEXT,
+      image_credit_source TEXT,
+      published_url TEXT,
+      publish_status TEXT NOT NULL DEFAULT 'ready_for_review_publish',
+      notes TEXT,
+      submitted_at TEXT,
+      published_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(full_text_draft_id) REFERENCES article_lab_full_text_drafts(full_text_draft_id),
+      FOREIGN KEY(publication_id) REFERENCES article_lab_publications(publication_id)
+    )
+  ")
+
+  publish_settings_columns <- list(
+    full_text_draft_id = "TEXT NOT NULL DEFAULT ''", thumbnail_id = "TEXT", subtitle_id = "TEXT", candidate_id = "TEXT", batch_id = "TEXT",
+    medium_tags_json = "TEXT", publishing_target = "TEXT", publication_id = "TEXT", publication_name_snapshot = "TEXT", monetization = "TEXT",
+    canonical_url = "TEXT", featured_image_alt_text = "TEXT", image_credit_source = "TEXT", published_url = "TEXT",
+    publish_status = "TEXT NOT NULL DEFAULT 'ready_for_review_publish'", notes = "TEXT", submitted_at = "TEXT", published_at = "TEXT",
+    created_at = "TEXT NOT NULL DEFAULT ''", updated_at = "TEXT NOT NULL DEFAULT ''"
+  )
+  for (column_name in names(publish_settings_columns)) db_add_column_if_missing(con, "article_lab_publish_settings", column_name, publish_settings_columns[[column_name]])
+
+  dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_article_lab_title_batches_created_at
     ON article_lab_title_batches (created_at, batch_id)
   ")
@@ -1357,6 +1467,31 @@ ensure_article_lab_schema <- function(con) {
   dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_article_lab_full_text_revisions_draft
     ON article_lab_full_text_draft_revisions (full_text_draft_id, created_at)
+  ")
+
+  dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_article_lab_publications_name_platform
+    ON article_lab_publications (publication_name, platform)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_publications_active
+    ON article_lab_publications (is_active, platform, publication_name)
+  ")
+
+  dbExecute(con, "
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_article_lab_publish_settings_draft
+    ON article_lab_publish_settings (full_text_draft_id)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_publish_settings_status
+    ON article_lab_publish_settings (publish_status, updated_at)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_publish_settings_publication
+    ON article_lab_publish_settings (publication_id, updated_at)
   ")
 
   dbExecute(con, "
@@ -1579,6 +1714,15 @@ article_lab_full_text_draft_id <- function(outline_id) {
 
 article_lab_full_text_revision_id <- function(full_text_draft_id) {
   paste0("alfr_", gsub("[^A-Za-z0-9]+", "_", full_text_draft_id %||% "draft"), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
+}
+
+article_lab_publish_settings_id <- function(full_text_draft_id) {
+  paste0("alps_", gsub("[^A-Za-z0-9]+", "_", full_text_draft_id %||% "draft"))
+}
+
+article_lab_publication_id <- function(publication_name) {
+  key <- tolower(gsub("[^A-Za-z0-9]+", "_", article_lab_input_string(publication_name) %||% "publication"))
+  paste0("alpub_", gsub("(^_+|_+$)", "", key), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
 }
 
 research_workflow_sort_sql <- "CASE WHEN manual_sort_order IS NULL THEN 1 ELSE 0 END, manual_sort_order ASC, updated_at DESC"
@@ -3839,17 +3983,20 @@ article_lab_update_full_text_drafts <- function(con, draft_updates, edit_source 
       if (length(draft_id) == 0 || is.na(draft_id[[1]])) next
       new_text <- article_lab_input_multiline(entry$current_draft_text)
       if (length(new_text) == 0 || is.na(new_text[[1]])) next
-      existing <- dbGetQuery(con, "SELECT current_draft_text FROM article_lab_full_text_drafts WHERE full_text_draft_id = ?", params = list(draft_id[[1]]))
+      new_notes <- article_lab_input_string(entry$notes) %||% NA_character_
+      existing <- dbGetQuery(con, "SELECT current_draft_text, notes FROM article_lab_full_text_drafts WHERE full_text_draft_id = ?", params = list(draft_id[[1]]))
       if (nrow(existing) == 0) next
       previous_text <- existing$current_draft_text[[1]]
+      previous_notes <- article_lab_input_string(existing$notes[[1]]) %||% NA_character_
+      if (identical(previous_text, new_text[[1]]) && identical(previous_notes, new_notes)) next
       if (!identical(previous_text, new_text[[1]])) {
         dbExecute(
           con,
           "INSERT INTO article_lab_full_text_draft_revisions (revision_id, full_text_draft_id, previous_text, new_text, edit_source, edit_note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-          params = list(article_lab_full_text_revision_id(draft_id[[1]]), draft_id[[1]], previous_text, new_text[[1]], edit_source, article_lab_input_string(entry$notes) %||% NA_character_, timestamp)
+          params = list(article_lab_full_text_revision_id(draft_id[[1]]), draft_id[[1]], previous_text, new_text[[1]], edit_source, new_notes, timestamp)
         )
       }
-      dbExecute(con, "UPDATE article_lab_full_text_drafts SET current_draft_text = ?, notes = ?, updated_at = ? WHERE full_text_draft_id = ?", params = list(new_text[[1]], article_lab_input_string(entry$notes) %||% NA_character_, timestamp, draft_id[[1]]))
+      dbExecute(con, "UPDATE article_lab_full_text_drafts SET current_draft_text = ?, notes = ?, updated_at = ? WHERE full_text_draft_id = ?", params = list(new_text[[1]], new_notes, timestamp, draft_id[[1]]))
       updated_n <- updated_n + 1L
     }
     dbCommit(con)
@@ -3884,6 +4031,213 @@ article_lab_reject_full_text_draft <- function(con, full_text_draft_id) {
   draft_id <- article_lab_input_string(full_text_draft_id)
   if (is.na(draft_id) || !nzchar(draft_id)) return(0L)
   dbExecute(con, "UPDATE article_lab_full_text_drafts SET status = 'rejected', is_approved = 0, rejected_at = ?, approved_at = NULL, updated_at = ? WHERE full_text_draft_id = ? AND status != 'approved'", params = list(now_utc(), now_utc(), draft_id))
+}
+
+article_lab_parse_medium_tags <- function(value) {
+  raw <- article_lab_input_multiline(value) %||% ""
+  tags <- clean_text(unlist(strsplit(raw, "[,\n]", perl = TRUE), use.names = FALSE))
+  tags <- unique(tags[!is.na(tags)])
+  head(tags, 5L)
+}
+
+article_lab_tags_display <- function(tags_json) {
+  text <- article_lab_input_string(tags_json)
+  if (is.null(text)) return("")
+  parsed <- tryCatch(fromJSON(text), error = function(e) character())
+  paste(clean_text(parsed), collapse = ", ")
+}
+
+load_article_lab_publications <- function(con, active_only = TRUE) {
+  if (!dbExistsTable(con, "article_lab_publications")) return(data.frame())
+  query <- "SELECT publication_id, publication_name, platform, submission_notes, submission_url, is_active, created_at, updated_at FROM article_lab_publications"
+  if (isTRUE(active_only)) query <- paste(query, "WHERE is_active = 1")
+  query <- paste(query, "ORDER BY publication_name COLLATE NOCASE ASC")
+  dbGetQuery(con, query)
+}
+
+article_lab_save_publication <- function(con, publication_name, platform = "Medium") {
+  name <- article_lab_input_string(publication_name)
+  if (is.null(name) || is.na(name) || !nzchar(name)) return(NA_character_)
+  platform <- article_lab_input_string(platform) %||% "Medium"
+  existing <- dbGetQuery(con, "SELECT publication_id FROM article_lab_publications WHERE publication_name = ? AND platform = ? LIMIT 1", params = list(name, platform))
+  timestamp <- now_utc()
+  if (nrow(existing) > 0) {
+    dbExecute(con, "UPDATE article_lab_publications SET is_active = 1, updated_at = ? WHERE publication_id = ?", params = list(timestamp, existing$publication_id[[1]]))
+    return(existing$publication_id[[1]])
+  }
+  publication_id <- article_lab_publication_id(name)
+  dbExecute(
+    con,
+    "INSERT INTO article_lab_publications (publication_id, publication_name, platform, submission_notes, submission_url, is_active, created_at, updated_at) VALUES (?, ?, ?, NULL, NULL, 1, ?, ?)",
+    params = list(publication_id, name, platform, timestamp, timestamp)
+  )
+  publication_id
+}
+
+load_article_lab_review_publish_rows <- function(con, batch_id) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_full_text_drafts")) return(data.frame())
+  all_batches <- identical(batch_id, article_lab_all_batches_value)
+  query <- "
+    SELECT
+      d.full_text_draft_id, d.outline_id, d.thumbnail_id, d.subtitle_id, d.candidate_id, d.batch_id,
+      d.current_draft_text, d.status AS draft_status, d.is_approved, d.approved_at, d.updated_at AS draft_updated_at,
+      c.title, c.status AS candidate_status, c.archived,
+      s.subtitle,
+      t.thumbnail_label, t.thumbnail_data_uri,
+      ps.publish_settings_id, ps.medium_tags_json, ps.publishing_target, ps.publication_id,
+      ps.publication_name_snapshot, ps.monetization, ps.canonical_url, ps.featured_image_alt_text,
+      ps.image_credit_source, ps.published_url, ps.publish_status, ps.notes AS publish_notes,
+      ps.submitted_at, ps.published_at, ps.updated_at AS publish_updated_at
+    FROM article_lab_full_text_drafts d
+    INNER JOIN article_lab_title_candidates c ON c.candidate_id = d.candidate_id
+    LEFT JOIN article_lab_subtitle_candidates s ON s.subtitle_id = d.subtitle_id
+    LEFT JOIN article_lab_thumbnail_candidates t ON t.thumbnail_id = d.thumbnail_id
+    LEFT JOIN article_lab_publish_settings ps ON ps.full_text_draft_id = d.full_text_draft_id
+    WHERE (d.status = 'approved' OR d.is_approved = 1)
+      AND COALESCE(c.archived, 0) = 0
+  "
+  params <- list()
+  if (!all_batches) {
+    query <- paste(query, "AND d.batch_id = ?")
+    params <- list(batch_id)
+  }
+  query <- paste(query, "ORDER BY d.approved_at DESC, d.updated_at DESC, d.full_text_draft_id DESC")
+  if (length(params) == 0) dbGetQuery(con, query) else dbGetQuery(con, query, params = params)
+}
+
+article_lab_medium_ready_markdown <- function(row, settings = row) {
+  if (nrow(row) == 0) return("")
+  title <- article_lab_row_value(row, "title", "Untitled")
+  subtitle <- article_lab_row_value(row, "subtitle", "")
+  body <- article_lab_row_value(row, "current_draft_text", "")
+  alt_text <- article_lab_row_value(settings, "featured_image_alt_text", "")
+  credit <- article_lab_row_value(settings, "image_credit_source", "")
+  parts <- c(paste0("# ", title))
+  if (!is.na(subtitle) && nzchar(subtitle)) parts <- c(parts, paste0("_", subtitle, "_"))
+  if (!is.na(alt_text) && nzchar(alt_text)) parts <- c(parts, paste0("![", alt_text, "]()"))
+  if (!is.na(credit) && nzchar(credit)) parts <- c(parts, paste0("Image credit/source: ", credit))
+  parts <- c(parts, body)
+  paste(parts, collapse = "\n\n")
+}
+
+article_lab_medium_tags_effective_prompt <- function(row, prompt = NA_character_) {
+  if (nrow(row) == 0) return("")
+  base_prompt <- article_lab_input_multiline(prompt) %||% article_lab_default_medium_tags_prompt
+  paste(
+    base_prompt,
+    "Article package:",
+    sprintf("full_text_draft_id=%s | candidate_id=%s | batch_id=%s", article_lab_row_value(row, "full_text_draft_id", ""), article_lab_row_value(row, "candidate_id", ""), article_lab_row_value(row, "batch_id", "")),
+    sprintf("Title: %s", article_lab_row_value(row, "title", "")),
+    sprintf("Subtitle: %s", article_lab_row_value(row, "subtitle", "")),
+    "Article body:",
+    article_lab_row_value(row, "current_draft_text", ""),
+    sep = "\n\n"
+  )
+}
+
+article_lab_medium_tags_api_request <- function(row, model = NA_character_, prompt = NA_character_) {
+  helper_path <- file.path("scripts", "writing_api", "generate_medium_tags.mjs")
+  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_medium_tags.mjs", call. = FALSE)
+  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+  if (nrow(row) == 0) stop("Select an approved full article draft before generating Medium tags.", call. = FALSE)
+
+  request_payload <- list(
+    model = article_lab_input_string(model) %||% article_lab_default_medium_tags_model,
+    prompt = article_lab_input_multiline(prompt) %||% article_lab_default_medium_tags_prompt,
+    article = list(
+      full_text_draft_id = article_lab_row_value(row, "full_text_draft_id"),
+      candidate_id = article_lab_row_value(row, "candidate_id"),
+      batch_id = article_lab_row_value(row, "batch_id"),
+      title = article_lab_row_value(row, "title"),
+      subtitle = article_lab_row_value(row, "subtitle"),
+      body = article_lab_row_value(row, "current_draft_text")
+    )
+  )
+
+  request_file <- tempfile(pattern = "article_lab_medium_tags_request_", fileext = ".json")
+  stdout_file <- tempfile(pattern = "article_lab_medium_tags_stdout_", fileext = ".json")
+  stderr_file <- tempfile(pattern = "article_lab_medium_tags_stderr_", fileext = ".log")
+  on.exit(unlink(c(request_file, stdout_file, stderr_file), force = TRUE), add = TRUE)
+
+  write_json(request_payload, request_file, auto_unbox = TRUE, pretty = FALSE, null = "null")
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2("node", args = c(helper_path, request_file), stdout = stdout_file, stderr = stderr_file)
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
+    stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Medium tag generation helper failed.", call. = FALSE)
+  }
+  if (!nzchar(trimws(stdout_text))) stop("Medium tag generation helper returned no output.", call. = FALSE)
+
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  tags <- article_lab_parse_medium_tags(paste(unlist(parsed$tags %||% list(), use.names = FALSE), collapse = ", "))
+  if (length(tags) == 0) stop("API helper returned no usable Medium tags.", call. = FALSE)
+  list(tags = tags, model = article_lab_input_string(parsed$model) %||% request_payload$model, mode = article_lab_input_string(parsed$mode) %||% "api", raw_json = stdout_text, response_id = article_lab_input_string(parsed$response_id))
+}
+
+article_lab_save_publish_settings <- function(con, row, values) {
+  if (nrow(row) == 0) return(0L)
+  draft_id <- article_lab_row_value(row, "full_text_draft_id")
+  if (is.na(draft_id) || !nzchar(draft_id)) return(0L)
+  tags <- article_lab_parse_medium_tags(values$medium_tags %||% "")
+  target <- article_lab_input_string(values$publishing_target) %||% "Do not publish yet"
+  if (!(target %in% article_lab_publish_target_choices)) target <- "Do not publish yet"
+  monetization <- article_lab_input_string(values$monetization) %||% "Undecided"
+  if (!(monetization %in% article_lab_monetization_choices)) monetization <- "Undecided"
+  status <- article_lab_input_string(values$publish_status) %||% "ready_for_review_publish"
+  if (!(status %in% article_lab_publish_status_values)) status <- "ready_for_review_publish"
+  publication_id <- article_lab_input_string(values$publication_id) %||% NA_character_
+  new_publication_name <- article_lab_input_string(values$new_publication_name) %||% NA_character_
+  if (identical(target, "Submit to Medium publication") && !is.na(new_publication_name) && nzchar(new_publication_name)) {
+    publication_id <- article_lab_save_publication(con, new_publication_name)
+  }
+  publication_name <- NA_character_
+  if (!is.na(publication_id) && nzchar(publication_id)) {
+    publication <- dbGetQuery(con, "SELECT publication_name FROM article_lab_publications WHERE publication_id = ? LIMIT 1", params = list(publication_id))
+    if (nrow(publication) > 0) publication_name <- publication$publication_name[[1]]
+  }
+  timestamp <- now_utc()
+  existing <- dbGetQuery(con, "SELECT publish_settings_id, publish_status, submitted_at, published_at FROM article_lab_publish_settings WHERE full_text_draft_id = ? LIMIT 1", params = list(draft_id))
+  submitted_at <- if (nrow(existing) > 0) existing$submitted_at[[1]] else NA_character_
+  published_at <- if (nrow(existing) > 0) existing$published_at[[1]] else NA_character_
+  if (identical(status, "submitted") && (is.na(submitted_at) || !nzchar(submitted_at))) submitted_at <- timestamp
+  if (identical(status, "published") && (is.na(published_at) || !nzchar(published_at))) published_at <- timestamp
+  params <- list(
+    draft_id,
+    article_lab_row_value(row, "thumbnail_id"), article_lab_row_value(row, "subtitle_id"), article_lab_row_value(row, "candidate_id"), article_lab_row_value(row, "batch_id"),
+    toJSON(tags, auto_unbox = TRUE), target, publication_id, publication_name, monetization,
+    article_lab_input_string(values$canonical_url) %||% NA_character_,
+    article_lab_input_string(values$featured_image_alt_text) %||% NA_character_,
+    article_lab_input_string(values$image_credit_source) %||% NA_character_,
+    article_lab_input_string(values$published_url) %||% NA_character_,
+    status, article_lab_input_multiline(values$notes) %||% NA_character_, submitted_at, published_at, timestamp
+  )
+  if (nrow(existing) > 0) {
+    dbExecute(
+      con,
+      "UPDATE article_lab_publish_settings
+       SET full_text_draft_id = ?, thumbnail_id = ?, subtitle_id = ?, candidate_id = ?, batch_id = ?,
+           medium_tags_json = ?, publishing_target = ?, publication_id = ?, publication_name_snapshot = ?, monetization = ?,
+           canonical_url = ?, featured_image_alt_text = ?, image_credit_source = ?, published_url = ?, publish_status = ?,
+           notes = ?, submitted_at = ?, published_at = ?, updated_at = ?
+       WHERE publish_settings_id = ?",
+      params = c(params, list(existing$publish_settings_id[[1]]))
+    )
+  } else {
+    dbExecute(
+      con,
+      "INSERT INTO article_lab_publish_settings
+       (publish_settings_id, full_text_draft_id, thumbnail_id, subtitle_id, candidate_id, batch_id,
+        medium_tags_json, publishing_target, publication_id, publication_name_snapshot, monetization,
+        canonical_url, featured_image_alt_text, image_credit_source, published_url, publish_status, notes,
+        submitted_at, published_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      params = c(list(article_lab_publish_settings_id(draft_id)), params[1:18], list(timestamp, timestamp))
+    )
+  }
+  1L
 }
 
 article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model = NA_character_, prompt = NA_character_, variants_per_title = 4L) {
@@ -5342,9 +5696,44 @@ article_lab_section_card <- function(title, description, body, count = NULL, foo
   )
 }
 
+article_lab_action_bar <- function(..., align = c("start", "split")) {
+  align <- match.arg(align)
+  div(class = paste("lab-actions", paste0("lab-actions-", align)), ...)
+}
+
+article_lab_local_notice <- function(copy) {
+  if (is.null(copy) || is.na(copy) || !nzchar(copy)) return(NULL)
+  div(class = "lab-inline-notice", copy)
+}
+
+article_lab_empty_state <- function(title, copy, next_step = NULL) {
+  div(
+    class = "empty-state lab-empty-state",
+    strong(title),
+    p(copy),
+    if (is.null(next_step) || is.na(next_step) || !nzchar(next_step)) NULL else p(class = "lab-empty-next", next_step)
+  )
+}
+
+article_lab_prompt_block <- function(...) {
+  div(class = "lab-prompt-block", ...)
+}
+
+article_lab_button <- function(input_id, label, class = "lab-secondary", onclick = NULL, disabled = FALSE) {
+  button <- actionButton(input_id, label, class = class, onclick = onclick)
+  if (isTRUE(disabled)) {
+    button <- tagAppendAttributes(button, disabled = "disabled", class = "disabled")
+  }
+  button
+}
+
 article_lab_generate_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
-    return(div(class = "empty-state", "No current titles need triage. Generate and save a new batch, or show disqualified titles to review earlier skips."))
+    return(article_lab_empty_state(
+      "No titles need triage",
+      "Generate and save a new batch, or show disqualified titles to review earlier skips.",
+      "Next step: create title candidates above, then move selected titles to the API queue."
+    ))
   }
 
   rows <- article_lab_normalize_candidate_rows(rows)
@@ -5422,7 +5811,11 @@ article_lab_thumbnail_badge <- function(value) {
 
 article_lab_score_queue_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
-    return(div(class = "empty-state", "No titles are currently waiting in the API queue for this selection."))
+    return(article_lab_empty_state(
+      "No queued titles",
+      "No titles are currently waiting in the API queue for this selection.",
+      "Next step: move generated titles into the API queue from the Generate tab."
+    ))
   }
 
   rows <- article_lab_normalize_candidate_rows(rows)
@@ -5464,7 +5857,11 @@ article_lab_score_queue_table_ui <- function(rows) {
 
 article_lab_score_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
-    return(div(class = "empty-state", "No API-scored titles are currently waiting for approval in this selection."))
+    return(article_lab_empty_state(
+      "No scored titles to review",
+      "No API-scored titles are currently waiting for approval in this selection.",
+      "Next step: score queued titles, then approve the strongest titles for subtitle generation."
+    ))
   }
 
   rows <- article_lab_normalize_candidate_rows(rows)
@@ -5526,7 +5923,11 @@ article_lab_score_table_ui <- function(rows) {
 
 article_lab_subtitle_target_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
-    return(div(class = "empty-state", "No approved titles currently need subtitle candidates in this selection."))
+    return(article_lab_empty_state(
+      "No titles need subtitles",
+      "No approved titles currently need subtitle candidates in this selection.",
+      "Next step: approve scored titles from API Scoring."
+    ))
   }
 
   rows <- article_lab_normalize_candidate_rows(rows)
@@ -5568,7 +5969,11 @@ article_lab_subtitle_target_table_ui <- function(rows) {
 
 article_lab_subtitle_candidate_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
-    return(div(class = "empty-state", "No subtitle candidates are currently waiting for approval in this selection."))
+    return(article_lab_empty_state(
+      "No subtitle candidates",
+      "No subtitle candidates are currently waiting for approval in this selection.",
+      "Next step: generate subtitle candidates or add manual subtitle ideas above."
+    ))
   }
 
   tagList(
@@ -5611,7 +6016,11 @@ article_lab_subtitle_candidate_table_ui <- function(rows) {
 
 article_lab_thumbnail_package_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
-    return(div(class = "empty-state", "No title/subtitle packages currently need thumbnail candidates in this selection."))
+    return(article_lab_empty_state(
+      "No packages need thumbnails",
+      "No title/subtitle packages currently need thumbnail candidates in this selection.",
+      "Next step: approve subtitle candidates from Subtitle Generation."
+    ))
   }
 
   tagList(
@@ -5654,7 +6063,11 @@ article_lab_thumbnail_package_table_ui <- function(rows) {
 
 article_lab_thumbnail_candidate_grid_ui <- function(rows) {
   if (nrow(rows) == 0) {
-    return(div(class = "empty-state", "No thumbnail preview cards are currently waiting for approval in this selection."))
+    return(article_lab_empty_state(
+      "No thumbnail preview cards",
+      "No thumbnail preview cards are currently waiting for approval in this selection.",
+      "Next step: select title/subtitle packages above and generate thumbnail candidates."
+    ))
   }
 
   div(
@@ -5698,7 +6111,11 @@ article_lab_thumbnail_candidate_grid_ui <- function(rows) {
 
 article_lab_ready_for_outline_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
-    return(div(class = "empty-state", "No title/subtitle/thumbnail packages are ready for Outline yet in this selection."))
+    return(article_lab_empty_state(
+      "No packages ready for Outline",
+      "No title/subtitle/thumbnail packages are ready for Outline yet in this selection.",
+      "Next step: approve one thumbnail candidate per package."
+    ))
   }
 
   div(
@@ -5774,7 +6191,11 @@ article_lab_full_text_source_badge <- function(row, summary_contexts, include_co
 }
 
 article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, include_context = TRUE) {
-  if (nrow(packages) == 0) return(div(class = "empty-state", "No approved outlines are ready for Full Article yet in this selection."))
+  if (nrow(packages) == 0) return(article_lab_empty_state(
+    "No outlines ready for Full Text",
+    "No approved outlines are ready for Full Article yet in this selection.",
+    "Next step: approve an outline from the Outline tab."
+  ))
   draft_rows <- rows[!is.na(rows$full_text_draft_id) & nzchar(rows$full_text_draft_id), , drop = FALSE]
   tagList(
     div(
@@ -5816,6 +6237,7 @@ article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, inc
             tagList(lapply(seq_len(nrow(package_drafts)), function(j) {
               draft <- package_drafts[j, , drop = FALSE]
               draft_id <- draft$full_text_draft_id[[1]]
+              draft_text_id <- article_lab_row_input_id("article_lab_full_text_draft_text", draft_id)
               editor <- div(
                 class = "lab-outline-editor",
                 `data-selection-group` = "article_lab_full_text_drafts",
@@ -5825,7 +6247,11 @@ article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, inc
                   div(class = "lab-chip-row", article_lab_badge(draft$draft_status[[1]] %||% "draft"), tags$span(class = "lab-chip default", draft$source_context_mode[[1]] %||% "none"), tags$span(class = "lab-chip default", draft$draft_model[[1]] %||% "model unknown")),
                   checkboxInput(article_lab_row_input_id("article_lab_full_text_drafts", draft_id), "Select draft", value = FALSE)
                 ),
-                textAreaInput(article_lab_row_input_id("article_lab_full_text_draft_text", draft_id), "Full article draft", value = draft$current_draft_text[[1]] %||% "", width = "100%", height = "720px"),
+                div(
+                  class = "lab-actions",
+                  tags$button(type = "button", class = "btn lab-secondary", onclick = sprintf("window.articleLabCopyValueFromElement('%s', this, 'Copied draft');", draft_text_id), "Copy full article draft")
+                ),
+                textAreaInput(draft_text_id, "Full article draft", value = draft$current_draft_text[[1]] %||% "", width = "100%", height = "720px"),
                 textInput(article_lab_row_input_id("article_lab_full_text_draft_notes", draft_id), "Draft notes", value = draft$draft_notes[[1]] %||% "", width = "100%")
               )
               if (j == 1L) editor else tags$details(tags$summary(sprintf("Show older draft variant %s", j)), editor)
@@ -5833,6 +6259,106 @@ article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, inc
           }
         )
       })
+    )
+  )
+}
+
+article_lab_review_publish_selector_ui <- function(rows, selected_id = NULL) {
+  if (nrow(rows) == 0) return(article_lab_empty_state(
+    "No approved drafts ready",
+    "No approved full article drafts are ready for Review & Publish.",
+    "Next step: approve one full article draft from the Full Text tab."
+  ))
+  labels <- vapply(seq_len(nrow(rows)), function(i) {
+    row <- rows[i, , drop = FALSE]
+    status <- article_lab_publish_status_label(article_lab_row_value(row, "publish_status", "ready_for_review_publish"))
+    sprintf("%s [%s]", article_lab_row_value(row, "title", "Untitled"), status)
+  }, character(1))
+  choices <- setNames(rows$full_text_draft_id, labels)
+  if (is.null(selected_id) || is.na(selected_id) || !(selected_id %in% rows$full_text_draft_id)) selected_id <- rows$full_text_draft_id[[1]]
+  selectizeInput("article_lab_review_publish_draft_id", "Approved article", choices = choices, selected = selected_id, width = "100%")
+}
+
+article_lab_review_publish_workspace_ui <- function(row, publications) {
+  if (nrow(row) == 0) return(article_lab_empty_state("Select an approved draft", "Select an approved full article draft to manage publishing metadata."))
+  target <- article_lab_row_value(row, "publishing_target", "Do not publish yet")
+  if (is.na(target) || !(target %in% article_lab_publish_target_choices)) target <- "Do not publish yet"
+  monetization <- article_lab_row_value(row, "monetization", "Undecided")
+  if (is.na(monetization) || !(monetization %in% article_lab_monetization_choices)) monetization <- "Undecided"
+  publish_status <- article_lab_row_value(row, "publish_status", "ready_for_review_publish")
+  if (is.na(publish_status) || !(publish_status %in% article_lab_publish_status_values)) publish_status <- "ready_for_review_publish"
+  publication_choices <- c("No saved publication selected" = "")
+  if (nrow(publications) > 0) publication_choices <- c(publication_choices, setNames(publications$publication_id, publications$publication_name))
+  selected_publication <- article_lab_row_value(row, "publication_id", "")
+  if (is.na(selected_publication) || !(selected_publication %in% unname(publication_choices))) selected_publication <- ""
+  markdown_id <- "article_lab_medium_ready_markdown_text"
+
+  tagList(
+    div(class = "lab-publish-status-row", article_lab_badge("ready_for_review_publish"), tags$span(class = "lab-chip default", article_lab_publish_status_label(publish_status))),
+    div(
+      class = "lab-publish-workspace",
+      div(
+        class = "lab-card lab-publish-preview",
+        h2("Approved article package"),
+        h3(article_lab_row_value(row, "title", "Untitled")),
+        div(class = "page-subtitle", article_lab_row_value(row, "subtitle", "")),
+        if (!is.na(article_lab_row_value(row, "thumbnail_data_uri", NA_character_)) && nzchar(article_lab_row_value(row, "thumbnail_data_uri", ""))) {
+          div(
+            class = "thumbnail-preview-image-wrap",
+            tags$img(class = "thumbnail-preview-image", src = article_lab_row_value(row, "thumbnail_data_uri", ""), alt = paste("Featured image for", article_lab_row_value(row, "title", "untitled article")))
+          )
+        },
+        tags$details(
+          tags$summary("Read-only approved article preview"),
+          tags$pre(class = "lab-status-copy lab-readonly-preview", article_lab_row_value(row, "current_draft_text", ""))
+        )
+      ),
+      div(
+        class = "lab-card lab-publish-metadata",
+        h2("Publishing metadata"),
+        div(
+          class = "lab-grid",
+          div(class = "lab-field", textInput("article_lab_publish_medium_tags", "Medium tags (max 5, comma or line separated)", value = article_lab_tags_display(article_lab_row_value(row, "medium_tags_json", "")), width = "100%")),
+          div(class = "lab-field", selectInput("article_lab_medium_tags_model", "Medium tags model", choices = article_lab_medium_tags_model_choices, selected = article_lab_default_medium_tags_model, width = "100%")),
+          div(class = "lab-field", selectInput("article_lab_publishing_target", "Publishing target", choices = article_lab_publish_target_choices, selected = target, width = "100%")),
+          div(class = "lab-field", selectInput("article_lab_publish_status", "Publish status", choices = setNames(article_lab_publish_status_values, vapply(article_lab_publish_status_values, article_lab_publish_status_label, character(1))), selected = publish_status, width = "100%")),
+          div(class = "lab-field", selectInput("article_lab_monetization", "Monetization", choices = article_lab_monetization_choices, selected = monetization, width = "100%"))
+        ),
+        conditionalPanel(
+          condition = "input.article_lab_publishing_target == 'Submit to Medium publication'",
+          div(
+            class = "lab-grid",
+            div(class = "lab-field", selectInput("article_lab_publication_id", "Medium publication", choices = publication_choices, selected = selected_publication, width = "100%")),
+            div(class = "lab-field", textInput("article_lab_new_publication_name", "Add publication name", value = "", width = "100%", placeholder = "Use when missing from the saved list"))
+          )
+        ),
+        div(
+          class = "lab-grid",
+          div(class = "lab-field", textInput("article_lab_canonical_url", "Canonical URL", value = article_lab_row_value(row, "canonical_url", ""), width = "100%")),
+          div(class = "lab-field", textInput("article_lab_published_url", "Published URL", value = article_lab_row_value(row, "published_url", ""), width = "100%")),
+          div(class = "lab-field", textInput("article_lab_featured_image_alt_text", "Featured image alt text", value = article_lab_row_value(row, "featured_image_alt_text", ""), width = "100%")),
+          div(class = "lab-field", textInput("article_lab_image_credit_source", "Image credit/source", value = article_lab_row_value(row, "image_credit_source", ""), width = "100%"))
+        ),
+        div(class = "lab-field", textAreaInput("article_lab_publish_notes", "Notes", value = article_lab_row_value(row, "publish_notes", ""), width = "100%", height = "90px")),
+        tags$details(
+          class = "lab-secondary-details",
+          tags$summary("Medium tag generation prompt"),
+          div(class = "lab-field", textAreaInput("article_lab_medium_tags_prompt", "Medium tags API prompt", value = article_lab_default_medium_tags_prompt, width = "100%", height = "130px")),
+          uiOutput("article_lab_medium_tags_effective_prompt")
+        ),
+        article_lab_action_bar(
+          actionButton("article_lab_save_publish_settings", "Save publish settings", class = "lab-primary"),
+          actionButton("article_lab_generate_medium_tags", "Generate Medium tags", class = "lab-secondary"),
+          tags$button(type = "button", class = "btn lab-secondary", onclick = sprintf("window.articleLabCopyTextFromElement('%s', this, 'Copied article');", markdown_id), "Copy Medium-ready article"),
+          downloadButton("article_lab_export_markdown", "Export Markdown", class = "lab-secondary"),
+          actionButton("article_lab_refresh_publish", "Refresh", class = "lab-secondary")
+        ),
+        tags$details(
+          class = "lab-secondary-details",
+          tags$summary("Medium-ready Markdown preview"),
+          tags$pre(id = markdown_id, class = "lab-status-copy lab-readonly-preview", article_lab_medium_ready_markdown(row, row))
+        )
+      )
     )
   )
 }
@@ -7763,6 +8289,11 @@ ui <- fluidPage(
         margin-top: 18px;
         padding: 18px 20px 20px;
       }
+      .lab-card > .lab-card {
+        margin-top: 14px;
+        max-width: none;
+        background: #fbfbfb;
+      }
       .lab-section-card { padding-bottom: 16px; }
       .lab-card h2 {
         margin: 0 0 12px;
@@ -7833,6 +8364,16 @@ ui <- fluidPage(
         gap: 10px;
         flex-wrap: wrap;
         margin-top: 14px;
+        align-items: center;
+      }
+      .lab-actions-split {
+        justify-content: space-between;
+      }
+      .lab-actions input[type='checkbox'] {
+        margin-top: 0;
+      }
+      .lab-actions .checkbox {
+        margin: 0 12px 0 0;
       }
       .lab-actions .btn {
         min-width: 138px;
@@ -7862,6 +8403,23 @@ ui <- fluidPage(
         border-color: #bdbdbd;
         background: #fafafa;
         color: var(--ink);
+      }
+      .lab-actions .btn.lab-danger {
+        border-color: #e3c7b0;
+        background: #fff8f2;
+        color: #8a5200;
+      }
+      .lab-actions .btn.lab-danger:hover,
+      .lab-actions .btn.lab-danger:focus {
+        border-color: #c98f5a;
+        background: #fff0df;
+        color: #713f00;
+      }
+      .lab-actions .btn[disabled],
+      .lab-actions .btn.disabled {
+        opacity: .55;
+        cursor: not-allowed;
+        pointer-events: none;
       }
       .lab-actions .btn.lab-primary.loading,
       .lab-actions .btn.lab-primary.loading:hover,
@@ -7913,6 +8471,14 @@ ui <- fluidPage(
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: .01em;
+      }
+      .lab-table tbody tr {
+        transition: background-color .12s ease, box-shadow .12s ease;
+      }
+      .lab-table tbody tr.lab-selected-row,
+      .lab-table tbody tr:has(input[type='checkbox']:checked) {
+        background: #f2faf3;
+        box-shadow: inset 3px 0 0 var(--green);
       }
       .lab-table td.score-cell {
         font-variant-numeric: tabular-nums;
@@ -8013,6 +8579,12 @@ ui <- fluidPage(
       .lab-badge.approved_for_subtitle { background: #f0ebff; color: #5a33a2; }
       .lab-badge.ready_for_thumbnail { background: #e9f7f4; color: #166f62; }
       .lab-badge.ready_for_outline { background: #e8f4ea; color: #1f6c2c; }
+      .lab-badge.ready_for_draft,
+      .lab-badge.ready_for_review_publish { background: #edf8ef; color: #1a6d27; }
+      .lab-badge.ready_to_publish,
+      .lab-badge.published { background: #e9f7f4; color: #166f62; }
+      .lab-badge.submitted { background: #eef4ff; color: #2757a3; }
+      .lab-badge.needs_changes { background: #fff6e6; color: #8a5a00; }
       .lab-badge.subtitle_generated { background: #f5f5f5; color: #666; }
       .lab-badge.subtitle_approved { background: #e9f7f4; color: #166f62; }
       .lab-badge.subtitle_rejected { background: #fff3e6; color: #8a5200; }
@@ -8050,6 +8622,51 @@ ui <- fluidPage(
         color: var(--muted);
         font-size: 13px;
       }
+      .lab-inline-notice {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border: 1px solid #dceedd;
+        border-radius: 8px;
+        background: #fbfefb;
+        color: #2b642e;
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      .lab-empty-state {
+        display: grid;
+        gap: 6px;
+      }
+      .lab-empty-state strong {
+        color: var(--ink);
+        font-size: 14px;
+      }
+      .lab-empty-state p {
+        margin: 0;
+        line-height: 1.4;
+      }
+      .lab-empty-next {
+        color: #4c6c51;
+      }
+      .lab-secondary-details {
+        margin-top: 14px;
+        border: 1px solid #ededed;
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: #fbfbfb;
+      }
+      .lab-secondary-details > summary,
+      .lab-card details > summary {
+        cursor: pointer;
+        font-weight: 700;
+        color: var(--ink);
+      }
+      .lab-secondary-details .lab-card,
+      .lab-card .lab-secondary-details .lab-card {
+        border: 0;
+        padding: 0;
+        margin-top: 12px;
+        background: transparent;
+      }
       .approved-subtitle-list {
         display: grid;
         gap: 8px;
@@ -8074,9 +8691,20 @@ ui <- fluidPage(
         box-shadow: none;
         max-width: 760px;
       }
+      .thumbnail-preview-card.lab-selected-card,
+      .thumbnail-preview-card:has(input[type='checkbox']:checked) {
+        border-color: #9bc99e;
+        background: #f4fbf5;
+        box-shadow: inset 3px 0 0 var(--green);
+      }
       .thumbnail-preview-card.approved {
         border-color: #dceedd;
         background: #fbfefb;
+      }
+      .thumbnail-preview-card.approved.lab-selected-card,
+      .thumbnail-preview-card.approved:has(input[type='checkbox']:checked) {
+        border-color: #9bc99e;
+        background: #f1faf2;
       }
       .thumbnail-preview-topbar {
         display: flex;
@@ -8188,6 +8816,35 @@ ui <- fluidPage(
         color: var(--muted);
         font-size: 14px;
       }
+      .lab-publish-status-row {
+        margin-top: 16px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .lab-publish-workspace {
+        display: grid;
+        grid-template-columns: minmax(320px, .85fr) minmax(420px, 1.15fr);
+        gap: 18px;
+        align-items: start;
+      }
+      .lab-publish-workspace .lab-card {
+        max-width: none;
+      }
+      .lab-publish-preview .thumbnail-preview-image-wrap {
+        justify-content: flex-start;
+        margin: 14px 0;
+      }
+      .lab-readonly-preview {
+        max-height: 520px;
+        overflow: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        padding: 12px;
+        border: 1px solid #ececec;
+        border-radius: 8px;
+        background: #f9f9f9;
+      }
       .step-placeholder {
         display: grid;
         gap: 12px;
@@ -8220,6 +8877,7 @@ ui <- fluidPage(
         .sidebar { display: none; }
         .main { padding: 28px 18px; }
         .lab-grid { grid-template-columns: 1fr; }
+        .lab-publish-workspace { grid-template-columns: 1fr; }
         .article-card { grid-template-columns: 1fr; gap: 18px; padding: 24px 0 26px; }
         .article-card.thumbnail-only { grid-template-columns: 170px; }
         .article-card.text-only { grid-template-columns: 1fr; }
@@ -8294,14 +8952,14 @@ ui <- fluidPage(
         }
       }
 
-      function articleLabCopyTextFromElement(elementId, button) {
+      function articleLabCopyTextFromElement(elementId, button, label) {
         const element = document.getElementById(elementId);
         if (!element) return;
         const text = element.textContent || '';
         const originalLabel = button ? button.textContent : '';
         const done = function() {
           if (!button) return;
-          button.textContent = 'Copied prompt';
+            button.textContent = label || 'Copied prompt';
           window.setTimeout(function() {
             button.textContent = originalLabel || 'Copy prompt';
           }, 1100);
@@ -8312,6 +8970,28 @@ ui <- fluidPage(
           });
         } else {
           window.prompt('Copy prompt', text);
+        }
+      }
+
+      function articleLabCopyValueFromElement(elementId, button, label) {
+        const element = document.getElementById(elementId);
+        if (!element) return;
+        const text = typeof element.value === 'string' ? element.value : (element.textContent || '');
+        const originalLabel = button ? button.textContent : '';
+        const copiedLabel = label || 'Copied';
+        const done = function() {
+          if (!button) return;
+          button.textContent = copiedLabel;
+          window.setTimeout(function() {
+            button.textContent = originalLabel || 'Copy';
+          }, 1100);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done).catch(function() {
+            window.prompt('Copy text', text);
+          });
+        } else {
+          window.prompt('Copy text', text);
         }
       }
 
@@ -8361,8 +9041,25 @@ ui <- fluidPage(
         Shiny.setInputValue(groupName + '_selected_snapshot', selectedIds, { priority: 'event' });
       }
 
+      function articleLabRefreshSelectionState(root) {
+        const scope = root || document;
+        scope.querySelectorAll('[data-selection-group]').forEach(function(item) {
+          const checkbox = item.querySelector('input[type=\"checkbox\"]');
+          const selected = !!(checkbox && checkbox.checked);
+          item.classList.toggle('lab-selected-row', selected && item.tagName === 'TR');
+          item.classList.toggle('lab-selected-card', selected && item.tagName !== 'TR');
+        });
+      }
+
+      document.addEventListener('change', function(event) {
+        if (!event.target || !event.target.matches('input[type=\"checkbox\"]')) return;
+        articleLabRefreshSelectionState(document);
+      });
+
       window.articleLabSyncSelections = articleLabSyncSelections;
+      window.articleLabRefreshSelectionState = articleLabRefreshSelectionState;
       window.articleLabCopyTextFromElement = articleLabCopyTextFromElement;
+      window.articleLabCopyValueFromElement = articleLabCopyValueFromElement;
 
       let articleLabThumbnailTimer = null;
 
@@ -8856,6 +9553,11 @@ server <- function(input, output, session) {
     current_section <- active_section()
     if (article_lab_is_workflow_section(current_section) || identical(current_section, "settings")) {
       page_meta <- article_lab_nav_meta(current_section)
+      generate_has_rows <- {
+        saved_rows <- article_lab_generate_candidates()
+        draft_rows <- article_lab_state$draft
+        nrow(saved_rows) > 0 || (!is.null(draft_rows) && nrow(draft_rows) > 0)
+      }
       generate_panel <- tagList(
         div(
           class = "lab-card",
@@ -8906,8 +9608,7 @@ server <- function(input, output, session) {
             )
           ),
           uiOutput("article_lab_effective_prompt"),
-          div(
-            class = "lab-actions",
+          article_lab_action_bar(
             uiOutput("article_lab_generate_button"),
             actionButton("article_lab_save", "Save batch", class = "lab-secondary"),
             actionButton("article_lab_clear", "Clear draft", class = "lab-secondary")
@@ -8923,8 +9624,7 @@ server <- function(input, output, session) {
               placeholder = "Enter one title idea per line"
             )
           ),
-          div(
-            class = "lab-actions",
+          article_lab_action_bar(
             actionButton("article_lab_add_manual_titles", "Add manual titles", class = "lab-secondary")
           ),
           uiOutput("article_lab_notice")
@@ -8932,12 +9632,11 @@ server <- function(input, output, session) {
         div(
           class = "lab-card",
           h3("Current batch triage"),
-          div(
-            class = "lab-actions",
+          article_lab_action_bar(
             checkboxInput("article_lab_generate_select_all", "Select all", value = FALSE),
             checkboxInput("article_lab_show_disqualified", "Show disqualified titles", value = FALSE),
-            actionButton("article_lab_save_triage", "Save triage changes", class = "lab-secondary"),
-            actionButton("article_lab_move_to_api_queue", "Move selected to API queue", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_generate');")
+            article_lab_button("article_lab_save_triage", "Save triage changes", class = "lab-secondary", disabled = !generate_has_rows),
+            article_lab_button("article_lab_move_to_api_queue", "Move selected to API queue", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_generate');", disabled = !generate_has_rows)
           ),
           uiOutput("article_lab_latest_titles")
         )
@@ -8948,8 +9647,7 @@ server <- function(input, output, session) {
           class = "lab-card",
           h2("Controls"),
           div(class = "lab-grid", uiOutput("article_lab_batch_selector"), div(class = "lab-field", selectInput("article_lab_score_model", "Model", choices = article_lab_score_model_choices, selected = article_lab_default_score_model, width = "100%")), div(class = "lab-field", textInput("article_lab_score_prompt_version", "Prompt version", value = article_lab_default_score_prompt_version, width = "100%")), div(class = "lab-field", textInput("article_lab_score_scope", "Scope", value = article_lab_default_score_scope, width = "100%"))),
-          div(
-            class = "lab-actions",
+          article_lab_action_bar(
             uiOutput("article_lab_score_button"),
             actionButton("article_lab_refresh_scores", "Refresh", class = "lab-secondary")
           ),
@@ -8980,8 +9678,7 @@ server <- function(input, output, session) {
             div(class = "lab-field", selectInput("article_lab_subtitle_model", "Model", choices = article_lab_subtitle_model_choices, selected = article_lab_default_subtitle_model, width = "100%")),
             div(class = "lab-field", numericInput("article_lab_subtitle_variants_per_title", "Subtitle candidates per title", value = 4L, min = 1L, max = 8L, width = "100%"))
           ),
-          div(
-            class = "lab-actions",
+          article_lab_action_bar(
             uiOutput("article_lab_subtitle_generate_button"),
             actionButton("article_lab_refresh_subtitles", "Refresh", class = "lab-secondary")
           ),
@@ -9002,8 +9699,7 @@ server <- function(input, output, session) {
               )
             )
           ),
-          div(
-            class = "lab-actions",
+          article_lab_action_bar(
             actionButton("article_lab_add_manual_subtitles", "Add manual subtitle idea(s)", class = "lab-secondary")
           ),
           div(class = "lab-status-copy", "Generate subtitle variants for approved titles, then approve or reject candidates manually."),
@@ -9032,8 +9728,7 @@ server <- function(input, output, session) {
             div(class = "lab-field", selectInput("article_lab_thumbnail_model", "Responses generation model", choices = article_lab_thumbnail_model_choices, selected = article_lab_default_thumbnail_model, width = "100%")),
             div(class = "lab-field", numericInput("article_lab_thumbnail_variants_per_package", "Thumbnail candidates per package", value = article_lab_default_thumbnail_variants, min = 1L, max = 4L, width = "100%"))
           ),
-          div(
-            class = "lab-actions",
+          article_lab_action_bar(
             uiOutput("article_lab_thumbnail_generate_button"),
             actionButton("article_lab_refresh_thumbnails", "Refresh", class = "lab-secondary")
           ),
@@ -9066,11 +9761,10 @@ server <- function(input, output, session) {
             div(class = "lab-field", selectInput("article_lab_outline_model", "Model", choices = article_lab_outline_model_choices, selected = article_lab_default_outline_model, width = "100%")),
             uiOutput("article_lab_outline_context_toggle")
           ),
-          div(
-            class = "lab-actions",
+          article_lab_action_bar(
             actionButton("article_lab_generate_outlines", "Generate selected outline(s)", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_outline_packages');"),
             actionButton("article_lab_save_outlines", "Save outline edits", class = "lab-secondary"),
-            actionButton("article_lab_approve_outlines", "Approve selected outline(s)", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_outline_candidates');"),
+            actionButton("article_lab_approve_outlines", "Approve selected outline(s)", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_outline_candidates');"),
             actionButton("article_lab_refresh_outlines", "Refresh", class = "lab-secondary")
           ),
           div(class = "lab-status-copy", "Generate an outline from approved packages, edit/review it here, then approve it to move the package to draft-ready."),
@@ -9100,13 +9794,13 @@ server <- function(input, output, session) {
             div(class = "lab-field", selectInput("article_lab_full_text_model", "Model", choices = article_lab_full_text_model_choices, selected = article_lab_default_full_text_model, width = "100%")),
             div(class = "lab-field", checkboxInput("article_lab_full_text_include_context", "Include available source context (PDF preferred, summary fallback)", value = TRUE, width = "100%"))
           ),
-          div(
-            class = "lab-actions",
+          article_lab_action_bar(
             actionButton("article_lab_generate_full_text", "Generate full article draft", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_full_text_packages');"),
             actionButton("article_lab_generate_full_text_variant", "Generate another variant", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_full_text_packages');"),
+            actionButton("article_lab_regenerate_full_text_draft", "Regenerate selected draft", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_full_text_drafts');"),
             actionButton("article_lab_save_full_text_drafts", "Save draft edits", class = "lab-secondary"),
-            actionButton("article_lab_approve_full_text_draft", "Approve selected draft", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_full_text_drafts');"),
-            actionButton("article_lab_reject_full_text_draft", "Reject selected draft", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_full_text_drafts');"),
+            actionButton("article_lab_approve_full_text_draft", "Approve selected draft", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_full_text_drafts');"),
+            actionButton("article_lab_reject_full_text_draft", "Reject selected draft", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_full_text_drafts');"),
             actionButton("article_lab_refresh_full_text", "Refresh", class = "lab-secondary")
           ),
           div(class = "lab-status-copy", "Generate drafts from approved outlines, edit the selected draft directly, save revisions, then approve one draft for Review & Publish."),
@@ -9114,6 +9808,17 @@ server <- function(input, output, session) {
           uiOutput("article_lab_notice")
         ),
         uiOutput("article_lab_full_text_sections")
+      )
+
+      review_publish_panel <- tagList(
+        div(
+          class = "lab-card",
+          h2("Review & Publish"),
+          div(class = "lab-status-copy", "Approved full article drafts appear here for local publishing metadata, copy/export, and manual status tracking. The article text is read-only in this tab."),
+          uiOutput("article_lab_review_publish_selector"),
+          uiOutput("article_lab_notice")
+        ),
+        uiOutput("article_lab_review_publish_workspace")
       )
 
       placeholder_panel <- function(copy) {
@@ -9209,7 +9914,7 @@ server <- function(input, output, session) {
         thumbnails = thumbnail_panel,
         outline = outline_panel,
         full_text = full_text_panel,
-        review_publish = placeholder_panel("Final review and publish workflow routing is now exposed here."),
+        review_publish = review_publish_panel,
         settings = placeholder_panel("Settings remain available from the sidebar."),
         generate_panel
       )
@@ -9653,6 +10358,28 @@ server <- function(input, output, session) {
 
   article_lab_full_text_package_rows_reactive <- reactive({
     article_lab_full_text_package_rows(article_lab_full_text_rows())
+  })
+
+  article_lab_review_publish_rows <- reactive({
+    article_lab_refresh()
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+    rows <- load_article_lab_review_publish_rows(con, batch_id)
+    if (nrow(rows) == 0) return(rows)
+    rows[order(rows$approved_at, rows$draft_updated_at, rows$full_text_draft_id, decreasing = TRUE, na.last = TRUE), , drop = FALSE]
+  })
+
+  article_lab_publication_rows <- reactive({
+    article_lab_refresh()
+    load_article_lab_publications(con, active_only = TRUE)
+  })
+
+  article_lab_selected_review_publish_row <- reactive({
+    rows <- article_lab_review_publish_rows()
+    if (nrow(rows) == 0) return(data.frame())
+    selected_id <- article_lab_input_string(input$article_lab_review_publish_draft_id) %||% rows$full_text_draft_id[[1]]
+    if (!(selected_id %in% rows$full_text_draft_id)) selected_id <- rows$full_text_draft_id[[1]]
+    rows[match(selected_id, rows$full_text_draft_id), , drop = FALSE]
   })
 
   collect_generate_triage_updates <- function(rows) {
@@ -10745,6 +11472,10 @@ server <- function(input, output, session) {
     }
     exact_api_prompt <- paste(
       base_prompt,
+      "Return valid JSON only.",
+      "Return JSON only in this shape: {\"results\":[{\"outline_id\":string,\"thumbnail_id\":string,\"subtitle_id\":string,\"candidate_id\":string,\"batch_id\":string,\"source_context_mode\":\"pdf_attachment\"|\"summary_fallback\"|\"none\",\"full_text\":string}]}",
+      "Copy ids exactly from the package. The full_text value must be the complete Markdown article draft, not a schema example, MARKDOWN_ARTICLE_HERE, placeholder, excerpt, note, or explanation.",
+      "Ignore any earlier placeholder value such as MARKDOWN_ARTICLE_HERE; replace it with the actual full Markdown article.",
       "Return one full article draft per package, preserving all ids exactly.",
       "Packages:",
       exact_package_list,
@@ -10788,8 +11519,8 @@ server <- function(input, output, session) {
         h4("Full article helper wrapper"),
         tags$pre(class = "lab-status-copy", paste(
           "Return one full article draft for the selected package, preserving all ids exactly.",
-          "Preferred response shape: {\"results\":[{\"outline_id\":string,\"thumbnail_id\":string,\"subtitle_id\":string,\"candidate_id\":string,\"batch_id\":string,\"source_context_mode\":\"pdf_attachment\"|\"summary_fallback\"|\"none\",\"full_text\":string}]}",
-          "The full_text value must be the complete Markdown article draft, not a placeholder, schema example, excerpt, note, or explanation. For a single selected package, a plain Markdown response is accepted as that package's draft.",
+          "Required response shape: {\"results\":[{\"outline_id\":string,\"thumbnail_id\":string,\"subtitle_id\":string,\"candidate_id\":string,\"batch_id\":string,\"source_context_mode\":\"pdf_attachment\"|\"summary_fallback\"|\"none\",\"full_text\":string}]}",
+          "The full_text value must be the complete Markdown article draft, not MARKDOWN_ARTICLE_HERE, a placeholder, schema example, excerpt, note, or explanation. For a single selected package, a plain Markdown response or single-object {\"full_text\":...} response is accepted as that package's draft.",
           sep = "\n"
         )),
         h4("Request fields"),
@@ -11037,9 +11768,8 @@ server <- function(input, output, session) {
             checkboxInput("article_lab_queue_select_all", "Select all", value = FALSE)
           ),
           article_lab_score_queue_table_ui(queue_rows),
-          div(
-            class = "lab-actions",
-            actionButton("article_lab_archive_queue_titles", "Archive selected titles", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_queue');")
+          article_lab_action_bar(
+            article_lab_button("article_lab_archive_queue_titles", "Archive selected titles", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_queue');", disabled = nrow(queue_rows) == 0)
           )
         ),
         count = nrow(queue_rows)
@@ -11053,10 +11783,9 @@ server <- function(input, output, session) {
             checkboxInput("article_lab_scored_select_all", "Select all", value = FALSE)
           ),
           article_lab_score_table_ui(scored_rows),
-          div(
-            class = "lab-actions",
-            actionButton("article_lab_approve_for_subtitle", "Approve selected for subtitle generation", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_scored');"),
-            actionButton("article_lab_archive_scored_titles", "Archive selected titles", onclick = "window.articleLabSyncSelections('article_lab_scored');")
+          article_lab_action_bar(
+            article_lab_button("article_lab_approve_for_subtitle", "Approve selected for subtitles", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_scored');", disabled = nrow(scored_rows) == 0),
+            article_lab_button("article_lab_archive_scored_titles", "Archive selected titles", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_scored');", disabled = nrow(scored_rows) == 0)
           ),
           div(class = "lab-status-copy", "Approved titles will move to Subtitle Generation.")
         ),
@@ -11079,9 +11808,8 @@ server <- function(input, output, session) {
             checkboxInput("article_lab_subtitle_title_select_all", "Select all", value = FALSE)
           ),
           article_lab_subtitle_target_table_ui(target_rows),
-          div(
-            class = "lab-actions",
-            actionButton("article_lab_archive_subtitle_titles", "Archive selected titles", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_subtitle_titles');")
+          article_lab_action_bar(
+            article_lab_button("article_lab_archive_subtitle_titles", "Archive selected titles", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_subtitle_titles');", disabled = nrow(target_rows) == 0)
           )
         ),
         count = nrow(target_rows)
@@ -11095,10 +11823,9 @@ server <- function(input, output, session) {
             checkboxInput("article_lab_subtitle_candidate_select_all", "Select all", value = FALSE)
           ),
           article_lab_subtitle_candidate_table_ui(subtitle_rows),
-          div(
-            class = "lab-actions",
-            actionButton("article_lab_approve_subtitles", "Approve selected subtitle(s)", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_subtitle_candidates');"),
-            actionButton("article_lab_reject_subtitles", "Reject selected", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_subtitle_candidates');")
+          article_lab_action_bar(
+            article_lab_button("article_lab_approve_subtitles", "Approve selected subtitles", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_subtitle_candidates');", disabled = nrow(subtitle_rows) == 0),
+            article_lab_button("article_lab_reject_subtitles", "Reject selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_subtitle_candidates');", disabled = nrow(subtitle_rows) == 0)
           ),
           div(class = "lab-status-copy", "Approved subtitle candidates stay available as variants for the Thumbnails step.")
         ),
@@ -11121,9 +11848,8 @@ server <- function(input, output, session) {
             checkboxInput("article_lab_thumbnail_package_select_all", "Select all", value = FALSE)
           ),
           article_lab_thumbnail_package_table_ui(package_rows),
-          div(
-            class = "lab-actions",
-            actionButton("article_lab_dismiss_thumbnail_packages", "Dismiss selected packages", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_packages');")
+          article_lab_action_bar(
+            article_lab_button("article_lab_dismiss_thumbnail_packages", "Dismiss selected packages", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_packages');", disabled = nrow(package_rows) == 0)
           )
         ),
         count = nrow(package_rows)
@@ -11137,10 +11863,9 @@ server <- function(input, output, session) {
             checkboxInput("article_lab_thumbnail_candidate_select_all", "Select all", value = FALSE)
           ),
           article_lab_thumbnail_candidate_grid_ui(thumbnail_rows),
-          div(
-            class = "lab-actions",
-            actionButton("article_lab_approve_thumbnails", "Approve selected thumbnail", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_candidates');"),
-            actionButton("article_lab_reject_thumbnails", "Reject selected", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_candidates');")
+          article_lab_action_bar(
+            article_lab_button("article_lab_approve_thumbnails", "Approve selected thumbnail", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_candidates');", disabled = nrow(thumbnail_rows) == 0),
+            article_lab_button("article_lab_reject_thumbnails", "Reject selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_candidates');", disabled = nrow(thumbnail_rows) == 0)
           ),
           div(class = "lab-status-copy", "Only one approved thumbnail is allowed per title/subtitle package. Approved packages move to Outline.")
         ),
@@ -11169,6 +11894,35 @@ server <- function(input, output, session) {
       "Generate one or more full article variants from each approved outline, edit drafts in place, and approve one for Review & Publish.",
       article_lab_full_text_table_ui(rows, packages, summary_contexts, include_context = isTRUE(input$article_lab_full_text_include_context)),
       count = nrow(packages)
+    )
+  })
+
+  output$article_lab_review_publish_selector <- renderUI({
+    rows <- article_lab_review_publish_rows()
+    article_lab_review_publish_selector_ui(rows, input$article_lab_review_publish_draft_id)
+  })
+
+  output$article_lab_review_publish_workspace <- renderUI({
+    article_lab_review_publish_workspace_ui(article_lab_selected_review_publish_row(), article_lab_publication_rows())
+  })
+
+  output$article_lab_medium_tags_effective_prompt <- renderUI({
+    row <- article_lab_selected_review_publish_row()
+    model <- article_lab_input_string(input$article_lab_medium_tags_model) %||% article_lab_default_medium_tags_model
+    prompt <- article_lab_input_multiline(input$article_lab_medium_tags_prompt) %||% article_lab_default_medium_tags_prompt
+    exact_prompt <- article_lab_medium_tags_effective_prompt(row, prompt)
+    div(
+      class = "lab-card",
+      h3("Prompt that will be sent to the API"),
+      p(class = "lab-status-copy", "Medium tag generation sends the selected approved article package and asks for JSON tags only."),
+      tags$details(
+        open = if (nrow(row) > 0) "open" else NULL,
+        tags$summary("Show exact Medium tags API prompt"),
+        h4("Request fields"),
+        tags$pre(class = "lab-status-copy", paste(sprintf("Model: %s", model), "Response format: JSON with a tags array, capped to 5 tags on save.", sep = "\n")),
+        h4("Exact prompt"),
+        tags$pre(class = "lab-status-copy", if (nzchar(exact_prompt)) exact_prompt else "(No approved article selected.)")
+      )
     )
   })
 
@@ -12125,22 +12879,24 @@ server <- function(input, output, session) {
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 
-  generate_selected_full_text <- function(variant = FALSE) {
+  generate_selected_full_text <- function(variant = FALSE, selected_rows = NULL) {
     started_at <- Sys.time()
-    rows <- article_lab_full_text_rows()
-    packages <- article_lab_full_text_package_rows(rows)
-    selected_ids <- collect_selected_ids(packages, "article_lab_full_text_packages", snapshot_ids = input$article_lab_full_text_packages_selected_snapshot, key_col = "outline_id")
-    if (length(selected_ids) == 0) {
-      article_lab_state$notice <- "Select one approved outline before generating a full article draft."
-      article_lab_refresh(article_lab_refresh() + 1L)
-      return(invisible(NULL))
-    }
-    if (length(selected_ids) > 1) selected_ids <- selected_ids[[1]]
-    selected_rows <- packages[packages$outline_id %in% selected_ids, , drop = FALSE]
-    if (nrow(selected_rows) == 0) {
-      article_lab_state$notice <- "Selected outlines are no longer available for full article generation."
-      article_lab_refresh(article_lab_refresh() + 1L)
-      return(invisible(NULL))
+    if (is.null(selected_rows)) {
+      rows <- article_lab_full_text_rows()
+      packages <- article_lab_full_text_package_rows(rows)
+      selected_ids <- collect_selected_ids(packages, "article_lab_full_text_packages", snapshot_ids = input$article_lab_full_text_packages_selected_snapshot, key_col = "outline_id")
+      if (length(selected_ids) == 0) {
+        article_lab_state$notice <- "Select one approved outline before generating a full article draft."
+        article_lab_refresh(article_lab_refresh() + 1L)
+        return(invisible(NULL))
+      }
+      if (length(selected_ids) > 1) selected_ids <- selected_ids[[1]]
+      selected_rows <- packages[packages$outline_id %in% selected_ids, , drop = FALSE]
+      if (nrow(selected_rows) == 0) {
+        article_lab_state$notice <- "Selected outlines are no longer available for full article generation."
+        article_lab_refresh(article_lab_refresh() + 1L)
+        return(invisible(NULL))
+      }
     }
     summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(selected_rows$batch_id))
     selected_rows$article_summary <- NA_character_
@@ -12187,6 +12943,26 @@ server <- function(input, output, session) {
     generate_selected_full_text(variant = TRUE)
   }, ignoreInit = TRUE)
 
+  observeEvent(input$article_lab_regenerate_full_text_draft, {
+    rows <- article_lab_full_text_rows()
+    draft_rows <- rows[!is.na(rows$full_text_draft_id) & nzchar(rows$full_text_draft_id) & rows$draft_status == "draft", , drop = FALSE]
+    selected_ids <- collect_selected_ids(draft_rows, "article_lab_full_text_drafts", snapshot_ids = input$article_lab_full_text_drafts_selected_snapshot, key_col = "full_text_draft_id")
+    if (length(selected_ids) != 1L) {
+      article_lab_state$notice <- "Select exactly one unapproved full article draft before regenerating it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    selected_draft <- draft_rows[draft_rows$full_text_draft_id %in% selected_ids[[1]], , drop = FALSE]
+    package_rows <- article_lab_full_text_package_rows(rows)
+    selected_package <- package_rows[package_rows$outline_id %in% selected_draft$outline_id[[1]], , drop = FALSE]
+    if (nrow(selected_package) == 0) {
+      article_lab_state$notice <- "The selected draft's outline is no longer available for regeneration."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    generate_selected_full_text(variant = TRUE, selected_rows = selected_package)
+  }, ignoreInit = TRUE)
+
   observeEvent(input$article_lab_save_full_text_drafts, {
     updated_n <- article_lab_update_full_text_drafts(con, collect_full_text_updates(article_lab_full_text_rows()))
     article_lab_state$notice <- sprintf("Saved %s full article draft%s and recorded revision rows for changed text.", updated_n, ifelse(updated_n == 1L, "", "s"))
@@ -12227,6 +13003,81 @@ server <- function(input, output, session) {
     article_lab_state$notice <- sprintf("Refreshed Full Article and saved %s editable draft%s.", updated_n, ifelse(updated_n == 1L, "", "s"))
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
+
+  article_lab_current_publish_values <- reactive({
+    list(
+      medium_tags = input$article_lab_publish_medium_tags %||% "",
+      publishing_target = input$article_lab_publishing_target %||% "Do not publish yet",
+      publication_id = input$article_lab_publication_id %||% "",
+      new_publication_name = input$article_lab_new_publication_name %||% "",
+      monetization = input$article_lab_monetization %||% "Undecided",
+      canonical_url = input$article_lab_canonical_url %||% "",
+      featured_image_alt_text = input$article_lab_featured_image_alt_text %||% "",
+      image_credit_source = input$article_lab_image_credit_source %||% "",
+      published_url = input$article_lab_published_url %||% "",
+      publish_status = input$article_lab_publish_status %||% "ready_for_review_publish",
+      notes = input$article_lab_publish_notes %||% ""
+    )
+  })
+
+  observeEvent(input$article_lab_save_publish_settings, {
+    row <- article_lab_selected_review_publish_row()
+    if (nrow(row) == 0) {
+      article_lab_state$notice <- "Select an approved full article draft before saving publish settings."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    tags <- article_lab_parse_medium_tags(input$article_lab_publish_medium_tags %||% "")
+    saved_n <- article_lab_save_publish_settings(con, row, article_lab_current_publish_values())
+    tag_note <- if (length(tags) >= 5L) " Medium tags were capped at 5." else ""
+    article_lab_state$notice <- sprintf("Saved publish settings for %s approved draft.%s", saved_n, tag_note)
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_generate_medium_tags, {
+    row <- article_lab_selected_review_publish_row()
+    if (nrow(row) == 0) {
+      article_lab_state$notice <- "Select an approved full article draft before generating Medium tags."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- tryCatch(
+      article_lab_medium_tags_api_request(
+        row,
+        model = input$article_lab_medium_tags_model %||% article_lab_default_medium_tags_model,
+        prompt = input$article_lab_medium_tags_prompt %||% article_lab_default_medium_tags_prompt
+      ),
+      error = function(e) list(error = conditionMessage(e))
+    )
+    if (!is.null(result$error)) {
+      article_lab_state$notice <- paste("Medium tag generation failed:", result$error)
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    updateTextInput(session, "article_lab_publish_medium_tags", value = paste(result$tags, collapse = ", "))
+    article_lab_state$notice <- sprintf("Generated %s Medium tag%s with %s. Review and save publish settings to persist them.", length(result$tags), ifelse(length(result$tags) == 1L, "", "s"), result$model %||% article_lab_default_medium_tags_model)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_refresh_publish, {
+    article_lab_state$notice <- "Refreshed Review & Publish."
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  output$article_lab_export_markdown <- downloadHandler(
+    filename = function() {
+      row <- article_lab_selected_review_publish_row()
+      title <- if (nrow(row) > 0) article_lab_row_value(row, "title", "approved_article") else "approved_article"
+      slug <- tolower(gsub("[^A-Za-z0-9]+", "-", title))
+      slug <- gsub("(^-+|-+$)", "", slug)
+      if (!nzchar(slug)) slug <- "approved-article"
+      paste0(slug, "-", format(Sys.Date(), "%Y-%m-%d"), ".md")
+    },
+    content = function(file) {
+      row <- article_lab_selected_review_publish_row()
+      text <- article_lab_medium_ready_markdown(row, row)
+      writeLines(text, file, useBytes = TRUE)
+    }
+  )
 
   observeEvent(input$article_lab_refresh_scores, {
     article_lab_update_candidate_notes(con, collect_candidate_note_updates(article_lab_queue_rows(), "article_lab_queue_notes"))

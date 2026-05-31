@@ -85,6 +85,20 @@ The editable draft body is stored as `current_draft_text`; the original API outp
 
 Source context defaults to PDF-first when enabled: attach the local PDF if available, otherwise send the confirmed research summary/full text fallback, otherwise send no source context. The tab shows PDF/summary/no-context badges and an explicit prompt disclosure before generation.
 
+## Article Lab Review & Publish Stage
+
+The Review & Publish tab starts from approved full article drafts only. A draft is eligible when `article_lab_full_text_drafts.status = 'approved'` or `is_approved = 1`. The tab does not edit article text; it shows a read-only preview and stores publishing metadata, export/copy details, destination choices, and manual status tracking.
+
+Publish settings are stored in `article_lab_publish_settings`. This table records the approved draft/package IDs, Medium tags JSON, publishing target, selected publication snapshot, monetization choice, canonical URL, featured image alt text, image credit/source, published URL, manual publish status, notes, submitted/published timestamps, and created/updated timestamps.
+
+Saved Medium publications are stored in `article_lab_publications`. This table records publication ID, publication name, platform, optional submission notes/URL, active flag, and created/updated timestamps. The Review & Publish tab shows saved active Medium publications when the target is `Submit to Medium publication`, and can add a missing publication name locally.
+
+Supported publish statuses are `ready_for_review_publish`, `ready_to_publish`, `submitted`, `published`, `needs_changes`, `rejected`, and `archived`. The status is selected manually in the tab and saved with the rest of the publish settings. When status first becomes `submitted` or `published`, the app records `submitted_at` or `published_at` locally.
+
+The tab can optionally generate Medium tags through `scripts/writing_api/generate_medium_tags.mjs`. The UI shows the editable tag prompt, selected model, response schema, and the exact selected article context that will be sent to the API before generation. Generated tags populate the local tags field; they are persisted only after saving publish settings.
+
+The tab intentionally does not perform article review, article text editing, AI review, review checklists, automatic Medium publishing, or Git integration. Copy/export produces clean Medium-ready Markdown with the title, subtitle, approved article text, and optional featured image alt text or image credit/source.
+
 ## Modes
 
 `feed_preview_1_5` is the original one-score workflow. It writes to `human_preview_ratings` and excludes articles that already have a row in that table.

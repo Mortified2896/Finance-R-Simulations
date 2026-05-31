@@ -9,6 +9,7 @@ This folder contains small writing helpers for article projects.
 - `generate_thumbnails.mjs`: implemented for Article Lab thumbnail generation through the OpenAI Responses API image-generation tool.
 - `generate_outlines.mjs`: implemented for Article Lab outline generation from approved title/subtitle/thumbnail packages.
 - `generate_full_text.mjs`: implemented for Article Lab full article generation from approved outlines.
+- `generate_medium_tags.mjs`: implemented for Review & Publish Medium tag generation from approved article drafts.
 - `score_article_lab_titles.py`: implemented for Article Lab title-only API scoring with the v2_2 rubric.
 - `reroll_sentence.mjs`: implemented for rewriting one selected sentence or paragraph.
 - `draft_section.mjs`: placeholder only.
