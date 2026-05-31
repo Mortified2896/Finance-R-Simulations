@@ -109,6 +109,19 @@ now_utc <- function() {
   format(as.POSIXct(Sys.time(), tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ")
 }
 
+article_lab_debug_log <- function(event, details = list()) {
+  log_dir <- file.path(project_root, ".local_gitignored")
+  if (!dir.exists(log_dir)) dir.create(log_dir, recursive = TRUE, showWarnings = FALSE)
+  detail_text <- tryCatch(
+    toJSON(details, auto_unbox = TRUE, null = "null"),
+    error = function(e) paste0("{\"log_error\":", toJSON(conditionMessage(e), auto_unbox = TRUE), "}")
+  )
+  line <- paste(now_utc(), event, detail_text, sep = "\t")
+  cat(line, "\n", file = file.path(log_dir, "article_lab_debug.log"), append = TRUE)
+  message("Article Lab debug: ", event, " ", detail_text)
+  invisible(NULL)
+}
+
 file_sha256 <- function(path) {
   if (is.na(path) || !file.exists(path)) return(NA_character_)
   hash <- suppressWarnings(tools::sha256sum(path))
@@ -568,22 +581,35 @@ article_lab_default_prompt <- paste(
 
 article_lab_manual_prompt_key <- "manual_default"
 
-load_article_lab_prompt <- function(con, prompt_key = article_lab_manual_prompt_key) {
+list_article_lab_prompt_keys <- function(con, default_key = article_lab_manual_prompt_key) {
+  if (!dbExistsTable(con, "article_lab_prompts")) return(default_key)
+  rows <- dbGetQuery(con, "
+    SELECT prompt_key
+    FROM article_lab_prompts
+    WHERE prompt_key IS NOT NULL AND TRIM(prompt_key) <> ''
+    ORDER BY updated_at DESC, prompt_key ASC
+  ")
+  keys <- unique(c(default_key, rows$prompt_key %||% character()))
+  keys[nzchar(keys)]
+}
+
+load_article_lab_prompt <- function(con, prompt_key = article_lab_manual_prompt_key, default_prompt = article_lab_default_prompt) {
   key <- article_lab_input_string(prompt_key) %||% article_lab_manual_prompt_key
-  if (!dbExistsTable(con, "article_lab_prompts")) return(article_lab_default_prompt)
+  fallback <- article_lab_input_multiline(default_prompt) %||% article_lab_default_prompt
+  if (!dbExistsTable(con, "article_lab_prompts")) return(fallback)
   rows <- dbGetQuery(con, "
     SELECT prompt_text
     FROM article_lab_prompts
     WHERE prompt_key = ?
     LIMIT 1
   ", params = list(key))
-  if (nrow(rows) == 0) return(article_lab_default_prompt)
-  article_lab_input_multiline(rows$prompt_text[[1]]) %||% article_lab_default_prompt
+  if (nrow(rows) == 0) return(fallback)
+  article_lab_input_multiline(rows$prompt_text[[1]]) %||% fallback
 }
 
-save_article_lab_prompt <- function(con, prompt_text, prompt_key = article_lab_manual_prompt_key) {
+save_article_lab_prompt <- function(con, prompt_text, prompt_key = article_lab_manual_prompt_key, default_prompt = article_lab_default_prompt) {
   key <- article_lab_input_string(prompt_key) %||% article_lab_manual_prompt_key
-  text <- article_lab_input_multiline(prompt_text) %||% article_lab_default_prompt
+  text <- article_lab_input_multiline(prompt_text) %||% (article_lab_input_multiline(default_prompt) %||% article_lab_default_prompt)
   timestamp <- now_utc()
   rows <- dbGetQuery(con, "SELECT prompt_key FROM article_lab_prompts WHERE prompt_key = ? LIMIT 1", params = list(key))
   if (nrow(rows) > 0) {
@@ -656,6 +682,7 @@ article_lab_default_outline_model <- local({
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
+article_lab_outline_helper_timeout_seconds <- max(30L, suppressWarnings(as.integer(Sys.getenv("OPENAI_OUTLINE_GENERATION_TIMEOUT_SECONDS", unset = "180"))) %||% 180L)
 article_lab_outline_model_choices <- article_lab_model_choices_with_default(article_lab_default_outline_model)
 article_lab_default_research_summary_model <- local({
   configured <- Sys.getenv("OPENAI_RESEARCH_SUMMARY_MODEL", unset = "")
@@ -719,6 +746,7 @@ article_lab_default_outline_prompt <- paste(
   "Keep it reader-facing, credible, specific, and useful. Do not draft the full article yet.",
   sep = "\n"
 )
+article_lab_outline_prompt_key <- "outline_default"
 article_lab_default_score_prompt_version <- "v2_2"
 article_lab_default_score_scope <- "title_only"
 article_lab_all_batches_value <- "__all_article_lab_batches__"
@@ -1629,7 +1657,7 @@ load_article_lab_batch_summary_contexts <- function(con, batch_ids) {
   summaries <- dbGetQuery(
     con,
     sprintf(
-      "SELECT ss.summary_id, ss.summary_text, s.source_title, s.source_url, s.pdf_url
+      "SELECT ss.summary_id, ss.summary_text, ss.research_source_id, s.source_title, s.source_url, s.pdf_url
        FROM research_source_summaries ss
        JOIN research_sources s ON s.research_source_id = ss.research_source_id
        WHERE ss.summary_id IN (%s)",
@@ -1640,8 +1668,31 @@ load_article_lab_batch_summary_contexts <- function(con, batch_ids) {
   if (nrow(summaries) == 0) return(data.frame())
 
   contexts <- merge(batches[, c("batch_id", "summary_id"), drop = FALSE], summaries, by = "summary_id", all.x = FALSE, all.y = FALSE)
+  contexts$pdf_status <- NA_character_
+  contexts$pdf_local_path <- NA_character_
+  if (dbExistsTable(con, "research_source_assets")) {
+    source_ids <- unique(contexts$research_source_id)
+    source_placeholders <- paste(rep("?", length(source_ids)), collapse = ", ")
+    assets <- dbGetQuery(
+      con,
+      sprintf(
+        "SELECT research_source_id, status, local_path
+         FROM research_source_assets
+         WHERE asset_type = 'pdf' AND research_source_id IN (%s)
+         ORDER BY CASE WHEN status IN ('downloaded', 'uploaded') THEN 0 ELSE 1 END, updated_at DESC",
+        source_placeholders
+      ),
+      params = as.list(source_ids)
+    )
+    if (nrow(assets) > 0) {
+      assets <- assets[!duplicated(assets$research_source_id), , drop = FALSE]
+      matched_assets <- match(contexts$research_source_id, assets$research_source_id)
+      contexts$pdf_status <- assets$status[matched_assets]
+      contexts$pdf_local_path <- assets$local_path[matched_assets]
+    }
+  }
   contexts$article_summary <- vapply(seq_len(nrow(contexts)), function(i) research_summary_prompt(contexts[i, , drop = FALSE]), character(1))
-  contexts[, c("batch_id", "summary_id", "source_title", "article_summary"), drop = FALSE]
+  contexts[, c("batch_id", "summary_id", "source_title", "source_url", "pdf_url", "article_summary", "pdf_status", "pdf_local_path"), drop = FALSE]
 }
 
 research_pdf_dir <- file.path(project_root, "data", "research_pdfs")
@@ -2656,7 +2707,7 @@ stub_outline_for_package <- function(title, subtitle, thumbnail_label = NA_chara
   )
 }
 
-article_lab_outline_api_request <- function(packages, model = NA_character_, prompt = NA_character_) {
+article_lab_outline_api_request <- function(packages, model = NA_character_, prompt = NA_character_, include_context = TRUE) {
   helper_path <- file.path("scripts", "writing_api", "generate_outlines.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_outlines.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
@@ -2666,6 +2717,7 @@ article_lab_outline_api_request <- function(packages, model = NA_character_, pro
     model = article_lab_input_string(model) %||% article_lab_default_outline_model,
     prompt = article_lab_input_multiline(prompt) %||% article_lab_default_outline_prompt,
     packages = unname(lapply(seq_len(nrow(packages)), function(i) {
+      pdf_path <- if ("pdf_local_path" %in% names(packages) && isTRUE(include_context)) research_resolve_local_pdf_path(packages$pdf_local_path[[i]]) else NA_character_
       list(
         thumbnail_id = packages$thumbnail_id[[i]],
         subtitle_id = packages$subtitle_id[[i]],
@@ -2673,7 +2725,9 @@ article_lab_outline_api_request <- function(packages, model = NA_character_, pro
         batch_id = packages$batch_id[[i]],
         title = packages$title[[i]],
         subtitle = packages$subtitle[[i]],
-        thumbnail_label = packages$thumbnail_label[[i]]
+        thumbnail_label = packages$thumbnail_label[[i]],
+        article_summary = if ("article_summary" %in% names(packages) && isTRUE(include_context) && is.na(pdf_path)) packages$article_summary[[i]] else NULL,
+        pdf_path = pdf_path
       )
     }))
   )
@@ -2687,9 +2741,12 @@ article_lab_outline_api_request <- function(packages, model = NA_character_, pro
   original_wd <- getwd()
   on.exit(setwd(original_wd), add = TRUE)
   setwd(project_root)
-  status <- system2("node", args = c(helper_path, request_file), stdout = stdout_file, stderr = stderr_file)
+  status <- system2("node", args = c(helper_path, request_file), stdout = stdout_file, stderr = stderr_file, timeout = article_lab_outline_helper_timeout_seconds)
   stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
   stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (identical(status, 124L)) {
+    stop(sprintf("Outline generation helper timed out after %s seconds. Check internet connectivity and try again.", article_lab_outline_helper_timeout_seconds), call. = FALSE)
+  }
   if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
     stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Outline generation helper failed.", call. = FALSE)
   }
@@ -2720,26 +2777,16 @@ article_lab_outline_api_request <- function(packages, model = NA_character_, pro
   )
 }
 
-generate_outline_drafts <- function(packages, model = NA_character_, prompt = NA_character_) {
+generate_outline_drafts <- function(packages, model = NA_character_, prompt = NA_character_, include_context = TRUE) {
   tryCatch(
-    article_lab_outline_api_request(packages, model = model, prompt = prompt),
+    article_lab_outline_api_request(packages, model = model, prompt = prompt, include_context = include_context),
     error = function(e) {
-      rows <- lapply(seq_len(nrow(packages)), function(i) {
-        data.frame(
-          thumbnail_id = packages$thumbnail_id[[i]],
-          subtitle_id = packages$subtitle_id[[i]],
-          candidate_id = packages$candidate_id[[i]],
-          batch_id = packages$batch_id[[i]],
-          outline_text = stub_outline_for_package(packages$title[[i]], packages$subtitle[[i]], packages$thumbnail_label[[i]]),
-          created_at = now_utc(),
-          model = article_lab_input_string(model) %||% article_lab_default_outline_model,
-          generation_mode = "stub",
-          raw_json = toJSON(list(prompt = article_lab_input_multiline(prompt), fallback_reason = conditionMessage(e)), auto_unbox = TRUE, null = "null"),
-          stringsAsFactors = FALSE,
-          check.names = FALSE
-        )
-      })
-      list(rows = do.call(rbind, rows), model = article_lab_input_string(model) %||% article_lab_default_outline_model, mode = "stub", fallback_reason = conditionMessage(e))
+      list(
+        rows = data.frame(),
+        model = article_lab_input_string(model) %||% article_lab_default_outline_model,
+        mode = "failed",
+        fallback_reason = conditionMessage(e)
+      )
     }
   )
 }
@@ -3412,19 +3459,30 @@ article_lab_insert_outline_drafts <- function(con, outline_rows) {
         "SELECT outline_id FROM article_lab_outlines WHERE thumbnail_id = ? AND status IN ('draft', 'approved') LIMIT 1",
         params = list(outline_rows$thumbnail_id[[i]])
       )
-      if (nrow(existing) > 0) next
       timestamp <- outline_rows$created_at[[i]] %||% now_utc()
-      dbExecute(
-        con,
-        "INSERT INTO article_lab_outlines
-         (outline_id, thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, updated_at, outline_text, status, notes, model, generation_mode, raw_json, approved_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', NULL, ?, ?, ?, NULL)",
-        params = list(
-          article_lab_outline_id(outline_rows$thumbnail_id[[i]]),
-          outline_rows$thumbnail_id[[i]], outline_rows$subtitle_id[[i]], outline_rows$candidate_id[[i]], outline_rows$batch_id[[i]],
-          timestamp, timestamp, outline_rows$outline_text[[i]], outline_rows$model[[i]], outline_rows$generation_mode[[i]], outline_rows$raw_json[[i]]
+      if (nrow(existing) > 0) {
+        dbExecute(
+          con,
+          "UPDATE article_lab_outlines
+           SET updated_at = ?, outline_text = ?, status = 'draft', notes = NULL, model = ?, generation_mode = ?, raw_json = ?, approved_at = NULL
+           WHERE outline_id = ?",
+          params = list(
+            timestamp, outline_rows$outline_text[[i]], outline_rows$model[[i]], outline_rows$generation_mode[[i]], outline_rows$raw_json[[i]], existing$outline_id[[1]]
+          )
         )
-      )
+      } else {
+        dbExecute(
+          con,
+          "INSERT INTO article_lab_outlines
+           (outline_id, thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, updated_at, outline_text, status, notes, model, generation_mode, raw_json, approved_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', NULL, ?, ?, ?, NULL)",
+          params = list(
+            article_lab_outline_id(outline_rows$thumbnail_id[[i]]),
+            outline_rows$thumbnail_id[[i]], outline_rows$subtitle_id[[i]], outline_rows$candidate_id[[i]], outline_rows$batch_id[[i]],
+            timestamp, timestamp, outline_rows$outline_text[[i]], outline_rows$model[[i]], outline_rows$generation_mode[[i]], outline_rows$raw_json[[i]]
+          )
+        )
+      }
       inserted_n <- inserted_n + 1L
     }
     dbCommit(con)
@@ -3445,11 +3503,11 @@ article_lab_update_outlines <- function(con, outline_updates) {
       outline_id <- clean_text(entry$outline_id)
       if (length(outline_id) == 0 || is.na(outline_id[[1]])) next
       outline_text <- article_lab_input_multiline(entry$outline_text)
-      if (is.na(outline_text)) next
+      if (length(outline_text) == 0 || is.na(outline_text[[1]])) next
       dbExecute(
         con,
         "UPDATE article_lab_outlines SET outline_text = ?, notes = ?, updated_at = ? WHERE outline_id = ? AND status = 'draft'",
-        params = list(outline_text, clean_text(entry$notes), timestamp, outline_id[[1]])
+        params = list(outline_text[[1]], clean_text(entry$notes)[[1]] %||% NA_character_, timestamp, outline_id[[1]])
       )
       updated_n <- updated_n + 1L
     }
@@ -5317,10 +5375,12 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
       outline_status <- clean_text(row$outline_status[[1]]) %||% "none"
       div(
         class = paste("thumbnail-preview-card approved", if (has_outline) paste0("outline-", outline_status) else "outline-missing"),
+        `data-selection-group` = if (has_outline && identical(outline_status, "draft")) "article_lab_outline_candidates" else "article_lab_outline_packages",
+        `data-candidate-id` = if (has_outline && identical(outline_status, "draft")) row$outline_id[[1]] else row$thumbnail_id[[1]],
         div(
           class = "thumbnail-preview-topbar",
           article_lab_thumbnail_badge("approved"),
-          if (!has_outline) checkboxInput(article_lab_row_input_id("article_lab_outline_packages", row$thumbnail_id[[1]]), "Generate outline", value = FALSE),
+          checkboxInput(article_lab_row_input_id("article_lab_outline_packages", row$thumbnail_id[[1]]), if (has_outline) "Regenerate outline" else "Generate outline", value = FALSE),
           if (has_outline && identical(outline_status, "draft")) checkboxInput(article_lab_row_input_id("article_lab_outline_candidates", row$outline_id[[1]]), "Approve outline", value = FALSE)
         ),
         div(
@@ -7844,6 +7904,16 @@ ui <- fluidPage(
 
       function articleLabSyncSelections(groupName) {
         if (!groupName || typeof Shiny === 'undefined' || typeof Shiny.setInputValue !== 'function') return;
+        const inputPrefix = groupName + '_';
+        const directInputs = Array.from(document.querySelectorAll('input[type=\"checkbox\"][id^=\"' + inputPrefix + '\"]'));
+        if (directInputs.length > 0) {
+          const selectedIdsFromInputs = directInputs
+            .filter(function(checkbox) { return checkbox.checked; })
+            .map(function(checkbox) { return checkbox.id.slice(inputPrefix.length); })
+            .filter(function(value) { return !!value; });
+          Shiny.setInputValue(groupName + '_selected_snapshot', selectedIdsFromInputs, { priority: 'event' });
+          return;
+        }
         const rows = Array.from(document.querySelectorAll('[data-selection-group=\"' + groupName + '\"]'));
         const selectedIds = rows
           .filter(function(row) {
@@ -8110,7 +8180,10 @@ server <- function(input, output, session) {
   active_dimension <- reactiveVal(if (is_dimension_mode) first_incomplete_dimension(con) else NA_character_)
   current <- reactiveVal(NULL)
   shown_started_at <- reactiveVal(Sys.time())
-  saved_article_lab_prompt <- reactiveVal(load_article_lab_prompt(con))
+  saved_article_lab_prompt_key <- reactiveVal(article_lab_manual_prompt_key)
+  saved_article_lab_prompt <- reactiveVal(load_article_lab_prompt(con, article_lab_manual_prompt_key))
+  saved_article_lab_outline_prompt_key <- reactiveVal(article_lab_outline_prompt_key)
+  saved_article_lab_outline_prompt <- reactiveVal(load_article_lab_prompt(con, article_lab_outline_prompt_key, article_lab_default_outline_prompt))
   article_lab_state <- reactiveValues(
     draft = NULL,
     draft_created_at = NULL,
@@ -8136,14 +8209,61 @@ server <- function(input, output, session) {
   output$article_lab_prompt_save_button <- renderUI({
     current_prompt <- article_lab_input_multiline(input$article_lab_prompt) %||% article_lab_default_prompt
     saved_prompt <- article_lab_input_multiline(saved_article_lab_prompt()) %||% article_lab_default_prompt
+    current_key <- article_lab_input_string(input$article_lab_prompt_key) %||% saved_article_lab_prompt_key()
+    saved_key <- saved_article_lab_prompt_key()
     has_changes <- !identical(current_prompt, saved_prompt)
+    has_key_changes <- !identical(current_key, saved_key)
     actionButton(
       "article_lab_save_prompt",
+      if (has_changes || has_key_changes) "Save prompt" else "Prompt saved",
+      class = if (has_changes || has_key_changes) "lab-primary" else "lab-secondary",
+      disabled = if (has_changes || has_key_changes) NULL else "disabled"
+    )
+  })
+
+  output$article_lab_prompt_selector <- renderUI({
+    keys <- list_article_lab_prompt_keys(con)
+    selected <- saved_article_lab_prompt_key()
+    selectInput("article_lab_prompt_key_select", "Saved prompt", choices = keys, selected = selected, width = "100%")
+  })
+
+  observeEvent(input$article_lab_prompt_key_select, {
+    key <- article_lab_input_string(input$article_lab_prompt_key_select) %||% article_lab_manual_prompt_key
+    prompt_text <- load_article_lab_prompt(con, key)
+    saved_article_lab_prompt_key(key)
+    saved_article_lab_prompt(prompt_text)
+    updateTextInput(session, "article_lab_prompt_key", value = key)
+    updateTextAreaInput(session, "article_lab_prompt", value = prompt_text)
+  }, ignoreInit = TRUE)
+
+  output$article_lab_outline_prompt_selector <- renderUI({
+    keys <- list_article_lab_prompt_keys(con, article_lab_outline_prompt_key)
+    selected <- saved_article_lab_outline_prompt_key()
+    selectInput("article_lab_outline_prompt_key_select", "Saved prompt", choices = keys, selected = selected, width = "100%")
+  })
+
+  output$article_lab_outline_prompt_save_button <- renderUI({
+    current_prompt <- article_lab_input_multiline(input$article_lab_outline_prompt) %||% article_lab_default_outline_prompt
+    saved_prompt <- article_lab_input_multiline(saved_article_lab_outline_prompt()) %||% article_lab_default_outline_prompt
+    current_key <- article_lab_input_string(input$article_lab_outline_prompt_key) %||% saved_article_lab_outline_prompt_key()
+    saved_key <- saved_article_lab_outline_prompt_key()
+    has_changes <- !identical(current_prompt, saved_prompt) || !identical(current_key, saved_key)
+    actionButton(
+      "article_lab_save_outline_prompt",
       if (has_changes) "Save prompt" else "Prompt saved",
       class = if (has_changes) "lab-primary" else "lab-secondary",
       disabled = if (has_changes) NULL else "disabled"
     )
   })
+
+  observeEvent(input$article_lab_outline_prompt_key_select, {
+    key <- article_lab_input_string(input$article_lab_outline_prompt_key_select) %||% article_lab_outline_prompt_key
+    prompt_text <- load_article_lab_prompt(con, key, article_lab_default_outline_prompt)
+    saved_article_lab_outline_prompt_key(key)
+    saved_article_lab_outline_prompt(prompt_text)
+    updateTextInput(session, "article_lab_outline_prompt_key", value = key)
+    updateTextAreaInput(session, "article_lab_outline_prompt", value = prompt_text)
+  }, ignoreInit = TRUE)
 
   observeEvent(input$sidebar_nav, {
     valid_sections <- c("home", article_lab_workflow_sections, "settings")
@@ -8281,6 +8401,11 @@ server <- function(input, output, session) {
         div(
           class = "lab-card",
           h2("Generation prompt"),
+          div(
+            class = "lab-grid",
+            div(class = "lab-field", uiOutput("article_lab_prompt_selector")),
+            div(class = "lab-field", textInput("article_lab_prompt_key", "Prompt key", value = article_lab_manual_prompt_key, width = "100%"))
+          ),
           div(
             class = "lab-field",
             textAreaInput(
@@ -8467,13 +8592,20 @@ server <- function(input, output, session) {
           class = "lab-card",
           h2("Controls"),
           div(
-            class = "lab-field",
-            textAreaInput("article_lab_outline_prompt", "Prompt", value = article_lab_default_outline_prompt, width = "100%", height = "150px")
+            class = "lab-grid",
+            div(class = "lab-field", uiOutput("article_lab_outline_prompt_selector")),
+            div(class = "lab-field", textInput("article_lab_outline_prompt_key", "Prompt key", value = article_lab_outline_prompt_key, width = "100%"))
           ),
+          div(
+            class = "lab-field",
+            textAreaInput("article_lab_outline_prompt", "Prompt", value = saved_article_lab_outline_prompt(), width = "100%", height = "150px")
+          ),
+          div(class = "lab-actions", uiOutput("article_lab_outline_prompt_save_button")),
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
-            div(class = "lab-field", selectInput("article_lab_outline_model", "Model", choices = article_lab_outline_model_choices, selected = article_lab_default_outline_model, width = "100%"))
+            div(class = "lab-field", selectInput("article_lab_outline_model", "Model", choices = article_lab_outline_model_choices, selected = article_lab_default_outline_model, width = "100%")),
+            uiOutput("article_lab_outline_context_toggle")
           ),
           div(
             class = "lab-actions",
@@ -8483,6 +8615,7 @@ server <- function(input, output, session) {
             actionButton("article_lab_refresh_outlines", "Refresh", class = "lab-secondary")
           ),
           div(class = "lab-status-copy", "Generate an outline from approved packages, edit/review it here, then approve it to move the package to draft-ready."),
+          uiOutput("article_lab_outline_effective_prompt"),
           uiOutput("article_lab_notice")
         ),
         article_lab_section_card(
@@ -9915,6 +10048,128 @@ server <- function(input, output, session) {
     )
   })
 
+  output$article_lab_outline_context_toggle <- renderUI({
+    packages <- article_lab_ready_for_outline_rows()
+    summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(packages$batch_id))
+    pdf_href <- NA_character_
+    if (nrow(summary_contexts) > 0) {
+      pdf_urls <- clean_text(summary_contexts$pdf_url)
+      pdf_urls <- pdf_urls[!is.na(pdf_urls)]
+      if (length(pdf_urls) > 0) pdf_href <- pdf_urls[[1]]
+      if (is.na(pdf_href)) {
+        local_paths <- vapply(summary_contexts$pdf_local_path, research_resolve_local_pdf_path, character(1))
+        local_paths <- local_paths[!is.na(local_paths) & file.exists(local_paths)]
+        if (length(local_paths) > 0) {
+          pdf_href <- paste0("file://", URLencode(normalizePath(local_paths[[1]], mustWork = TRUE), reserved = TRUE))
+        }
+      }
+    }
+    pdf_label <- if (is.na(pdf_href)) {
+      '<span style="color:#1a73e8;font-size:0.85em;font-weight:700;letter-spacing:0.03em;">PDF</span>'
+    } else {
+      sprintf(
+        '<a href="%s" target="_blank" rel="noopener noreferrer" style="color:#1a73e8;font-size:0.85em;font-weight:700;letter-spacing:0.03em;text-decoration:underline;">PDF</a>',
+        htmltools::htmlEscape(pdf_href)
+      )
+    }
+    div(
+      class = "lab-field",
+      checkboxInput(
+        "article_lab_outline_include_context",
+        HTML(paste0("Include available research context ", pdf_label, " preferred, text fallback")),
+        value = TRUE,
+        width = "100%"
+      )
+    )
+  })
+
+  output$article_lab_outline_effective_prompt <- renderUI({
+    packages <- article_lab_ready_for_outline_rows()
+    selected_ids <- collect_selected_ids(
+      packages,
+      "article_lab_outline_packages",
+      snapshot_ids = input$article_lab_outline_packages_selected_snapshot,
+      key_col = "thumbnail_id"
+    )
+    selected_packages <- if (length(selected_ids) > 0 && nrow(packages) > 0) {
+      packages[packages$thumbnail_id %in% selected_ids, , drop = FALSE]
+    } else {
+      packages[0, , drop = FALSE]
+    }
+    summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(packages$batch_id))
+    include_context <- isTRUE(input$article_lab_outline_include_context)
+    base_prompt <- article_lab_input_multiline(input$article_lab_outline_prompt) %||% article_lab_default_outline_prompt
+    request_additions <- paste(
+      sprintf("Model: %s", article_lab_input_string(input$article_lab_outline_model) %||% article_lab_default_outline_model),
+      sprintf("Include available research context: %s", if (include_context) "yes" else "no"),
+      "Response format: JSON with one Markdown outline_text per selected package.",
+      sep = "\n"
+    )
+    context_payload <- if (!include_context) {
+      "(Research context is available only if listed above, but the include-context toggle is off.)"
+    } else if (nrow(summary_contexts) == 0) {
+      "(No research context will be sent.)"
+    } else {
+      paste(vapply(seq_len(nrow(summary_contexts)), function(i) {
+        pdf_path <- research_resolve_local_pdf_path(summary_contexts$pdf_local_path[[i]])
+        has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
+        if (has_pdf) {
+          paste(
+            sprintf("Batch: %s", summary_contexts$batch_id[[i]]),
+            "Context sent: PDF file attachment",
+            "Text summary sent: no, because the PDF itself is attached",
+            sep = "\n"
+          )
+        } else {
+          paste(
+            sprintf("Batch: %s", summary_contexts$batch_id[[i]]),
+            "Context sent: text summary fallback",
+            sprintf("Summary ID: %s", summary_contexts$summary_id[[i]]),
+            sprintf("Source title: %s", summary_contexts$source_title[[i]] %||% ""),
+            "Exact text sent to API:",
+            summary_contexts$article_summary[[i]],
+            sep = "\n"
+          )
+        }
+      }, character(1)), collapse = "\n\n---\n\n")
+    }
+    package_list <- if (nrow(selected_packages) == 0) {
+      "(No selected title/subtitle/thumbnail packages. Select Generate outline or Regenerate outline checkboxes to see the exact package context that will be sent.)"
+    } else {
+      paste(vapply(seq_len(nrow(selected_packages)), function(i) {
+        sprintf(
+          "%s. thumbnail_id=%s | subtitle_id=%s | candidate_id=%s | batch_id=%s\nTitle: %s\nSubtitle: %s\nThumbnail label: %s",
+          i,
+          selected_packages$thumbnail_id[[i]],
+          selected_packages$subtitle_id[[i]],
+          selected_packages$candidate_id[[i]],
+          selected_packages$batch_id[[i]],
+          selected_packages$title[[i]],
+          selected_packages$subtitle[[i]],
+          selected_packages$thumbnail_label[[i]] %||% "approved thumbnail"
+        )
+      }, character(1)), collapse = "\n\n")
+    }
+
+    div(
+      class = "lab-card",
+      h3("Prompt that will be sent to the API"),
+      p(class = "lab-status-copy", "Outline generation sends this prompt plus selected title/subtitle/thumbnail package context. When enabled, a local PDF is attached as a file; summary text is sent only when no local PDF is available."),
+      tags$details(
+        open = if (nrow(selected_packages) > 0 || nrow(summary_contexts) > 0) "open" else NULL,
+        tags$summary("Show exact outline API prompt"),
+        h4("Outline prompt"),
+        tags$pre(class = "lab-status-copy", base_prompt),
+        h4("Request fields"),
+        tags$pre(class = "lab-status-copy", request_additions),
+        h4("Selected packages"),
+        tags$pre(class = "lab-status-copy", package_list),
+        h4("Research context sent"),
+        tags$pre(class = "lab-status-copy", context_payload)
+      )
+    )
+  })
+
   output$research_ranked_sources_table <- DT::renderDT({
     rows <- research_ranked_sources()
     display <- if (nrow(rows) == 0) {
@@ -10405,13 +10660,32 @@ server <- function(input, output, session) {
 
   observeEvent(input$article_lab_save_prompt, {
     prompt_text <- article_lab_input_multiline(input$article_lab_prompt)
+    prompt_key <- article_lab_input_string(input$article_lab_prompt_key) %||% article_lab_manual_prompt_key
     if (is.na(prompt_text)) {
       article_lab_state$notice <- "Enter a prompt before saving."
       return(invisible(NULL))
     }
-    save_article_lab_prompt(con, prompt_text)
+    save_article_lab_prompt(con, prompt_text, prompt_key)
+    saved_article_lab_prompt_key(prompt_key)
     saved_article_lab_prompt(prompt_text)
-    article_lab_state$notice <- "Saved manual/default generation prompt."
+    updateSelectInput(session, "article_lab_prompt_key_select", choices = list_article_lab_prompt_keys(con), selected = prompt_key)
+    updateTextInput(session, "article_lab_prompt_key", value = prompt_key)
+    article_lab_state$notice <- sprintf("Saved generation prompt '%s'.", prompt_key)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_save_outline_prompt, {
+    prompt_text <- article_lab_input_multiline(input$article_lab_outline_prompt)
+    prompt_key <- article_lab_input_string(input$article_lab_outline_prompt_key) %||% article_lab_outline_prompt_key
+    if (is.na(prompt_text)) {
+      article_lab_state$notice <- "Enter an outline prompt before saving."
+      return(invisible(NULL))
+    }
+    save_article_lab_prompt(con, prompt_text, prompt_key, article_lab_default_outline_prompt)
+    saved_article_lab_outline_prompt_key(prompt_key)
+    saved_article_lab_outline_prompt(prompt_text)
+    updateSelectInput(session, "article_lab_outline_prompt_key_select", choices = list_article_lab_prompt_keys(con, article_lab_outline_prompt_key), selected = prompt_key)
+    updateTextInput(session, "article_lab_outline_prompt_key", value = prompt_key)
+    article_lab_state$notice <- sprintf("Saved outline prompt '%s'.", prompt_key)
   }, ignoreInit = TRUE)
 
   save_current_article_lab_draft <- function() {
@@ -11054,34 +11328,92 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_generate_outlines, {
-    outline_rows <- article_lab_ready_for_outline_rows()
-    article_lab_update_outlines(con, collect_outline_updates(outline_rows))
-    selected_ids <- collect_selected_ids(
-      outline_rows,
-      "article_lab_outline_packages",
-      snapshot_ids = input$article_lab_outline_packages_selected_snapshot,
-      key_col = "thumbnail_id"
-    )
-    if (length(selected_ids) == 0) {
-      article_lab_state$notice <- "Select at least one approved package without an outline before generating."
-      article_lab_refresh(article_lab_refresh() + 1L)
-      return(invisible(NULL))
-    }
-    selected_rows <- outline_rows[outline_rows$thumbnail_id %in% selected_ids & (is.na(outline_rows$outline_id) | !nzchar(outline_rows$outline_id)), , drop = FALSE]
-    if (nrow(selected_rows) == 0) {
-      article_lab_state$notice <- "Selected packages already have active outline drafts."
-      article_lab_refresh(article_lab_refresh() + 1L)
-      return(invisible(NULL))
-    }
-    result <- generate_outline_drafts(selected_rows, model = input$article_lab_outline_model, prompt = input$article_lab_outline_prompt)
-    inserted_n <- article_lab_insert_outline_drafts(con, result$rows)
-    article_lab_state$notice <- sprintf(
-      "Generated %s outline draft%s using model %s in %s mode.",
-      inserted_n,
-      ifelse(inserted_n == 1L, "", "s"),
-      result$model %||% article_lab_default_outline_model,
-      result$mode %||% "unknown"
-    )
+    started_at <- Sys.time()
+    article_lab_debug_log("outline_generate_clicked", list(model = input$article_lab_outline_model, include_context = isTRUE(input$article_lab_outline_include_context)))
+    article_lab_state$notice <- "Generating selected outline draft(s). Waiting for OpenAI; this can take a while."
+    article_lab_refresh(article_lab_refresh() + 1L)
+    if (is.function(session$flushReact)) session$flushReact()
+
+    result <- tryCatch({
+      outline_rows <- article_lab_ready_for_outline_rows()
+      article_lab_debug_log("outline_generate_rows_loaded", list(ready_rows = nrow(outline_rows)))
+      saved_edits_n <- article_lab_update_outlines(con, collect_outline_updates(outline_rows))
+      selected_ids <- collect_selected_ids(
+        outline_rows,
+        "article_lab_outline_packages",
+        snapshot_ids = input$article_lab_outline_packages_selected_snapshot,
+        key_col = "thumbnail_id"
+      )
+      article_lab_debug_log("outline_generate_selection", list(saved_edits_n = saved_edits_n, selected_n = length(selected_ids), selected_ids = selected_ids))
+      if (length(selected_ids) == 0) {
+        list(ok = FALSE, notice = "Select at least one package before generating or regenerating an outline.")
+      } else {
+        selected_rows <- outline_rows[outline_rows$thumbnail_id %in% selected_ids, , drop = FALSE]
+        if (nrow(selected_rows) == 0) {
+          list(ok = FALSE, notice = "Selected packages are no longer available for outline generation.")
+        } else {
+          summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(selected_rows$batch_id))
+          selected_rows$article_summary <- NA_character_
+          selected_rows$pdf_local_path <- NA_character_
+          if (nrow(summary_contexts) > 0) {
+            matched_summary <- match(selected_rows$batch_id, summary_contexts$batch_id)
+            selected_rows$article_summary <- summary_contexts$article_summary[matched_summary]
+            selected_rows$pdf_local_path <- summary_contexts$pdf_local_path[matched_summary]
+          }
+          article_lab_debug_log("outline_generate_context_loaded", list(
+            selected_rows = nrow(selected_rows),
+            summary_context_rows = nrow(summary_contexts),
+            pdf_context_n = sum(!is.na(selected_rows$pdf_local_path) & nzchar(selected_rows$pdf_local_path)),
+            summary_context_n = sum(!is.na(selected_rows$article_summary) & nzchar(selected_rows$article_summary))
+          ))
+          generated <- generate_outline_drafts(
+            selected_rows,
+            model = input$article_lab_outline_model,
+            prompt = input$article_lab_outline_prompt,
+            include_context = isTRUE(input$article_lab_outline_include_context)
+          )
+          article_lab_debug_log("outline_generate_drafts_returned", list(
+            mode = generated$mode %||% "unknown",
+            model = generated$model %||% article_lab_default_outline_model,
+            generated_rows = nrow(generated$rows),
+            fallback_reason = generated$fallback_reason %||% NA_character_
+          ))
+          if (identical(generated$mode, "failed")) {
+            list(
+              ok = FALSE,
+              notice = paste("Outline API call failed. No generic stub outline was saved.", generated$fallback_reason %||% "See .local_gitignored/article_lab_debug.log for details.")
+            )
+          } else if (nrow(generated$rows) == 0) {
+            list(
+              ok = FALSE,
+              notice = "Outline API call returned no usable outline rows. No generic stub outline was saved. See .local_gitignored/article_lab_debug.log for details."
+            )
+          } else {
+          inserted_n <- article_lab_insert_outline_drafts(con, generated$rows)
+          article_lab_debug_log("outline_generate_inserted", list(inserted_n = inserted_n))
+          list(
+            ok = TRUE,
+            notice = sprintf(
+              "Generated %s outline draft%s using model %s in %s mode.",
+              inserted_n,
+              ifelse(inserted_n == 1L, "", "s"),
+              generated$model %||% article_lab_default_outline_model,
+              generated$mode %||% "unknown"
+            )
+          )
+          }
+        }
+      }
+    }, error = function(e) {
+      article_lab_debug_log("outline_generate_error", list(
+        message = conditionMessage(e),
+        call = paste(deparse(conditionCall(e)), collapse = " "),
+        elapsed_seconds = as.numeric(difftime(Sys.time(), started_at, units = "secs"))
+      ))
+      list(ok = FALSE, notice = paste("Outline generation failed:", conditionMessage(e), "Debug log: .local_gitignored/article_lab_debug.log"))
+    })
+
+    article_lab_state$notice <- result$notice
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 

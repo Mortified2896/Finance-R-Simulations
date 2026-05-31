@@ -1,4 +1,5 @@
 import "dotenv/config";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import { createOpenAIClient, flushLangfuse, withLangfuseRun } from "./langfuse.mjs";
 
@@ -26,8 +27,28 @@ function stripCodeFences(text) {
   return fenced ? fenced[1].trim() : trimmed;
 }
 
-function parseResults(rawText) {
-  const parsed = JSON.parse(stripCodeFences(rawText));
+function previewText(text, maxLength = 1200) {
+  const value = String(text ?? "").replace(/\s+/g, " ").trim();
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+function parseResults(rawText, packages = []) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stripCodeFences(rawText));
+  } catch (error) {
+    if (packages.length === 1 && cleanText(rawText)) {
+      const entry = packages[0];
+      return [{
+        thumbnail_id: entry.thumbnail_id,
+        subtitle_id: entry.subtitle_id,
+        candidate_id: entry.candidate_id,
+        batch_id: entry.batch_id,
+        outline_text: cleanText(rawText)
+      }];
+    }
+    throw error;
+  }
   const results = Array.isArray(parsed.results) ? parsed.results : [];
   return results.map((entry) => ({
     thumbnail_id: cleanText(entry.thumbnail_id),
@@ -49,12 +70,21 @@ function buildPrompt({ prompt, packages }) {
     "Do not draft the full article."
   ].join("\n");
 
-  const packageList = packages.map((entry, index) => [
-    `${index + 1}. thumbnail_id=${entry.thumbnail_id} | subtitle_id=${entry.subtitle_id} | candidate_id=${entry.candidate_id} | batch_id=${entry.batch_id}`,
-    `Title: ${entry.title}`,
-    `Subtitle: ${entry.subtitle}`,
-    `Thumbnail label: ${entry.thumbnail_label ?? "approved thumbnail"}`
-  ].join("\n")).join("\n\n");
+  const packageList = packages.map((entry, index) => {
+    const lines = [
+      `${index + 1}. thumbnail_id=${entry.thumbnail_id} | subtitle_id=${entry.subtitle_id} | candidate_id=${entry.candidate_id} | batch_id=${entry.batch_id}`,
+      `Title: ${entry.title}`,
+      `Subtitle: ${entry.subtitle}`,
+      `Thumbnail label: ${entry.thumbnail_label ?? "approved thumbnail"}`
+    ];
+    if (entry.article_summary) {
+      lines.push("Research summary context:", entry.article_summary);
+    }
+    if (entry.pdf_path) {
+      lines.push("Research PDF: attached as input_file");
+    }
+    return lines.join("\n");
+  }).join("\n\n");
 
   return [
     basePrompt,
@@ -62,6 +92,23 @@ function buildPrompt({ prompt, packages }) {
     "Packages:",
     packageList
   ].join("\n\n");
+}
+
+async function buildResponsesInput({ client, prompt, packages }) {
+  const fileIds = [];
+  const seenPaths = new Set();
+  for (const entry of packages) {
+    if (!entry.pdf_path || seenPaths.has(entry.pdf_path) || !fsSync.existsSync(entry.pdf_path)) continue;
+    seenPaths.add(entry.pdf_path);
+    const file = await client.files.create({ file: fsSync.createReadStream(entry.pdf_path), purpose: "user_data" });
+    fileIds.push(file.id);
+  }
+
+  const content = [{ type: "input_text", text: buildPrompt({ prompt, packages }) }];
+  for (const fileId of fileIds) {
+    content.push({ type: "input_file", file_id: fileId });
+  }
+  return [{ role: "user", content }];
 }
 
 async function main() {
@@ -90,7 +137,9 @@ async function main() {
         batch_id: cleanText(entry.batch_id),
         title: cleanText(entry.title),
         subtitle: cleanText(entry.subtitle),
-        thumbnail_label: cleanText(entry.thumbnail_label)
+        thumbnail_label: cleanText(entry.thumbnail_label),
+        article_summary: cleanText(entry.article_summary),
+        pdf_path: cleanText(entry.pdf_path)
       })).filter((entry) => entry.thumbnail_id && entry.subtitle_id && entry.candidate_id && entry.batch_id && entry.title && entry.subtitle)
     : [];
 
@@ -119,7 +168,7 @@ async function main() {
             tags: ["writing-api", "outline-generation"],
             sessionId: requestPath
           });
-          response = await client.responses.create({ model, input: buildPrompt({ prompt, packages }) });
+          response = await client.responses.create({ model, input: await buildResponsesInput({ client, prompt, packages }) });
         } catch (error) {
           console.error(`OpenAI API failure: ${error.message}`);
           process.exitCode = 1;
@@ -129,9 +178,9 @@ async function main() {
         const rawText = extractText(response);
         let results;
         try {
-          results = parseResults(rawText);
+          results = parseResults(rawText, packages);
         } catch (error) {
-          console.error(`Could not parse outline response: ${error.message}`);
+          console.error(`Could not parse outline response: ${error.message}. Raw response preview: ${previewText(rawText)}`);
           process.exitCode = 1;
           return;
         }
