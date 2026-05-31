@@ -8,6 +8,7 @@ This folder contains small writing helpers for article projects.
 - `generate_subtitles.mjs`: implemented for Article Lab subtitle generation from the OpenAI API.
 - `generate_thumbnails.mjs`: implemented for Article Lab thumbnail generation through the OpenAI Responses API image-generation tool.
 - `generate_outlines.mjs`: implemented for Article Lab outline generation from approved title/subtitle/thumbnail packages.
+- `generate_full_text.mjs`: implemented for Article Lab full article generation from approved outlines.
 - `score_article_lab_titles.py`: implemented for Article Lab title-only API scoring with the v2_2 rubric.
 - `reroll_sentence.mjs`: implemented for rewriting one selected sentence or paragraph.
 - `draft_section.mjs`: placeholder only.
@@ -160,6 +161,18 @@ node scripts/writing_api/generate_outlines.mjs /path/to/request.json
 ```
 
 The request JSON includes a `model`, `prompt`, and approved title/subtitle/thumbnail `packages`. The helper prints JSON with one Markdown `outline_text` per package. The Shiny Outline tab stores those drafts in `article_lab_outlines` for editing and approval.
+
+## Generate Article Lab full articles
+
+Run from the repository root:
+
+```sh
+node scripts/writing_api/generate_full_text.mjs /path/to/request.json
+```
+
+The request JSON includes a `model`, editable `prompt`, `prompt_key`, and selected approved-outline `packages`. Each package includes the approved title, subtitle, thumbnail concept, outline text, and source context mode. When context is enabled, the Shiny Full Article tab prefers a local PDF attachment; if no PDF is available, it sends the confirmed research summary/full text fallback; otherwise no source context is sent.
+
+The helper prints JSON with one Markdown `full_text` per package. The Shiny app stores generated variants in `article_lab_full_text_drafts` without overwriting older drafts. Manual saves update `current_draft_text` and write before/after rows to `article_lab_full_text_draft_revisions` for future edit-pattern analysis. Draft statuses are `draft`, `approved`, and `rejected`; approving one draft marks other drafts for the same outline as not approved and moves the package to Review & Publish.
 
 ## Score generated Article Lab titles
 

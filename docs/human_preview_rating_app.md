@@ -75,6 +75,16 @@ For batch actions, show the exact per-item context for the currently selected ro
 
 When adding or changing an API-producing workflow, update the disclosure in the same change as the API call. Do not leave a tab where the user can click generate/score without seeing which prompt and context will produce that outcome.
 
+## Article Lab Full Article Stage
+
+The Full Article tab starts from approved outlines. It can generate multiple full article draft variants per approved outline/package, stores them in `article_lab_full_text_drafts`, and keeps older generated variants instead of overwriting them.
+
+Draft statuses are `draft`, `approved`, and `rejected`. Only one draft per outline/package should be approved at a time; approving a draft clears approval on sibling drafts and moves the package to Review & Publish via `ready_for_review_publish`.
+
+The editable draft body is stored as `current_draft_text`; the original API output is preserved as `original_generated_text`. Every Save draft edits action records the previous and new text in `article_lab_full_text_draft_revisions` with `edit_source = manual_save`. This revision table is for future analysis of human edits to AI-generated drafts; the app does not include a visual diff UI yet.
+
+Source context defaults to PDF-first when enabled: attach the local PDF if available, otherwise send the confirmed research summary/full text fallback, otherwise send no source context. The tab shows PDF/summary/no-context badges and an explicit prompt disclosure before generation.
+
 ## Modes
 
 `feed_preview_1_5` is the original one-score workflow. It writes to `human_preview_ratings` and excludes articles that already have a row in that table.

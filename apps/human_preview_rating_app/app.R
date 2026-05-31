@@ -689,6 +689,15 @@ article_lab_default_outline_model <- local({
 })
 article_lab_outline_helper_timeout_seconds <- max(30L, suppressWarnings(as.integer(Sys.getenv("OPENAI_OUTLINE_GENERATION_TIMEOUT_SECONDS", unset = "180"))) %||% 180L)
 article_lab_outline_model_choices <- article_lab_model_choices_with_default(article_lab_default_outline_model)
+article_lab_default_full_text_model <- local({
+  configured <- Sys.getenv("OPENAI_FULL_TEXT_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_OUTLINE_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5-mini"
+  configured
+})
+article_lab_full_text_helper_timeout_seconds <- max(60L, suppressWarnings(as.integer(Sys.getenv("OPENAI_FULL_TEXT_GENERATION_TIMEOUT_SECONDS", unset = "300"))) %||% 300L)
+article_lab_full_text_model_choices <- article_lab_model_choices_with_default(article_lab_default_full_text_model)
 article_lab_default_research_summary_model <- local({
   configured <- Sys.getenv("OPENAI_RESEARCH_SUMMARY_MODEL", unset = "")
   if (!nzchar(configured)) configured <- "gpt-5-mini"
@@ -752,6 +761,15 @@ article_lab_default_outline_prompt <- paste(
   sep = "\n"
 )
 article_lab_outline_prompt_key <- "outline_default"
+article_lab_default_full_text_prompt <- paste(
+  "Draft a complete Medium article from the approved package and outline.",
+  "Use the title, subtitle, thumbnail concept, approved outline, and available source context.",
+  "Default to the source material when it is available; do not invent research claims beyond the provided context.",
+  "Write in clear, beginner-friendly personal finance language with practical examples, caveats, and a measured conclusion.",
+  "The article body should be Markdown. Do not include notes or explanations inside the article draft.",
+  sep = "\n"
+)
+article_lab_full_text_prompt_key <- "full_text_default"
 article_lab_default_score_prompt_version <- "v2_2"
 article_lab_default_score_scope <- "title_only"
 article_lab_all_batches_value <- "__all_article_lab_batches__"
@@ -773,6 +791,7 @@ article_lab_candidate_status_values <- c(
   "ready_for_thumbnail",
   "ready_for_outline",
   "ready_for_draft",
+  "ready_for_review_publish",
   "archived",
   "rejected"
 )
@@ -786,6 +805,7 @@ article_lab_candidate_status_labels <- c(
   ready_for_thumbnail = "Ready for thumbnail",
   ready_for_outline = "Ready for outline",
   ready_for_draft = "Ready for draft",
+  ready_for_review_publish = "Ready for review",
   archived = "Archived",
   rejected = "Rejected",
   draft = "Draft"
@@ -1192,6 +1212,67 @@ ensure_article_lab_schema <- function(con) {
   db_add_column_if_missing(con, "article_lab_outlines", "approved_at", "TEXT")
 
   dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_full_text_drafts (
+      full_text_draft_id TEXT PRIMARY KEY,
+      outline_id TEXT,
+      thumbnail_id TEXT NOT NULL,
+      subtitle_id TEXT NOT NULL,
+      candidate_id TEXT NOT NULL,
+      batch_id TEXT NOT NULL,
+      original_generated_text TEXT NOT NULL,
+      current_draft_text TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      is_approved INTEGER NOT NULL DEFAULT 0,
+      model TEXT,
+      prompt_key TEXT,
+      prompt_version TEXT,
+      generation_mode TEXT NOT NULL DEFAULT 'generated',
+      source_context_mode TEXT,
+      raw_json TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      approved_at TEXT,
+      rejected_at TEXT,
+      FOREIGN KEY(outline_id) REFERENCES article_lab_outlines(outline_id),
+      FOREIGN KEY(thumbnail_id) REFERENCES article_lab_thumbnail_candidates(thumbnail_id),
+      FOREIGN KEY(subtitle_id) REFERENCES article_lab_subtitle_candidates(subtitle_id),
+      FOREIGN KEY(candidate_id) REFERENCES article_lab_title_candidates(candidate_id),
+      FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
+    )
+  ")
+
+  full_text_columns <- list(
+    outline_id = "TEXT", thumbnail_id = "TEXT NOT NULL DEFAULT ''", subtitle_id = "TEXT NOT NULL DEFAULT ''",
+    candidate_id = "TEXT NOT NULL DEFAULT ''", batch_id = "TEXT NOT NULL DEFAULT ''",
+    original_generated_text = "TEXT NOT NULL DEFAULT ''", current_draft_text = "TEXT NOT NULL DEFAULT ''",
+    status = "TEXT NOT NULL DEFAULT 'draft'", is_approved = "INTEGER NOT NULL DEFAULT 0",
+    model = "TEXT", prompt_key = "TEXT", prompt_version = "TEXT", generation_mode = "TEXT NOT NULL DEFAULT 'generated'",
+    source_context_mode = "TEXT", raw_json = "TEXT", notes = "TEXT", created_at = "TEXT NOT NULL DEFAULT ''",
+    updated_at = "TEXT NOT NULL DEFAULT ''", approved_at = "TEXT", rejected_at = "TEXT"
+  )
+  for (column_name in names(full_text_columns)) db_add_column_if_missing(con, "article_lab_full_text_drafts", column_name, full_text_columns[[column_name]])
+
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_full_text_draft_revisions (
+      revision_id TEXT PRIMARY KEY,
+      full_text_draft_id TEXT NOT NULL,
+      previous_text TEXT,
+      new_text TEXT,
+      edit_source TEXT NOT NULL DEFAULT 'manual_save',
+      edit_note TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(full_text_draft_id) REFERENCES article_lab_full_text_drafts(full_text_draft_id)
+    )
+  ")
+
+  revision_columns <- list(
+    full_text_draft_id = "TEXT NOT NULL DEFAULT ''", previous_text = "TEXT", new_text = "TEXT",
+    edit_source = "TEXT NOT NULL DEFAULT 'manual_save'", edit_note = "TEXT", created_at = "TEXT NOT NULL DEFAULT ''"
+  )
+  for (column_name in names(revision_columns)) db_add_column_if_missing(con, "article_lab_full_text_draft_revisions", column_name, revision_columns[[column_name]])
+
+  dbExecute(con, "
     CREATE INDEX IF NOT EXISTS idx_article_lab_title_batches_created_at
     ON article_lab_title_batches (created_at, batch_id)
   ")
@@ -1261,6 +1342,21 @@ ensure_article_lab_schema <- function(con) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_article_lab_outlines_one_active_per_thumbnail
     ON article_lab_outlines (thumbnail_id)
     WHERE status IN ('draft', 'approved')
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_full_text_drafts_outline
+    ON article_lab_full_text_drafts (outline_id, updated_at)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_full_text_drafts_status
+    ON article_lab_full_text_drafts (status, is_approved, candidate_id, updated_at)
+  ")
+
+  dbExecute(con, "
+    CREATE INDEX IF NOT EXISTS idx_article_lab_full_text_revisions_draft
+    ON article_lab_full_text_draft_revisions (full_text_draft_id, created_at)
   ")
 
   dbExecute(con, "
@@ -1475,6 +1571,14 @@ article_lab_candidate_id <- function(batch_id, index) {
 
 article_lab_outline_id <- function(thumbnail_id) {
   paste0("alo_", gsub("[^A-Za-z0-9]+", "_", thumbnail_id), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
+}
+
+article_lab_full_text_draft_id <- function(outline_id) {
+  paste0("alf_", gsub("[^A-Za-z0-9]+", "_", outline_id %||% "outline"), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
+}
+
+article_lab_full_text_revision_id <- function(full_text_draft_id) {
+  paste0("alfr_", gsub("[^A-Za-z0-9]+", "_", full_text_draft_id %||% "draft"), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
 }
 
 research_workflow_sort_sql <- "CASE WHEN manual_sort_order IS NULL THEN 1 ELSE 0 END, manual_sort_order ASC, updated_at DESC"
@@ -3566,6 +3670,222 @@ article_lab_approve_outlines <- function(con, outline_ids) {
   list(approved_n = nrow(rows), candidate_ids = unique(rows$candidate_id))
 }
 
+load_article_lab_full_text_rows <- function(con, batch_id) {
+  if (is.null(batch_id) || is.na(batch_id) || !nzchar(batch_id) || !dbExistsTable(con, "article_lab_outlines")) return(data.frame())
+  all_batches <- identical(batch_id, article_lab_all_batches_value)
+  query <- if (all_batches) "
+    SELECT
+      o.outline_id, o.thumbnail_id, o.subtitle_id, o.candidate_id, o.batch_id,
+      o.outline_text, o.updated_at AS outline_updated_at,
+      t.thumbnail_label, t.thumbnail_data_uri,
+      s.subtitle,
+      c.title, c.status,
+      d.full_text_draft_id, d.original_generated_text, d.current_draft_text,
+      d.status AS draft_status, d.is_approved, d.model AS draft_model,
+      d.prompt_key, d.prompt_version, d.generation_mode AS draft_generation_mode,
+      d.source_context_mode, d.notes AS draft_notes, d.created_at AS draft_created_at,
+      d.updated_at AS draft_updated_at, d.approved_at AS draft_approved_at, d.rejected_at AS draft_rejected_at
+    FROM article_lab_outlines o
+    INNER JOIN article_lab_thumbnail_candidates t ON t.thumbnail_id = o.thumbnail_id
+    INNER JOIN article_lab_subtitle_candidates s ON s.subtitle_id = o.subtitle_id
+    INNER JOIN article_lab_title_candidates c ON c.candidate_id = o.candidate_id
+    LEFT JOIN article_lab_full_text_drafts d ON d.outline_id = o.outline_id AND d.status != 'rejected'
+    WHERE o.status = 'approved' AND c.archived = 0
+    ORDER BY o.updated_at DESC, d.updated_at DESC, o.outline_id DESC
+    " else "
+    SELECT
+      o.outline_id, o.thumbnail_id, o.subtitle_id, o.candidate_id, o.batch_id,
+      o.outline_text, o.updated_at AS outline_updated_at,
+      t.thumbnail_label, t.thumbnail_data_uri,
+      s.subtitle,
+      c.title, c.status,
+      d.full_text_draft_id, d.original_generated_text, d.current_draft_text,
+      d.status AS draft_status, d.is_approved, d.model AS draft_model,
+      d.prompt_key, d.prompt_version, d.generation_mode AS draft_generation_mode,
+      d.source_context_mode, d.notes AS draft_notes, d.created_at AS draft_created_at,
+      d.updated_at AS draft_updated_at, d.approved_at AS draft_approved_at, d.rejected_at AS draft_rejected_at
+    FROM article_lab_outlines o
+    INNER JOIN article_lab_thumbnail_candidates t ON t.thumbnail_id = o.thumbnail_id
+    INNER JOIN article_lab_subtitle_candidates s ON s.subtitle_id = o.subtitle_id
+    INNER JOIN article_lab_title_candidates c ON c.candidate_id = o.candidate_id
+    LEFT JOIN article_lab_full_text_drafts d ON d.outline_id = o.outline_id AND d.status != 'rejected'
+    WHERE o.status = 'approved' AND c.archived = 0 AND o.batch_id = ?
+    ORDER BY o.updated_at DESC, d.updated_at DESC, o.outline_id DESC
+    "
+  if (all_batches) dbGetQuery(con, query) else dbGetQuery(con, query, params = list(batch_id))
+}
+
+article_lab_full_text_package_rows <- function(rows) {
+  if (nrow(rows) == 0) return(rows)
+  rows[!duplicated(rows$outline_id), c("outline_id", "thumbnail_id", "subtitle_id", "candidate_id", "batch_id", "outline_text", "thumbnail_label", "thumbnail_data_uri", "subtitle", "title", "status"), drop = FALSE]
+}
+
+article_lab_full_text_api_request <- function(packages, model = NA_character_, prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
+  helper_path <- file.path("scripts", "writing_api", "generate_full_text.mjs")
+  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_full_text.mjs", call. = FALSE)
+  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+  if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_full_text_model, mode = "api", raw_json = NULL))
+
+  request_payload <- list(
+    model = article_lab_input_string(model) %||% article_lab_default_full_text_model,
+    prompt = article_lab_input_multiline(prompt) %||% article_lab_default_full_text_prompt,
+    prompt_key = article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
+    packages = unname(lapply(seq_len(nrow(packages)), function(i) {
+      pdf_path <- if ("pdf_local_path" %in% names(packages) && isTRUE(include_context)) research_resolve_local_pdf_path(packages$pdf_local_path[[i]]) else NA_character_
+      source_mode <- if (!isTRUE(include_context)) "none" else if (!is.na(pdf_path) && file.exists(pdf_path)) "pdf_attachment" else if ("article_summary" %in% names(packages) && !is.na(packages$article_summary[[i]]) && nzchar(packages$article_summary[[i]])) "summary_fallback" else "none"
+      list(
+        outline_id = packages$outline_id[[i]],
+        thumbnail_id = packages$thumbnail_id[[i]],
+        subtitle_id = packages$subtitle_id[[i]],
+        candidate_id = packages$candidate_id[[i]],
+        batch_id = packages$batch_id[[i]],
+        title = packages$title[[i]],
+        subtitle = packages$subtitle[[i]],
+        thumbnail_label = packages$thumbnail_label[[i]],
+        outline_text = packages$outline_text[[i]],
+        source_context_mode = source_mode,
+        article_summary = if (identical(source_mode, "summary_fallback")) packages$article_summary[[i]] else NULL,
+        pdf_path = if (identical(source_mode, "pdf_attachment")) pdf_path else NULL
+      )
+    }))
+  )
+
+  request_file <- tempfile(pattern = "article_lab_full_text_request_", fileext = ".json")
+  stdout_file <- tempfile(pattern = "article_lab_full_text_stdout_", fileext = ".json")
+  stderr_file <- tempfile(pattern = "article_lab_full_text_stderr_", fileext = ".log")
+  on.exit(unlink(c(request_file, stdout_file, stderr_file), force = TRUE), add = TRUE)
+
+  write_json(request_payload, request_file, auto_unbox = TRUE, pretty = FALSE, null = "null")
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2("node", args = c(helper_path, request_file), stdout = stdout_file, stderr = stderr_file, timeout = article_lab_full_text_helper_timeout_seconds)
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (identical(status, 124L)) stop(sprintf("Full article generation helper timed out after %s seconds.", article_lab_full_text_helper_timeout_seconds), call. = FALSE)
+  if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Full article generation helper failed.", call. = FALSE)
+  if (!nzchar(trimws(stdout_text))) stop("Full article generation helper returned no output.", call. = FALSE)
+
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  result_rows <- lapply(parsed$results %||% list(), function(entry) {
+    data.frame(
+      outline_id = article_lab_input_string(entry$outline_id),
+      thumbnail_id = article_lab_input_string(entry$thumbnail_id),
+      subtitle_id = article_lab_input_string(entry$subtitle_id),
+      candidate_id = article_lab_input_string(entry$candidate_id),
+      batch_id = article_lab_input_string(entry$batch_id),
+      full_text = article_lab_input_multiline(entry$full_text),
+      source_context_mode = article_lab_input_string(entry$source_context_mode) %||% "none",
+      created_at = now_utc(),
+      model = article_lab_input_string(parsed$model) %||% request_payload$model,
+      generation_mode = "api",
+      raw_json = stdout_text,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+  })
+  result_rows <- Filter(function(row) nrow(row) > 0 && !is.na(row$full_text[[1]]), result_rows)
+  list(rows = if (length(result_rows) == 0) data.frame() else do.call(rbind, result_rows), model = article_lab_input_string(parsed$model) %||% request_payload$model, mode = article_lab_input_string(parsed$mode) %||% "api", raw_json = stdout_text)
+}
+
+generate_full_text_drafts <- function(packages, model = NA_character_, prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
+  tryCatch(
+    article_lab_full_text_api_request(packages, model = model, prompt = prompt, prompt_key = prompt_key, include_context = include_context),
+    error = function(e) list(rows = data.frame(), model = article_lab_input_string(model) %||% article_lab_default_full_text_model, mode = "failed", fallback_reason = conditionMessage(e))
+  )
+}
+
+article_lab_insert_full_text_drafts <- function(con, draft_rows, prompt_key = NA_character_, prompt_version = NA_character_) {
+  if (nrow(draft_rows) == 0) return(0L)
+  inserted_n <- 0L
+  dbBegin(con)
+  tryCatch({
+    for (i in seq_len(nrow(draft_rows))) {
+      timestamp <- draft_rows$created_at[[i]] %||% now_utc()
+      dbExecute(
+        con,
+        "INSERT INTO article_lab_full_text_drafts
+         (full_text_draft_id, outline_id, thumbnail_id, subtitle_id, candidate_id, batch_id,
+          original_generated_text, current_draft_text, status, is_approved, model, prompt_key, prompt_version,
+          generation_mode, source_context_mode, raw_json, notes, created_at, updated_at, approved_at, rejected_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL)",
+        params = list(
+          article_lab_full_text_draft_id(draft_rows$outline_id[[i]]),
+          draft_rows$outline_id[[i]], draft_rows$thumbnail_id[[i]], draft_rows$subtitle_id[[i]], draft_rows$candidate_id[[i]], draft_rows$batch_id[[i]],
+          draft_rows$full_text[[i]], draft_rows$full_text[[i]], draft_rows$model[[i]] %||% article_lab_default_full_text_model,
+          article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
+          article_lab_input_string(prompt_version) %||% article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
+          draft_rows$generation_mode[[i]] %||% "api", draft_rows$source_context_mode[[i]] %||% "none", draft_rows$raw_json[[i]], timestamp, timestamp
+        )
+      )
+      inserted_n <- inserted_n + 1L
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  inserted_n
+}
+
+article_lab_update_full_text_drafts <- function(con, draft_updates, edit_source = "manual_save") {
+  if (length(draft_updates) == 0) return(0L)
+  updated_n <- 0L
+  timestamp <- now_utc()
+  dbBegin(con)
+  tryCatch({
+    for (entry in draft_updates) {
+      draft_id <- clean_text(entry$full_text_draft_id)
+      if (length(draft_id) == 0 || is.na(draft_id[[1]])) next
+      new_text <- article_lab_input_multiline(entry$current_draft_text)
+      if (length(new_text) == 0 || is.na(new_text[[1]])) next
+      existing <- dbGetQuery(con, "SELECT current_draft_text FROM article_lab_full_text_drafts WHERE full_text_draft_id = ?", params = list(draft_id[[1]]))
+      if (nrow(existing) == 0) next
+      previous_text <- existing$current_draft_text[[1]]
+      if (!identical(previous_text, new_text[[1]])) {
+        dbExecute(
+          con,
+          "INSERT INTO article_lab_full_text_draft_revisions (revision_id, full_text_draft_id, previous_text, new_text, edit_source, edit_note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          params = list(article_lab_full_text_revision_id(draft_id[[1]]), draft_id[[1]], previous_text, new_text[[1]], edit_source, article_lab_input_string(entry$notes) %||% NA_character_, timestamp)
+        )
+      }
+      dbExecute(con, "UPDATE article_lab_full_text_drafts SET current_draft_text = ?, notes = ?, updated_at = ? WHERE full_text_draft_id = ?", params = list(new_text[[1]], article_lab_input_string(entry$notes) %||% NA_character_, timestamp, draft_id[[1]]))
+      updated_n <- updated_n + 1L
+    }
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  updated_n
+}
+
+article_lab_approve_full_text_draft <- function(con, full_text_draft_id) {
+  draft_id <- article_lab_input_string(full_text_draft_id)
+  if (is.na(draft_id) || !nzchar(draft_id)) return(list(approved_n = 0L, candidate_ids = character()))
+  row <- dbGetQuery(con, "SELECT full_text_draft_id, outline_id, candidate_id, batch_id FROM article_lab_full_text_drafts WHERE full_text_draft_id = ? AND status = 'draft'", params = list(draft_id))
+  if (nrow(row) == 0) return(list(approved_n = 0L, candidate_ids = character()))
+  timestamp <- now_utc()
+  dbBegin(con)
+  tryCatch({
+    dbExecute(con, "UPDATE article_lab_full_text_drafts SET is_approved = 0, status = CASE WHEN status = 'approved' THEN 'draft' ELSE status END, approved_at = NULL, updated_at = ? WHERE outline_id = ?", params = list(timestamp, row$outline_id[[1]]))
+    dbExecute(con, "UPDATE article_lab_full_text_drafts SET status = 'approved', is_approved = 1, approved_at = ?, updated_at = ? WHERE full_text_draft_id = ?", params = list(timestamp, timestamp, draft_id))
+    dbExecute(con, "UPDATE article_lab_title_candidates SET status = 'ready_for_review_publish', promoted = 0, ready_for_human_rating = 0, archived = 0 WHERE candidate_id = ?", params = list(row$candidate_id[[1]]))
+    article_lab_update_batch_status(con, row$batch_id[[1]])
+    dbCommit(con)
+  }, error = function(e) {
+    dbRollback(con)
+    stop(e)
+  })
+  list(approved_n = 1L, candidate_ids = row$candidate_id)
+}
+
+article_lab_reject_full_text_draft <- function(con, full_text_draft_id) {
+  draft_id <- article_lab_input_string(full_text_draft_id)
+  if (is.na(draft_id) || !nzchar(draft_id)) return(0L)
+  dbExecute(con, "UPDATE article_lab_full_text_drafts SET status = 'rejected', is_approved = 0, rejected_at = ?, approved_at = NULL, updated_at = ? WHERE full_text_draft_id = ? AND status != 'approved'", params = list(now_utc(), now_utc(), draft_id))
+}
+
 article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model = NA_character_, prompt = NA_character_, variants_per_title = 4L) {
   candidate_ids <- clean_text(candidate_ids)
   candidate_ids <- unique(candidate_ids[!is.na(candidate_ids)])
@@ -5439,6 +5759,81 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
         }
       )
     })
+  )
+}
+
+article_lab_full_text_source_badge <- function(row, summary_contexts, include_context = TRUE) {
+  context <- if (nrow(summary_contexts) == 0) data.frame() else summary_contexts[summary_contexts$batch_id == row$batch_id[[1]], , drop = FALSE]
+  pdf_path <- if (nrow(context) > 0) research_resolve_local_pdf_path(context$pdf_local_path[[1]]) else NA_character_
+  has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
+  has_summary <- nrow(context) > 0 && !is.na(context$article_summary[[1]]) && nzchar(context$article_summary[[1]])
+  if (!isTRUE(include_context)) return(tags$span(class = "lab-chip default", "Source off"))
+  if (has_pdf) return(tags$span(class = "lab-chip blue", "PDF available"))
+  if (has_summary) return(tags$span(class = "lab-chip green", "Summary fallback"))
+  tags$span(class = "lab-chip orange", "No source context")
+}
+
+article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, include_context = TRUE) {
+  if (nrow(packages) == 0) return(div(class = "empty-state", "No approved outlines are ready for Full Article yet in this selection."))
+  draft_rows <- rows[!is.na(rows$full_text_draft_id) & nzchar(rows$full_text_draft_id), , drop = FALSE]
+  tagList(
+    div(
+      class = "thumbnail-preview-grid",
+      lapply(seq_len(nrow(packages)), function(i) {
+        row <- packages[i, , drop = FALSE]
+        outline_id <- row$outline_id[[1]]
+        package_drafts <- draft_rows[draft_rows$outline_id == outline_id, , drop = FALSE]
+        div(
+          class = "thumbnail-preview-card approved",
+          `data-selection-group` = "article_lab_full_text_packages",
+          `data-candidate-id` = outline_id,
+          div(
+            class = "thumbnail-preview-topbar",
+            div(class = "lab-chip-row", article_lab_badge("ready_for_draft"), article_lab_full_text_source_badge(row, summary_contexts, include_context)),
+            checkboxInput(article_lab_row_input_id("article_lab_full_text_packages", outline_id), "Generate draft for this outline", value = FALSE)
+          ),
+          div(
+            class = "thumbnail-preview-shell",
+            div(
+              class = "thumbnail-preview-meta medium-preview-card",
+              div(class = "preview-kicker", row$thumbnail_label[[1]] %||% "Approved thumbnail"),
+              div(class = "preview-title", row$title[[1]] %||% "Untitled"),
+              div(class = "preview-subtitle", row$subtitle[[1]] %||% "")
+            ),
+            div(
+              class = "thumbnail-preview-image-wrap",
+              tags$img(class = "thumbnail-preview-image", src = row$thumbnail_data_uri[[1]] %||% "", alt = paste("Approved thumbnail for", row$title[[1]] %||% "untitled article"))
+            )
+          ),
+          div(class = "lab-status-copy", sprintf("Outline ID: %s", outline_id)),
+          tags$details(
+            tags$summary("Show approved outline"),
+            tags$pre(class = "lab-status-copy", row$outline_text[[1]] %||% "")
+          ),
+          if (nrow(package_drafts) == 0) {
+            div(class = "lab-status-copy", "No full article draft yet. Select this outline and generate a draft.")
+          } else {
+            tagList(lapply(seq_len(nrow(package_drafts)), function(j) {
+              draft <- package_drafts[j, , drop = FALSE]
+              draft_id <- draft$full_text_draft_id[[1]]
+              editor <- div(
+                class = "lab-outline-editor",
+                `data-selection-group` = "article_lab_full_text_drafts",
+                `data-candidate-id` = draft_id,
+                div(
+                  class = "thumbnail-preview-topbar",
+                  div(class = "lab-chip-row", article_lab_badge(draft$draft_status[[1]] %||% "draft"), tags$span(class = "lab-chip default", draft$source_context_mode[[1]] %||% "none"), tags$span(class = "lab-chip default", draft$draft_model[[1]] %||% "model unknown")),
+                  checkboxInput(article_lab_row_input_id("article_lab_full_text_drafts", draft_id), "Select draft", value = FALSE)
+                ),
+                textAreaInput(article_lab_row_input_id("article_lab_full_text_draft_text", draft_id), "Full article draft", value = draft$current_draft_text[[1]] %||% "", width = "100%", height = "720px"),
+                textInput(article_lab_row_input_id("article_lab_full_text_draft_notes", draft_id), "Draft notes", value = draft$draft_notes[[1]] %||% "", width = "100%")
+              )
+              if (j == 1L) editor else tags$details(tags$summary(sprintf("Show older draft variant %s", j)), editor)
+            }))
+          }
+        )
+      })
+    )
   )
 }
 
@@ -7899,6 +8294,27 @@ ui <- fluidPage(
         }
       }
 
+      function articleLabCopyTextFromElement(elementId, button) {
+        const element = document.getElementById(elementId);
+        if (!element) return;
+        const text = element.textContent || '';
+        const originalLabel = button ? button.textContent : '';
+        const done = function() {
+          if (!button) return;
+          button.textContent = 'Copied prompt';
+          window.setTimeout(function() {
+            button.textContent = originalLabel || 'Copy prompt';
+          }, 1100);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done).catch(function() {
+            window.prompt('Copy prompt', text);
+          });
+        } else {
+          window.prompt('Copy prompt', text);
+        }
+      }
+
       function alignSideCardsToRatingPanel() {
         const ratingPanel = document.querySelector('.rating-panel');
         const sidebar = document.querySelector('.sidebar');
@@ -7946,6 +8362,7 @@ ui <- fluidPage(
       }
 
       window.articleLabSyncSelections = articleLabSyncSelections;
+      window.articleLabCopyTextFromElement = articleLabCopyTextFromElement;
 
       let articleLabThumbnailTimer = null;
 
@@ -8200,6 +8617,8 @@ server <- function(input, output, session) {
   saved_article_lab_prompt <- reactiveVal(load_article_lab_prompt(con, article_lab_manual_prompt_key))
   saved_article_lab_outline_prompt_key <- reactiveVal(article_lab_outline_prompt_key)
   saved_article_lab_outline_prompt <- reactiveVal(load_article_lab_prompt(con, article_lab_outline_prompt_key, article_lab_default_outline_prompt))
+  saved_article_lab_full_text_prompt_key <- reactiveVal(article_lab_full_text_prompt_key)
+  saved_article_lab_full_text_prompt <- reactiveVal(load_article_lab_prompt(con, article_lab_full_text_prompt_key, article_lab_default_full_text_prompt))
   article_lab_state <- reactiveValues(
     draft = NULL,
     draft_created_at = NULL,
@@ -8279,6 +8698,30 @@ server <- function(input, output, session) {
     saved_article_lab_outline_prompt(prompt_text)
     updateTextInput(session, "article_lab_outline_prompt_key", value = key)
     updateTextAreaInput(session, "article_lab_outline_prompt", value = prompt_text)
+  }, ignoreInit = TRUE)
+
+  output$article_lab_full_text_prompt_selector <- renderUI({
+    keys <- list_article_lab_prompt_keys(con, article_lab_full_text_prompt_key)
+    selected <- saved_article_lab_full_text_prompt_key()
+    selectInput("article_lab_full_text_prompt_key_select", "Saved prompt", choices = keys, selected = selected, width = "100%")
+  })
+
+  output$article_lab_full_text_prompt_save_button <- renderUI({
+    current_prompt <- article_lab_input_multiline(input$article_lab_full_text_prompt) %||% article_lab_default_full_text_prompt
+    saved_prompt <- article_lab_input_multiline(saved_article_lab_full_text_prompt()) %||% article_lab_default_full_text_prompt
+    current_key <- article_lab_input_string(input$article_lab_full_text_prompt_key) %||% saved_article_lab_full_text_prompt_key()
+    saved_key <- saved_article_lab_full_text_prompt_key()
+    has_changes <- !identical(current_prompt, saved_prompt) || !identical(current_key, saved_key)
+    actionButton("article_lab_save_full_text_prompt", if (has_changes) "Save prompt" else "Prompt saved", class = if (has_changes) "lab-primary" else "lab-secondary", disabled = if (has_changes) NULL else "disabled")
+  })
+
+  observeEvent(input$article_lab_full_text_prompt_key_select, {
+    key <- article_lab_input_string(input$article_lab_full_text_prompt_key_select) %||% article_lab_full_text_prompt_key
+    prompt_text <- load_article_lab_prompt(con, key, article_lab_default_full_text_prompt)
+    saved_article_lab_full_text_prompt_key(key)
+    saved_article_lab_full_text_prompt(prompt_text)
+    updateTextInput(session, "article_lab_full_text_prompt_key", value = key)
+    updateTextAreaInput(session, "article_lab_full_text_prompt", value = prompt_text)
   }, ignoreInit = TRUE)
 
   observeEvent(input$sidebar_nav, {
@@ -8637,6 +9080,42 @@ server <- function(input, output, session) {
         uiOutput("article_lab_outline_sections")
       )
 
+      full_text_panel <- tagList(
+        div(
+          class = "lab-card",
+          h2("Controls"),
+          div(
+            class = "lab-grid",
+            div(class = "lab-field", uiOutput("article_lab_full_text_prompt_selector")),
+            div(class = "lab-field", textInput("article_lab_full_text_prompt_key", "Prompt key", value = article_lab_full_text_prompt_key, width = "100%"))
+          ),
+          div(
+            class = "lab-field",
+            textAreaInput("article_lab_full_text_prompt", "Prompt", value = saved_article_lab_full_text_prompt(), width = "100%", height = "170px")
+          ),
+          div(class = "lab-actions", uiOutput("article_lab_full_text_prompt_save_button")),
+          div(
+            class = "lab-grid",
+            uiOutput("article_lab_batch_selector"),
+            div(class = "lab-field", selectInput("article_lab_full_text_model", "Model", choices = article_lab_full_text_model_choices, selected = article_lab_default_full_text_model, width = "100%")),
+            div(class = "lab-field", checkboxInput("article_lab_full_text_include_context", "Include available source context (PDF preferred, summary fallback)", value = TRUE, width = "100%"))
+          ),
+          div(
+            class = "lab-actions",
+            actionButton("article_lab_generate_full_text", "Generate full article draft", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_full_text_packages');"),
+            actionButton("article_lab_generate_full_text_variant", "Generate another variant", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_full_text_packages');"),
+            actionButton("article_lab_save_full_text_drafts", "Save draft edits", class = "lab-secondary"),
+            actionButton("article_lab_approve_full_text_draft", "Approve selected draft", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_full_text_drafts');"),
+            actionButton("article_lab_reject_full_text_draft", "Reject selected draft", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_full_text_drafts');"),
+            actionButton("article_lab_refresh_full_text", "Refresh", class = "lab-secondary")
+          ),
+          div(class = "lab-status-copy", "Generate drafts from approved outlines, edit the selected draft directly, save revisions, then approve one draft for Review & Publish."),
+          uiOutput("article_lab_full_text_effective_prompt"),
+          uiOutput("article_lab_notice")
+        ),
+        uiOutput("article_lab_full_text_sections")
+      )
+
       placeholder_panel <- function(copy) {
         div(
           class = "lab-card step-placeholder",
@@ -8729,7 +9208,7 @@ server <- function(input, output, session) {
         subtitle_generation = subtitle_generation_panel,
         thumbnails = thumbnail_panel,
         outline = outline_panel,
-        full_text = placeholder_panel("Full article drafting workflow routing is now exposed here."),
+        full_text = full_text_panel,
         review_publish = placeholder_panel("Final review and publish workflow routing is now exposed here."),
         settings = placeholder_panel("Settings remain available from the sidebar."),
         generate_panel
@@ -9163,6 +9642,19 @@ server <- function(input, output, session) {
     rows[order(rows$created_at, rows$thumbnail_id, decreasing = TRUE), , drop = FALSE]
   })
 
+  article_lab_full_text_rows <- reactive({
+    article_lab_refresh()
+    batch_id <- article_lab_selected_batch_id()
+    if (is.na(batch_id) || !nzchar(batch_id)) return(data.frame())
+    rows <- load_article_lab_full_text_rows(con, batch_id)
+    if (nrow(rows) == 0) return(rows)
+    rows[order(rows$outline_updated_at, rows$draft_updated_at, rows$outline_id, decreasing = TRUE, na.last = TRUE), , drop = FALSE]
+  })
+
+  article_lab_full_text_package_rows_reactive <- reactive({
+    article_lab_full_text_package_rows(article_lab_full_text_rows())
+  })
+
   collect_generate_triage_updates <- function(rows) {
     if (nrow(rows) == 0) return(list(updates = list(), selected_ids = character()))
     updates <- lapply(seq_len(nrow(rows)), function(i) {
@@ -9223,6 +9715,20 @@ server <- function(input, output, session) {
         outline_id = outline_id,
         outline_text = input[[article_lab_row_input_id("article_lab_outline_text", outline_id)]] %||% rows$outline_text[[i]],
         notes = input[[article_lab_row_input_id("article_lab_outline_notes", outline_id)]] %||% rows$outline_notes[[i]]
+      )
+    })
+  }
+
+  collect_full_text_updates <- function(rows) {
+    if (nrow(rows) == 0 || !("full_text_draft_id" %in% names(rows))) return(list())
+    rows <- rows[!is.na(rows$full_text_draft_id) & nzchar(rows$full_text_draft_id) & rows$draft_status == "draft", , drop = FALSE]
+    if (nrow(rows) == 0) return(list())
+    lapply(seq_len(nrow(rows)), function(i) {
+      draft_id <- rows$full_text_draft_id[[i]]
+      list(
+        full_text_draft_id = draft_id,
+        current_draft_text = input[[article_lab_row_input_id("article_lab_full_text_draft_text", draft_id)]] %||% rows$current_draft_text[[i]],
+        notes = input[[article_lab_row_input_id("article_lab_full_text_draft_notes", draft_id)]] %||% rows$draft_notes[[i]]
       )
     })
   }
@@ -10181,6 +10687,121 @@ server <- function(input, output, session) {
     )
   })
 
+  output$article_lab_full_text_effective_prompt <- renderUI({
+    rows <- article_lab_full_text_rows()
+    packages <- article_lab_full_text_package_rows(rows)
+    selected_ids <- collect_selected_ids(packages, "article_lab_full_text_packages", snapshot_ids = input$article_lab_full_text_packages_selected_snapshot, key_col = "outline_id")
+    if (length(selected_ids) > 1) selected_ids <- selected_ids[[1]]
+    selected_packages <- if (length(selected_ids) > 0 && nrow(packages) > 0) packages[packages$outline_id %in% selected_ids, , drop = FALSE] else packages[0, , drop = FALSE]
+    summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(packages$batch_id))
+    include_context <- isTRUE(input$article_lab_full_text_include_context)
+    base_prompt <- article_lab_input_multiline(input$article_lab_full_text_prompt) %||% article_lab_default_full_text_prompt
+    prompt_key <- article_lab_input_string(input$article_lab_full_text_prompt_key) %||% article_lab_full_text_prompt_key
+    request_additions <- paste(
+      sprintf("Model: %s", article_lab_input_string(input$article_lab_full_text_model) %||% article_lab_default_full_text_model),
+      sprintf("Prompt key/version: %s", prompt_key),
+      sprintf("Include available source context: %s", if (include_context) "yes" else "no"),
+      "Response format: JSON with one complete Markdown full_text for the selected package; if a single-package response is plain Markdown, the helper accepts it as that package's draft.",
+      sep = "\n"
+    )
+    package_list <- if (nrow(selected_packages) == 0) {
+      "(No selected approved outline. Select one outline checkbox to see the exact package context that will be sent.)"
+    } else {
+      paste(vapply(seq_len(nrow(selected_packages)), function(i) {
+        sprintf(
+          "%s. outline_id=%s | thumbnail_id=%s | subtitle_id=%s | candidate_id=%s | batch_id=%s\nTitle: %s\nSubtitle: %s\nThumbnail concept: %s\nApproved outline:\n%s",
+          i,
+          selected_packages$outline_id[[i]], selected_packages$thumbnail_id[[i]], selected_packages$subtitle_id[[i]], selected_packages$candidate_id[[i]], selected_packages$batch_id[[i]],
+          selected_packages$title[[i]], selected_packages$subtitle[[i]], selected_packages$thumbnail_label[[i]] %||% "approved thumbnail", selected_packages$outline_text[[i]]
+        )
+      }, character(1)), collapse = "\n\n---\n\n")
+    }
+    exact_package_list <- if (nrow(selected_packages) == 0) {
+      "(No selected approved outline. Select one outline checkbox to see the exact package context that will be sent.)"
+    } else {
+      paste(vapply(seq_len(nrow(selected_packages)), function(i) {
+        context <- if (nrow(summary_contexts) == 0) data.frame() else summary_contexts[summary_contexts$batch_id == selected_packages$batch_id[[i]], , drop = FALSE]
+        pdf_path <- if (nrow(context) > 0 && isTRUE(include_context)) research_resolve_local_pdf_path(context$pdf_local_path[[1]]) else NA_character_
+        has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
+        has_summary <- isTRUE(include_context) && nrow(context) > 0 && !is.na(context$article_summary[[1]]) && nzchar(context$article_summary[[1]])
+        source_mode <- if (!isTRUE(include_context)) "none" else if (has_pdf) "pdf_attachment" else if (has_summary) "summary_fallback" else "none"
+        lines <- c(
+          sprintf(
+            "%s. outline_id=%s | thumbnail_id=%s | subtitle_id=%s | candidate_id=%s | batch_id=%s",
+            i,
+            selected_packages$outline_id[[i]], selected_packages$thumbnail_id[[i]], selected_packages$subtitle_id[[i]], selected_packages$candidate_id[[i]], selected_packages$batch_id[[i]]
+          ),
+          sprintf("Title: %s", selected_packages$title[[i]]),
+          sprintf("Subtitle: %s", selected_packages$subtitle[[i]]),
+          sprintf("Thumbnail concept: %s", selected_packages$thumbnail_label[[i]] %||% "approved thumbnail"),
+          "Approved outline:",
+          selected_packages$outline_text[[i]],
+          sprintf("Source context mode: %s", source_mode)
+        )
+        if (identical(source_mode, "summary_fallback")) lines <- c(lines, "Research summary/full text fallback:", context$article_summary[[1]])
+        if (identical(source_mode, "pdf_attachment")) lines <- c(lines, "Research PDF: attached as input_file")
+        paste(lines, collapse = "\n")
+      }, character(1)), collapse = "\n\n")
+    }
+    exact_api_prompt <- paste(
+      base_prompt,
+      "Return one full article draft per package, preserving all ids exactly.",
+      "Packages:",
+      exact_package_list,
+      sep = "\n\n"
+    )
+    context_payload <- if (!include_context) {
+      "(Source context toggle is off. No PDF or summary text will be sent.)"
+    } else if (nrow(selected_packages) == 0) {
+      "(Select approved outlines to see source context for those packages.)"
+    } else {
+      paste(vapply(seq_len(nrow(selected_packages)), function(i) {
+        context <- if (nrow(summary_contexts) == 0) data.frame() else summary_contexts[summary_contexts$batch_id == selected_packages$batch_id[[i]], , drop = FALSE]
+        pdf_path <- if (nrow(context) > 0) research_resolve_local_pdf_path(context$pdf_local_path[[1]]) else NA_character_
+        has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
+        has_summary <- nrow(context) > 0 && !is.na(context$article_summary[[1]]) && nzchar(context$article_summary[[1]])
+        if (has_pdf) {
+          paste(sprintf("Outline: %s", selected_packages$outline_id[[i]]), "Context sent: PDF file attachment", sprintf("Attached local file/path: %s", pdf_path), "Text summary sent: no, because the PDF itself is attached", sep = "\n")
+        } else if (has_summary) {
+          paste(sprintf("Outline: %s", selected_packages$outline_id[[i]]), "Context sent: text summary/full text fallback", sprintf("Summary ID: %s", context$summary_id[[1]]), sprintf("Source title: %s", context$source_title[[1]] %||% ""), "Exact text sent to API:", context$article_summary[[1]], sep = "\n")
+        } else {
+          paste(sprintf("Outline: %s", selected_packages$outline_id[[i]]), "Context sent: none", sep = "\n")
+        }
+      }, character(1)), collapse = "\n\n---\n\n")
+    }
+
+    div(
+      class = "lab-card",
+      h3("Prompt that will be sent to the API"),
+      p(class = "lab-status-copy", "Full article generation sends this prompt plus the selected title/subtitle/thumbnail/outline context. When enabled, a local PDF is attached first; summary text is sent only when no local PDF is available."),
+      tags$details(
+        open = if (nrow(selected_packages) > 0) "open" else NULL,
+        tags$summary("Show exact full article API prompt"),
+        div(
+          class = "lab-actions",
+          tags$button(type = "button", class = "btn lab-secondary", onclick = "window.articleLabCopyTextFromElement('article_lab_full_text_exact_api_prompt', this);", "Copy full API prompt")
+        ),
+        h4("Exact input_text sent to the API"),
+        tags$pre(id = "article_lab_full_text_exact_api_prompt", class = "lab-status-copy", exact_api_prompt),
+        h4("Full article prompt"),
+        tags$pre(class = "lab-status-copy", base_prompt),
+        h4("Full article helper wrapper"),
+        tags$pre(class = "lab-status-copy", paste(
+          "Return one full article draft for the selected package, preserving all ids exactly.",
+          "Preferred response shape: {\"results\":[{\"outline_id\":string,\"thumbnail_id\":string,\"subtitle_id\":string,\"candidate_id\":string,\"batch_id\":string,\"source_context_mode\":\"pdf_attachment\"|\"summary_fallback\"|\"none\",\"full_text\":string}]}",
+          "The full_text value must be the complete Markdown article draft, not a placeholder, schema example, excerpt, note, or explanation. For a single selected package, a plain Markdown response is accepted as that package's draft.",
+          sep = "\n"
+        )),
+        h4("Request fields"),
+        tags$pre(class = "lab-status-copy", request_additions),
+        h4("Selected approved outlines"),
+        tags$pre(class = "lab-status-copy", package_list),
+        h4("Source context sent"),
+        tags$pre(class = "lab-status-copy", context_payload)
+      )
+    )
+  })
+
   output$research_ranked_sources_table <- DT::renderDT({
     rows <- research_ranked_sources()
     display <- if (nrow(rows) == 0) {
@@ -10539,6 +11160,18 @@ server <- function(input, output, session) {
     )
   })
 
+  output$article_lab_full_text_sections <- renderUI({
+    rows <- article_lab_full_text_rows()
+    packages <- article_lab_full_text_package_rows(rows)
+    summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(packages$batch_id))
+    article_lab_section_card(
+      "Approved outlines ready for Full Article",
+      "Generate one or more full article variants from each approved outline, edit drafts in place, and approve one for Review & Publish.",
+      article_lab_full_text_table_ui(rows, packages, summary_contexts, include_context = isTRUE(input$article_lab_full_text_include_context)),
+      count = nrow(packages)
+    )
+  })
+
   observeEvent(input$article_lab_generate, {
     article_lab_state$is_generating <- TRUE
     on.exit({
@@ -10708,6 +11341,21 @@ server <- function(input, output, session) {
     updateSelectInput(session, "article_lab_outline_prompt_key_select", choices = list_article_lab_prompt_keys(con, article_lab_outline_prompt_key), selected = prompt_key)
     updateTextInput(session, "article_lab_outline_prompt_key", value = prompt_key)
     article_lab_state$notice <- sprintf("Saved outline prompt '%s'.", prompt_key)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_save_full_text_prompt, {
+    prompt_text <- article_lab_input_multiline(input$article_lab_full_text_prompt)
+    prompt_key <- article_lab_input_string(input$article_lab_full_text_prompt_key) %||% article_lab_full_text_prompt_key
+    if (is.na(prompt_text)) {
+      article_lab_state$notice <- "Enter a full article prompt before saving."
+      return(invisible(NULL))
+    }
+    save_article_lab_prompt(con, prompt_text, prompt_key, article_lab_default_full_text_prompt)
+    saved_article_lab_full_text_prompt_key(prompt_key)
+    saved_article_lab_full_text_prompt(prompt_text)
+    updateSelectInput(session, "article_lab_full_text_prompt_key_select", choices = list_article_lab_prompt_keys(con, article_lab_full_text_prompt_key), selected = prompt_key)
+    updateTextInput(session, "article_lab_full_text_prompt_key", value = prompt_key)
+    article_lab_state$notice <- sprintf("Saved full article prompt '%s'.", prompt_key)
   }, ignoreInit = TRUE)
 
   save_current_article_lab_draft <- function() {
@@ -11474,6 +12122,109 @@ server <- function(input, output, session) {
   observeEvent(input$article_lab_refresh_outlines, {
     updated_n <- article_lab_update_outlines(con, collect_outline_updates(article_lab_ready_for_outline_rows()))
     article_lab_state$notice <- sprintf("Refreshed Outline and saved %s editable outline%s.", updated_n, ifelse(updated_n == 1L, "", "s"))
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  generate_selected_full_text <- function(variant = FALSE) {
+    started_at <- Sys.time()
+    rows <- article_lab_full_text_rows()
+    packages <- article_lab_full_text_package_rows(rows)
+    selected_ids <- collect_selected_ids(packages, "article_lab_full_text_packages", snapshot_ids = input$article_lab_full_text_packages_selected_snapshot, key_col = "outline_id")
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select one approved outline before generating a full article draft."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    if (length(selected_ids) > 1) selected_ids <- selected_ids[[1]]
+    selected_rows <- packages[packages$outline_id %in% selected_ids, , drop = FALSE]
+    if (nrow(selected_rows) == 0) {
+      article_lab_state$notice <- "Selected outlines are no longer available for full article generation."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(selected_rows$batch_id))
+    selected_rows$article_summary <- NA_character_
+    selected_rows$pdf_local_path <- NA_character_
+    if (nrow(summary_contexts) > 0) {
+      matched_summary <- match(selected_rows$batch_id, summary_contexts$batch_id)
+      selected_rows$article_summary <- summary_contexts$article_summary[matched_summary]
+      selected_rows$pdf_local_path <- summary_contexts$pdf_local_path[matched_summary]
+    }
+    article_lab_state$notice <- if (variant) "Generating another full article variant. Waiting for OpenAI." else "Generating full article draft. Waiting for OpenAI."
+    article_lab_refresh(article_lab_refresh() + 1L)
+    if (is.function(session$flushReact)) session$flushReact()
+    generated <- generate_full_text_drafts(
+      selected_rows,
+      model = input$article_lab_full_text_model,
+      prompt = input$article_lab_full_text_prompt,
+      prompt_key = input$article_lab_full_text_prompt_key,
+      include_context = isTRUE(input$article_lab_full_text_include_context)
+    )
+    if (identical(generated$mode, "failed")) {
+      article_lab_state$notice <- paste("Full article API call failed. No draft was saved.", generated$fallback_reason %||% "See .local_gitignored/article_lab_debug.log for details.")
+    } else if (nrow(generated$rows) == 0) {
+      article_lab_state$notice <- "Full article API call returned no usable draft rows. No draft was saved."
+    } else {
+      inserted_n <- article_lab_insert_full_text_drafts(con, generated$rows, prompt_key = input$article_lab_full_text_prompt_key, prompt_version = input$article_lab_full_text_prompt_key)
+      article_lab_state$notice <- sprintf(
+        "Generated %s full article draft%s using model %s in %s mode in %s.",
+        inserted_n,
+        ifelse(inserted_n == 1L, "", "s"),
+        generated$model %||% article_lab_default_full_text_model,
+        generated$mode %||% "unknown",
+        article_lab_format_duration(as.numeric(difftime(Sys.time(), started_at, units = "secs")))
+      )
+    }
+    article_lab_refresh(article_lab_refresh() + 1L)
+    invisible(NULL)
+  }
+
+  observeEvent(input$article_lab_generate_full_text, {
+    generate_selected_full_text(variant = FALSE)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_generate_full_text_variant, {
+    generate_selected_full_text(variant = TRUE)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_save_full_text_drafts, {
+    updated_n <- article_lab_update_full_text_drafts(con, collect_full_text_updates(article_lab_full_text_rows()))
+    article_lab_state$notice <- sprintf("Saved %s full article draft%s and recorded revision rows for changed text.", updated_n, ifelse(updated_n == 1L, "", "s"))
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_approve_full_text_draft, {
+    rows <- article_lab_full_text_rows()
+    article_lab_update_full_text_drafts(con, collect_full_text_updates(rows))
+    draft_rows <- rows[!is.na(rows$full_text_draft_id) & nzchar(rows$full_text_draft_id) & rows$draft_status == "draft", , drop = FALSE]
+    selected_ids <- collect_selected_ids(draft_rows, "article_lab_full_text_drafts", snapshot_ids = input$article_lab_full_text_drafts_selected_snapshot, key_col = "full_text_draft_id")
+    if (length(selected_ids) != 1L) {
+      article_lab_state$notice <- "Select exactly one draft before approving it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_approve_full_text_draft(con, selected_ids[[1]])
+    article_lab_state$notice <- sprintf("Approved %s full article draft. Package moved to Review & Publish.", result$approved_n)
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_reject_full_text_draft, {
+    rows <- article_lab_full_text_rows()
+    draft_rows <- rows[!is.na(rows$full_text_draft_id) & nzchar(rows$full_text_draft_id) & rows$draft_status == "draft", , drop = FALSE]
+    selected_ids <- collect_selected_ids(draft_rows, "article_lab_full_text_drafts", snapshot_ids = input$article_lab_full_text_drafts_selected_snapshot, key_col = "full_text_draft_id")
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one unapproved draft before rejecting it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    rejected_n <- sum(vapply(selected_ids, function(id) article_lab_reject_full_text_draft(con, id), numeric(1)), na.rm = TRUE)
+    article_lab_state$notice <- sprintf("Rejected %s full article draft%s. No rows were deleted.", rejected_n, ifelse(rejected_n == 1L, "", "s"))
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_refresh_full_text, {
+    updated_n <- article_lab_update_full_text_drafts(con, collect_full_text_updates(article_lab_full_text_rows()))
+    article_lab_state$notice <- sprintf("Refreshed Full Article and saved %s editable draft%s.", updated_n, ifelse(updated_n == 1L, "", "s"))
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 
