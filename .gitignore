@@ -25,6 +25,7 @@ data/db/*.db
 data/db/BackupFolder/
 
 # Browser/runtime profiles and raw capture snapshots
+.playwright-mcp/
 data/raw/
 data/medium_tag_watcher_snapshots/
 data/medium_article_text_snapshots/
