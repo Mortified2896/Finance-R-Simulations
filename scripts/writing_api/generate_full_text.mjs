@@ -35,7 +35,7 @@ function isPlaceholderDraft(text) {
   const value = cleanText(text);
   if (!value) return true;
   const compact = value.toLowerCase().replace(/\s+/g, " ").trim();
-  return compact === "..." || compact === "# title ..." || compact.includes("full_text") || compact.includes("placeholder");
+  return compact === "..." || compact === "# title ..." || compact.includes("full_text") || compact.includes("markdown_article_here") || compact.includes("placeholder");
 }
 
 function stripPackageHeader(text) {
@@ -67,6 +67,18 @@ function parseResults(rawText, packages = []) {
     throw error;
   }
   const results = Array.isArray(parsed.results) ? parsed.results : [];
+  if (results.length === 0 && packages.length === 1 && cleanText(parsed.full_text) && !isPlaceholderDraft(parsed.full_text)) {
+    const entry = packages[0];
+    return [{
+      outline_id: entry.outline_id,
+      thumbnail_id: entry.thumbnail_id,
+      subtitle_id: entry.subtitle_id,
+      candidate_id: entry.candidate_id,
+      batch_id: entry.batch_id,
+      source_context_mode: entry.source_context_mode ?? "none",
+      full_text: stripPackageHeader(parsed.full_text)
+    }];
+  }
   return results.map((entry) => ({
     outline_id: cleanText(entry.outline_id),
     thumbnail_id: cleanText(entry.thumbnail_id),
@@ -82,9 +94,13 @@ function buildPrompt({ prompt, packages }) {
   const basePrompt = cleanText(prompt) || [
     "Draft complete Medium articles from approved title/subtitle/thumbnail/outline packages.",
     "Use the provided source context when available and do not invent unsupported research claims.",
+  ].join("\n");
+
+  const responseInstructions = [
     "Return valid JSON only.",
     "Return JSON only in this shape: {\"results\":[{\"outline_id\":string,\"thumbnail_id\":string,\"subtitle_id\":string,\"candidate_id\":string,\"batch_id\":string,\"source_context_mode\":\"pdf_attachment\"|\"summary_fallback\"|\"none\",\"full_text\":string}]}",
-    "Copy ids exactly from the package. The full_text value must be the complete Markdown article draft, not a schema example, placeholder, excerpt, note, or explanation."
+    "Copy ids exactly from the package. The full_text value must be the complete Markdown article draft, not a schema example, MARKDOWN_ARTICLE_HERE, placeholder, excerpt, note, or explanation.",
+    "Ignore any earlier placeholder value such as MARKDOWN_ARTICLE_HERE; replace it with the actual full Markdown article."
   ].join("\n");
 
   const packageList = packages.map((entry, index) => {
@@ -108,6 +124,7 @@ function buildPrompt({ prompt, packages }) {
 
   return [
     basePrompt,
+    responseInstructions,
     "Return one full article draft per package, preserving all ids exactly.",
     "Packages:",
     packageList
