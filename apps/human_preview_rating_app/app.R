@@ -135,6 +135,11 @@ first_value <- function(row, column, default = NA_character_) {
   if (length(value) == 0) default else value
 }
 
+article_lab_row_value <- function(row, column, default = NA_character_) {
+  value <- first_value(row, column, default)
+  value %||% default
+}
+
 `%||%` <- function(x, y) {
   if (is.null(x) || length(x) == 0 || (length(x) == 1 && is.na(x))) y else x
 }
@@ -956,16 +961,25 @@ article_lab_normalize_candidate_status <- function(status, ready_for_human_ratin
 }
 
 article_lab_status_label <- function(status) {
+  status <- article_lab_input_string(status)
+  if (is.null(status)) return("Unknown")
+  if (!(status %in% names(article_lab_candidate_status_labels))) return(status)
   label <- article_lab_candidate_status_labels[[status]]
   if (is.null(label) || is.na(label) || !nzchar(label)) status else label
 }
 
 article_lab_subtitle_status_label <- function(status) {
+  status <- article_lab_input_string(status)
+  if (is.null(status)) return("Unknown")
+  if (!(status %in% names(article_lab_subtitle_status_labels))) return(status)
   label <- article_lab_subtitle_status_labels[[status]]
   if (is.null(label) || is.na(label) || !nzchar(label)) status else label
 }
 
 article_lab_thumbnail_status_label <- function(status) {
+  status <- article_lab_input_string(status)
+  if (is.null(status)) return("Unknown")
+  if (!(status %in% names(article_lab_thumbnail_status_labels))) return(status)
   label <- article_lab_thumbnail_status_labels[[status]]
   if (is.null(label) || is.na(label) || !nzchar(label)) status else label
 }
@@ -3507,7 +3521,7 @@ article_lab_update_outlines <- function(con, outline_updates) {
       dbExecute(
         con,
         "UPDATE article_lab_outlines SET outline_text = ?, notes = ?, updated_at = ? WHERE outline_id = ? AND status = 'draft'",
-        params = list(outline_text[[1]], clean_text(entry$notes)[[1]] %||% NA_character_, timestamp, outline_id[[1]])
+        params = list(outline_text[[1]], article_lab_input_string(entry$notes) %||% NA_character_, timestamp, outline_id[[1]])
       )
       updated_n <- updated_n + 1L
     }
@@ -5371,32 +5385,34 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
     class = "thumbnail-preview-grid",
     lapply(seq_len(nrow(rows)), function(i) {
       row <- rows[i, , drop = FALSE]
-      has_outline <- !is.na(row$outline_id[[1]]) && nzchar(row$outline_id[[1]])
-      outline_status <- clean_text(row$outline_status[[1]]) %||% "none"
+      outline_id <- article_lab_row_value(row, "outline_id")
+      thumbnail_id <- article_lab_row_value(row, "thumbnail_id")
+      has_outline <- !is.na(outline_id) && nzchar(outline_id)
+      outline_status <- article_lab_input_string(article_lab_row_value(row, "outline_status")) %||% "none"
       div(
         class = paste("thumbnail-preview-card approved", if (has_outline) paste0("outline-", outline_status) else "outline-missing"),
         `data-selection-group` = if (has_outline && identical(outline_status, "draft")) "article_lab_outline_candidates" else "article_lab_outline_packages",
-        `data-candidate-id` = if (has_outline && identical(outline_status, "draft")) row$outline_id[[1]] else row$thumbnail_id[[1]],
+        `data-candidate-id` = if (has_outline && identical(outline_status, "draft")) outline_id else thumbnail_id,
         div(
           class = "thumbnail-preview-topbar",
           article_lab_thumbnail_badge("approved"),
-          checkboxInput(article_lab_row_input_id("article_lab_outline_packages", row$thumbnail_id[[1]]), if (has_outline) "Regenerate outline" else "Generate outline", value = FALSE),
-          if (has_outline && identical(outline_status, "draft")) checkboxInput(article_lab_row_input_id("article_lab_outline_candidates", row$outline_id[[1]]), "Approve outline", value = FALSE)
+          checkboxInput(article_lab_row_input_id("article_lab_outline_packages", thumbnail_id), if (has_outline) "Regenerate outline" else "Generate outline", value = FALSE),
+          if (has_outline && identical(outline_status, "draft")) checkboxInput(article_lab_row_input_id("article_lab_outline_candidates", outline_id), "Approve outline", value = FALSE)
         ),
         div(
           class = "thumbnail-preview-shell",
           div(
             class = "thumbnail-preview-meta medium-preview-card",
-            div(class = "preview-kicker", row$thumbnail_label[[1]] %||% "Approved thumbnail"),
-            div(class = "preview-title", row$title[[1]]),
-            div(class = "preview-subtitle", row$subtitle[[1]])
+            div(class = "preview-kicker", article_lab_row_value(row, "thumbnail_label", "Approved thumbnail")),
+            div(class = "preview-title", article_lab_row_value(row, "title", "Untitled")),
+            div(class = "preview-subtitle", article_lab_row_value(row, "subtitle", ""))
           ),
           div(
             class = "thumbnail-preview-image-wrap",
             tags$img(
               class = "thumbnail-preview-image",
-              src = row$thumbnail_data_uri[[1]],
-              alt = paste("Approved thumbnail for", row$title[[1]])
+              src = article_lab_row_value(row, "thumbnail_data_uri", ""),
+              alt = paste("Approved thumbnail for", article_lab_row_value(row, "title", "untitled article"))
             )
           )
         ),
@@ -5405,16 +5421,16 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
             class = "lab-outline-editor",
             div(class = "lab-status-copy", sprintf("Outline status: %s", article_lab_status_label(outline_status))),
             textAreaInput(
-              article_lab_row_input_id("article_lab_outline_text", row$outline_id[[1]]),
+              article_lab_row_input_id("article_lab_outline_text", outline_id),
               "Outline draft",
-              value = row$outline_text[[1]] %||% "",
+              value = article_lab_row_value(row, "outline_text", ""),
               width = "100%",
               height = "320px"
             ),
             textInput(
-              article_lab_row_input_id("article_lab_outline_notes", row$outline_id[[1]]),
+              article_lab_row_input_id("article_lab_outline_notes", outline_id),
               "Review notes",
-              value = row$outline_notes[[1]] %||% "",
+              value = article_lab_row_value(row, "outline_notes", ""),
               width = "100%"
             )
           )
@@ -8618,12 +8634,7 @@ server <- function(input, output, session) {
           uiOutput("article_lab_outline_effective_prompt"),
           uiOutput("article_lab_notice")
         ),
-        article_lab_section_card(
-          "Ready for Outline",
-          "Approved title/subtitle/thumbnail packages are available here for the next drafting step.",
-          article_lab_ready_for_outline_table_ui(article_lab_ready_for_outline_rows()),
-          count = nrow(article_lab_ready_for_outline_rows())
-        )
+        uiOutput("article_lab_outline_sections")
       )
 
       placeholder_panel <- function(copy) {
@@ -10514,6 +10525,17 @@ server <- function(input, output, session) {
         ),
         count = nrow(thumbnail_rows)
       )
+    )
+  })
+
+  output$article_lab_outline_sections <- renderUI({
+    outline_rows <- article_lab_ready_for_outline_rows()
+
+    article_lab_section_card(
+      "Ready for Outline",
+      "Approved title/subtitle/thumbnail packages are available here for the next drafting step.",
+      article_lab_ready_for_outline_table_ui(outline_rows),
+      count = nrow(outline_rows)
     )
   })
 
