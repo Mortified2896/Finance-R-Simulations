@@ -8,7 +8,7 @@ It is not a normal browser bookmarklet. Use it from the Codex-controlled browser
 session when you want Codex to watch while you manually scroll.
 
 ```js
-const { runMediumInAppWatcher } = await import("/Users/Jo/GitHub/Finance R Simulations/scripts/medium_in_app_tag_watcher_runtime.mjs");
+const { runMediumInAppWatcher } = await import(`${process.cwd()}/scripts/medium_in_app_tag_watcher_runtime.mjs`);
 
 await runMediumInAppWatcher(tab, {
   durationMs: 120000,

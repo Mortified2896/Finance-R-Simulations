@@ -1,74 +1,58 @@
-# Local-only runtime and secrets
-.local_gitignored/
+# Environment and R local state
 .env
+.env.*
+!.env.example
 .envrc
+.Renviron
+.Rprofile
+.Rhistory
+.RData
+.Ruserdata
+
+# Credentials and tokens
+credentials*.json
+token*.json
+service-account*.json
+*service_account*.json
+*client_secret*.json
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# Databases and serialized data
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.rds
+*.Rds
+*.RDS
+
+# Generated/runtime outputs
+outputs/
+logs/
+cache/
+tmp/
+temp/
+generated/
+.local_gitignored/
+.playwright-mcp/
+debug_samples/
+design_refs/
 *.log
 .DS_Store
 Rplots.pdf
 __pycache__/
 *.pyc
-
-# Dependencies and local fixtures
 node_modules/
-debug_samples/
-debug_samples/Medium HomePage/
-debug_samples/Medium HomePage_files/
-design_refs/medium_homepage/
 
-# Local databases and backups
-data/*.sqlite
-data/*.sqlite.backup_*
-data/*.db
-data/db/*.sqlite
-data/db/*.sqlite-*
-data/db/*.db
-data/db/BackupFolder/
-
-# Browser/runtime profiles and raw capture snapshots
-.playwright-mcp/
-data/raw/
-data/medium_tag_watcher_snapshots/
-data/medium_article_text_snapshots/
-data/medium_tag_playwright_profile/
-data/medium_tag_browser_home/
-data/medium_tag_manual_chrome_profile/
-data/medium_article_clap_capture_profile/
-
-# Generated Medium analysis datasets and outputs
-data/analysis/medium_title_prediction_dataset.csv
-data/analysis/medium_analysis_v1/
-data/analysis/medium_analysis_v2/
-data/analysis/research_library/
-data/analysis/title_baseline/
-data/analysis/title_followup/
-data/analysis/title_target_sensitivity/
-data/analysis/subtitle_analysis/
-data/analysis/title_api_scores_v2/
-data/analysis/thumbnail_api_scores_v1/
-data/analysis/title_api_score_samples/
-data/analysis/openai_headline_scoring/
-data/analysis/openai_headline_scoring_backup_before_resume/
-data/research_pdfs/
-apps/human_preview_rating_app/data/research_pdfs/
-
-# Generated queues, API outputs, and downloaded media
-data/analysis/**/*_queue.csv
-data/analysis/**/downloaded/
-data/analysis/**/*.jsonl
-data/analysis/**/api_outputs/
-article_projects/*/api_outputs/*.md
-
-# Article writing workbench files
-article_projects/active/*/02_title_ideas.csv
-article_projects/active/*/03_title_scores.csv
-
-# Article writing workbench files
-article_projects/active/*/01_title_ideas.csv
-
-# Local Research Library imports and assets
-data/research/imports/
-data/research/pdfs/
-data/research/text/
-
-# Local active article drafts and writing workbench
+# Project-specific private/generated data
+data/
 article_projects/active/
+article_projects/*/api_outputs/
+apps/human_preview_rating_app/data/
+
+# Public examples should be synthetic only.
+!examples/
+!sample_data/

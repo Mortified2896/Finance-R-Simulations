@@ -6,7 +6,7 @@ import {
   writeSnapshot,
 } from "./medium_tag_snapshot_watcher_helpers.mjs";
 
-const defaultWorkspace = "/Users/Jo/GitHub/Finance R Simulations";
+const defaultWorkspace = process.cwd();
 const defaultSnapshotDir = `${defaultWorkspace}/data/medium_tag_watcher_snapshots`;
 
 function sleep(ms) {

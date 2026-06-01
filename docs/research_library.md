@@ -32,7 +32,7 @@ Rscript scripts/research_import/import_research_papers_csv.R data/research/impor
 Or import from another local path:
 
 ```sh
-Rscript scripts/research_import/import_research_papers_csv.R /Users/Jo/Downloads/vanguard_research_library_2026-05-25.csv
+Rscript scripts/research_import/import_research_papers_csv.R ~/Downloads/vanguard_research_library_2026-05-25.csv
 ```
 
 Use a non-default DB path if needed:
