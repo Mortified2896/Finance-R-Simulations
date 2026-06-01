@@ -1585,6 +1585,8 @@ ensure_research_workflow_schema <- function(con) {
       source_name TEXT,
       manual_sort_order INTEGER,
       status TEXT NOT NULL DEFAULT 'new',
+      used_articles TEXT,
+      finished_at TEXT,
       notes TEXT,
       imported_from_table TEXT,
       imported_from_id TEXT
@@ -1654,7 +1656,7 @@ ensure_research_workflow_schema <- function(con) {
   source_columns <- list(
     source_url = "TEXT", pdf_url = "TEXT", main_idea = "TEXT", abstract = "TEXT",
     source_type = "TEXT DEFAULT 'paper'", source_name = "TEXT", manual_sort_order = "INTEGER",
-    notes = "TEXT", imported_from_table = "TEXT", imported_from_id = "TEXT"
+    used_articles = "TEXT", finished_at = "TEXT", notes = "TEXT", imported_from_table = "TEXT", imported_from_id = "TEXT"
   )
   for (column_name in names(source_columns)) db_add_column_if_missing(con, "research_sources", column_name, source_columns[[column_name]])
 
@@ -1765,6 +1767,8 @@ load_research_sources <- function(con, status = "__all__", ranked = NULL) {
   if (!is.na(status_value) && !identical(status_value, "__all__")) {
     where <- c(where, "s.status = ?")
     params <- c(params, list(status_value))
+  } else if (!is.null(ranked)) {
+    where <- c(where, "s.status NOT IN ('used', 'archived')")
   }
   if (isTRUE(ranked)) {
     where <- c(where, "s.manual_sort_order IS NOT NULL")
@@ -9833,7 +9837,7 @@ server <- function(input, output, session) {
         div(
           class = "lab-card",
           h2("Ranked Queue"),
-          div(class = "lab-status-copy", "Ranked sources have a manual sort order. Use the buttons to move the selected ranked source."),
+          div(class = "lab-status-copy", "Ranked sources have a manual sort order. Finished and archived sources are hidden unless that status is selected."),
           div(class = "lab-grid", div(class = "lab-field", selectInput("research_source_status_filter", "Filter by status", choices = c("All" = "__all__", "new", "reading", "angle_ready", "used", "archived"), selected = "__all__", width = "100%"))),
           div(class = "lab-actions", actionButton("research_refresh", "Refresh", class = "lab-secondary"), actionButton("research_ranked_move_up", "Move selected up", class = "lab-secondary"), actionButton("research_ranked_move_down", "Move selected down", class = "lab-secondary"), actionButton("research_remove_from_ranked", "Remove selected from ranked queue", class = "lab-secondary")),
           DT::DTOutput("research_ranked_sources_table")
@@ -10656,6 +10660,28 @@ server <- function(input, output, session) {
     research_refresh(research_refresh() + 1L)
   }, ignoreInit = TRUE)
 
+  observeEvent(input$research_mark_finished, {
+    rows <- selected_research_source()
+    if (nrow(rows) == 0) {
+      article_lab_state$notice <- "Select a source before marking it finished."
+      return(invisible(NULL))
+    }
+    used_articles <- research_multiline_value(input$research_used_articles)
+    if (is.na(used_articles)) {
+      article_lab_state$notice <- "Add the article title or URL you wrote from this source before marking it finished."
+      return(invisible(NULL))
+    }
+    timestamp <- now_utc()
+    dbExecute(con, "
+      UPDATE research_sources
+      SET updated_at = ?, status = 'used', manual_sort_order = NULL, used_articles = ?, finished_at = ?
+      WHERE research_source_id = ?
+    ", params = list(timestamp, used_articles, timestamp, rows$research_source_id[[1]]))
+    normalize_research_ranked_queue()
+    article_lab_state$notice <- "Source marked finished and archived as used."
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
   move_ranked_source <- function(direction) {
     id <- research_input_integer(selected_research_source_id())
     rows <- dbGetQuery(con, "SELECT research_source_id FROM research_sources WHERE manual_sort_order IS NOT NULL ORDER BY manual_sort_order ASC, updated_at DESC")
@@ -10708,9 +10734,9 @@ server <- function(input, output, session) {
     id <- rows$research_source_id[[1]]
     dbExecute(con, "
       UPDATE research_sources
-      SET updated_at = ?, source_title = ?, source_url = ?, pdf_url = ?, main_idea = ?, abstract = ?, manual_sort_order = ?, status = ?, notes = ?
+      SET updated_at = ?, source_title = ?, source_url = ?, pdf_url = ?, main_idea = ?, abstract = ?, manual_sort_order = ?, status = ?, used_articles = ?, notes = ?
       WHERE research_source_id = ?
-    ", params = list(timestamp, research_input_default(input$research_edit_source_title, rows$source_title[[1]]), research_input_value(input$research_edit_source_url), research_input_value(input$research_edit_pdf_url), research_input_value(input$research_edit_source_main), research_input_value(input$research_edit_source_abstract), research_input_integer(input$research_edit_source_sort), research_input_default(input$research_edit_source_status, "new"), research_input_value(input$research_edit_source_notes), id))
+    ", params = list(timestamp, research_input_default(input$research_edit_source_title, rows$source_title[[1]]), research_input_value(input$research_edit_source_url), research_input_value(input$research_edit_pdf_url), research_input_value(input$research_edit_source_main), research_input_value(input$research_edit_source_abstract), research_input_integer(input$research_edit_source_sort), research_input_default(input$research_edit_source_status, "new"), research_multiline_value(input$research_edit_source_used_articles), research_input_value(input$research_edit_source_notes), id))
     article_lab_state$notice <- "Research source edits saved."
     research_refresh(research_refresh() + 1L)
   }, ignoreInit = TRUE)
@@ -11536,7 +11562,7 @@ server <- function(input, output, session) {
   output$research_ranked_sources_table <- DT::renderDT({
     rows <- research_ranked_sources()
     display <- if (nrow(rows) == 0) {
-      data.frame(research_source_id = integer(), Rank = integer(), Status = character(), Title = character(), Links = character(), Angles = integer(), check.names = FALSE)
+      data.frame(research_source_id = integer(), Rank = integer(), Status = character(), Title = character(), Used = character(), Links = character(), Angles = integer(), check.names = FALSE)
     } else {
       source_title <- vapply(rows$source_title, research_input_default, character(1), default = "")
       data.frame(
@@ -11544,18 +11570,19 @@ server <- function(input, output, session) {
         Rank = seq_len(nrow(rows)),
         Status = rows$status,
         Title = sprintf('<span class="research-source-title" title="%s">%s</span>', htmltools::htmlEscape(source_title), htmltools::htmlEscape(vapply(source_title, research_truncate, character(1), max_chars = 240L))),
+        Used = vapply(rows$used_articles, research_truncate, character(1), max_chars = 80L),
         Links = sprintf('<span class="research-source-links">%s</span>', mapply(research_links, rows$source_url, rows$pdf_url, USE.NAMES = FALSE)),
         Angles = rows$angles_count,
         check.names = FALSE
       )
     }
-    DT::datatable(display, rownames = FALSE, escape = FALSE, class = "compact stripe hover research-source-table", selection = list(mode = "single", target = "row"), options = list(pageLength = 100, autoWidth = FALSE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE), list(targets = 1, width = "6%"), list(targets = 2, width = "10%"), list(targets = 3, width = "72%"), list(targets = 4, width = "7%"), list(targets = 5, width = "5%"))))
+    DT::datatable(display, rownames = FALSE, escape = FALSE, class = "compact stripe hover research-source-table", selection = list(mode = "single", target = "row"), options = list(pageLength = 100, autoWidth = FALSE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE), list(targets = 1, width = "6%"), list(targets = 2, width = "10%"), list(targets = 3, width = "60%"), list(targets = 4, width = "12%"), list(targets = 5, width = "7%"), list(targets = 6, width = "5%"))))
   })
 
   output$research_unranked_sources_table <- DT::renderDT({
     rows <- research_unranked_sources()
     display <- if (nrow(rows) == 0) {
-      data.frame(research_source_id = integer(), Status = character(), Title = character(), `Main idea` = character(), Links = character(), Angles = integer(), check.names = FALSE)
+      data.frame(research_source_id = integer(), Status = character(), Title = character(), `Main idea` = character(), Used = character(), Links = character(), Angles = integer(), check.names = FALSE)
     } else {
       source_title <- vapply(rows$source_title, research_input_default, character(1), default = "")
       data.frame(
@@ -11563,12 +11590,13 @@ server <- function(input, output, session) {
         Status = rows$status,
         Title = sprintf('<span class="research-source-title" title="%s">%s</span>', htmltools::htmlEscape(source_title), htmltools::htmlEscape(vapply(source_title, research_truncate, character(1), max_chars = 220L))),
         `Main idea` = vapply(rows$main_idea, research_truncate, character(1), max_chars = 120L),
+        Used = vapply(rows$used_articles, research_truncate, character(1), max_chars = 70L),
         Links = sprintf('<span class="research-source-links">%s</span>', mapply(research_links, rows$source_url, rows$pdf_url, USE.NAMES = FALSE)),
         Angles = rows$angles_count,
         check.names = FALSE
       )
     }
-    DT::datatable(display, rownames = FALSE, escape = FALSE, class = "compact stripe hover research-source-table", selection = list(mode = "single", target = "row"), options = list(pageLength = 100, autoWidth = FALSE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE), list(targets = 1, width = "10%"), list(targets = 2, width = "55%"), list(targets = 3, width = "25%"), list(targets = 4, width = "6%"), list(targets = 5, width = "4%"))))
+    DT::datatable(display, rownames = FALSE, escape = FALSE, class = "compact stripe hover research-source-table", selection = list(mode = "single", target = "row"), options = list(pageLength = 100, autoWidth = FALSE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE), list(targets = 1, width = "10%"), list(targets = 2, width = "45%"), list(targets = 3, width = "23%"), list(targets = 4, width = "12%"), list(targets = 5, width = "6%"), list(targets = 6, width = "4%"))))
   })
 
   output$research_selected_source_summary <- renderUI({
@@ -11581,7 +11609,8 @@ server <- function(input, output, session) {
       h3(row$source_title[[1]]),
       div(class = "research-source-links", HTML(research_links(row$source_url[[1]], row$pdf_url[[1]]))),
       div(class = "lab-status-copy", if (nzchar(main_idea)) main_idea else "No main idea saved yet."),
-      div(class = "lab-status-copy", sprintf("Status: %s · %s", row$status[[1]], rank_label))
+      div(class = "lab-status-copy", sprintf("Status: %s · %s%s", row$status[[1]], rank_label, if (!is.na(row$finished_at[[1]]) && nzchar(row$finished_at[[1]])) paste0(" · Finished ", row$finished_at[[1]]) else "")),
+      if (!is.na(row$used_articles[[1]]) && nzchar(row$used_articles[[1]])) div(class = "lab-status-copy", strong("Used for: "), row$used_articles[[1]]) else NULL
     )
   })
 
@@ -11591,6 +11620,9 @@ server <- function(input, output, session) {
     tagList(
       div(class = "lab-status-copy", "Lower angle sort number appears higher."),
       DT::DTOutput("research_angles_table"),
+      h3("Finish source"),
+      div(class = "lab-field", textAreaInput("research_used_articles", "Article(s) written from this source", value = row$used_articles[[1]] %||% "", width = "100%", height = "70px", placeholder = "One title or URL per line")),
+      div(class = "lab-actions", actionButton("research_mark_finished", "Mark selected source finished", class = "lab-secondary")),
       h3("Create angle"),
       div(class = "lab-grid", div(class = "lab-field", textInput("research_new_angle_title", "Angle title", width = "100%")), div(class = "lab-field", numericInput("research_new_angle_sort", "Sort order", value = NULL, width = "100%")), div(class = "lab-field", textInput("research_new_angle_status", "Status", value = "idea", width = "100%"))),
       div(class = "lab-field", textAreaInput("research_new_angle_main_idea", "Angle main idea", width = "100%", height = "90px")),
@@ -11613,6 +11645,7 @@ server <- function(input, output, session) {
       div(class = "lab-grid", div(class = "lab-field", textInput("research_edit_source_title", "Source title", value = row$source_title[[1]], width = "100%")), div(class = "lab-field", textInput("research_edit_source_url", "Source URL", value = row$source_url[[1]] %||% "", width = "100%")), div(class = "lab-field", textInput("research_edit_pdf_url", "PDF URL", value = row$pdf_url[[1]] %||% "", width = "100%")), div(class = "lab-field", numericInput("research_edit_source_sort", "Sort order", value = research_numeric_default(row$manual_sort_order[[1]]), width = "100%")), div(class = "lab-field", textInput("research_edit_source_status", "Status", value = row$status[[1]], width = "100%"))),
       div(class = "lab-field", textAreaInput("research_edit_source_main", "Main idea", value = row$main_idea[[1]] %||% "", width = "100%", height = "90px")),
       div(class = "lab-field", textAreaInput("research_edit_source_abstract", "Abstract", value = row$abstract[[1]] %||% "", width = "100%", height = "90px")),
+      div(class = "lab-field", textAreaInput("research_edit_source_used_articles", "Article(s) written from this source", value = row$used_articles[[1]] %||% "", width = "100%", height = "70px")),
       div(class = "lab-field", textAreaInput("research_edit_source_notes", "Notes", value = row$notes[[1]] %||% "", width = "100%", height = "80px")),
       div(class = "lab-actions", actionButton("research_save_source", "Save selected source", class = "lab-primary"), actionButton("research_refresh_selected_source", "Refresh", class = "lab-secondary"))
     )

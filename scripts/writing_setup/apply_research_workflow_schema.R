@@ -120,6 +120,8 @@ invisible(dbWithTransaction(connection, {
       source_name TEXT,
       manual_sort_order INTEGER,
       status TEXT NOT NULL DEFAULT 'new',
+      used_articles TEXT,
+      finished_at TEXT,
       notes TEXT,
       imported_from_table TEXT,
       imported_from_id TEXT
@@ -198,6 +200,8 @@ invisible(dbWithTransaction(connection, {
     source_name = "TEXT",
     manual_sort_order = "INTEGER",
     status = "TEXT NOT NULL DEFAULT 'new'",
+    used_articles = "TEXT",
+    finished_at = "TEXT",
     notes = "TEXT",
     imported_from_table = "TEXT",
     imported_from_id = "TEXT"
