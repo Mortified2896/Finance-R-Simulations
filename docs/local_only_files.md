@@ -5,6 +5,7 @@ This repo intentionally ignores generated data and runtime artifacts so Git stay
 Ignored local-only categories include:
 
 - `.local_gitignored/` for scratch files and temporary diagnostics.
+- `.opencode/vendor/` for local-only assistant skill/vendor installs.
 - `.env`, logs, `.DS_Store`, and other machine-local files.
 - SQLite databases and backups under `data/db/`.
 - Browser profiles and raw capture snapshots under `data/`.

@@ -4,6 +4,8 @@ This repository mixes finance/article-writing experiments with a local Medium da
 
 Most durable work lives in source code, docs, launchers, and curated article notes. Runtime data is intentionally local-only and ignored by Git.
 
+The root Node package is marked `private` because these scripts are local workflow helpers and are not intended for npm publication.
+
 ## Project Map
 
 - `R/`: finance simulation code and a separate Node package used by older Playwright collection helpers.
@@ -58,3 +60,7 @@ Generated data, SQLite files, browser profiles, queues, raw API outputs, downloa
 - [Local-only files](docs/local_only_files.md)
 - [Medium Analysis V2](docs/medium_analysis_v2.md)
 - [Manual tools index](01_manual_tools/manual_tools_index.md)
+
+## License
+
+No root license is currently declared. Reuse rights are not granted unless a license is added later.
