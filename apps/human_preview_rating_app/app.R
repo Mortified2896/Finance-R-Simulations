@@ -16,6 +16,7 @@ library(jsonlite)
 library(DT)
 
 source("R/text_helpers.R", local = TRUE)
+source("R/input_helpers.R", local = TRUE)
 source("R/file_helpers.R", local = TRUE)
 source("R/app_config.R", local = TRUE)
 source("R/db_helpers.R", local = TRUE)
@@ -1220,32 +1221,6 @@ research_ranked_source_sort_sql <- "s.manual_sort_order ASC, s.updated_at DESC"
 research_unranked_source_sort_sql <- "s.updated_at DESC"
 research_angle_sort_sql <- "CASE WHEN a.manual_sort_order IS NULL THEN 1 ELSE 0 END, a.manual_sort_order ASC, a.updated_at DESC"
 
-research_input_value <- function(value) {
-  cleaned <- clean_text(value)
-  if (length(cleaned) == 0 || is.na(cleaned[[1]])) NA_character_ else cleaned[[1]]
-}
-
-research_multiline_value <- function(value) {
-  cleaned <- clean_multiline_text(value)
-  if (length(cleaned) == 0 || is.na(cleaned[[1]])) NA_character_ else cleaned[[1]]
-}
-
-research_input_default <- function(value, default) {
-  cleaned <- research_input_value(value)
-  if (is.na(cleaned)) default else cleaned
-}
-
-research_input_integer <- function(value) {
-  cleaned <- research_input_value(value)
-  number <- suppressWarnings(as.integer(cleaned))
-  if (is.na(number)) NA_integer_ else number
-}
-
-research_numeric_default <- function(value) {
-  number <- suppressWarnings(as.integer(value))
-  if (length(number) == 0 || is.na(number[[1]])) NULL else number[[1]]
-}
-
 load_research_sources <- function(con, status = "__all__", ranked = NULL) {
   if (!dbExistsTable(con, "research_sources")) return(data.frame())
   status_value <- research_input_value(status)
@@ -1755,16 +1730,6 @@ stub_title_candidates <- function(prompt, batch_size, seed_topic = NA_character_
     stringsAsFactors = FALSE,
     check.names = FALSE
   )
-}
-
-article_lab_input_string <- function(x) {
-  value <- clean_text(x)
-  if (length(value) == 0 || is.na(value[[1]])) NULL else value[[1]]
-}
-
-article_lab_input_multiline <- function(x) {
-  value <- clean_multiline_text(x)
-  if (length(value) == 0 || is.na(value[[1]])) NULL else value[[1]]
 }
 
 article_lab_has_api_key <- function() {
