@@ -25,6 +25,7 @@ source("R/status_helpers.R", local = TRUE)
 source("R/workflow_helpers.R", local = TRUE)
 source("R/scoring_helpers.R", local = TRUE)
 source("R/title_subtitle_helpers.R", local = TRUE)
+source("R/id_helpers.R", local = TRUE)
 
 ensure_rating_schema <- function(con) {
   dbExecute(con, "
@@ -1113,35 +1114,6 @@ ensure_research_workflow_schema <- function(con) {
   dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_research_source_assets_file_sha256 ON research_source_assets (file_sha256)")
 }
 
-article_lab_batch_id <- function() {
-  paste0("alb_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
-}
-
-article_lab_candidate_id <- function(batch_id, index) {
-  paste0("alc_", batch_id, "_", sprintf("%02d", as.integer(index)))
-}
-
-article_lab_outline_id <- function(thumbnail_id) {
-  paste0("alo_", gsub("[^A-Za-z0-9]+", "_", thumbnail_id), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
-}
-
-article_lab_full_text_draft_id <- function(outline_id) {
-  paste0("alf_", gsub("[^A-Za-z0-9]+", "_", outline_id %||% "outline"), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
-}
-
-article_lab_full_text_revision_id <- function(full_text_draft_id) {
-  paste0("alfr_", gsub("[^A-Za-z0-9]+", "_", full_text_draft_id %||% "draft"), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
-}
-
-article_lab_publish_settings_id <- function(full_text_draft_id) {
-  paste0("alps_", gsub("[^A-Za-z0-9]+", "_", full_text_draft_id %||% "draft"))
-}
-
-article_lab_publication_id <- function(publication_name) {
-  key <- tolower(gsub("[^A-Za-z0-9]+", "_", article_lab_input_string(publication_name) %||% "publication"))
-  paste0("alpub_", gsub("(^_+|_+$)", "", key), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(99999L, 1))
-}
-
 research_workflow_sort_sql <- "CASE WHEN manual_sort_order IS NULL THEN 1 ELSE 0 END, manual_sort_order ASC, updated_at DESC"
 research_source_sort_sql <- "CASE WHEN s.manual_sort_order IS NULL THEN 1 ELSE 0 END, s.manual_sort_order ASC, s.updated_at DESC"
 research_ranked_source_sort_sql <- "s.manual_sort_order ASC, s.updated_at DESC"
@@ -1850,10 +1822,6 @@ generate_title_candidates <- function(con, prompt, batch_size, seed_topic = NA_c
   })
 }
 
-article_lab_score_id <- function(candidate_id) {
-  paste0("als_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", gsub("[^A-Za-z0-9]+", "_", candidate_id))
-}
-
 article_lab_score_system_prompt <- paste(
   "You score the reader-facing pre-click appeal of Medium finance titles.",
   "Use only the supplied title. Do not infer or use claps, responses, rank, age, publication performance, or observation history.",
@@ -2006,19 +1974,6 @@ article_lab_score_api_request <- function(candidates, model = NA_character_, pro
   )
 }
 
-article_lab_subtitle_id <- function(candidate_id, index = 1L) {
-  paste0(
-    "alsub_",
-    format(Sys.time(), "%Y%m%d_%H%M%S"),
-    "_",
-    gsub("[^A-Za-z0-9]+", "_", candidate_id),
-    "_",
-    sprintf("%02d", suppressWarnings(as.integer(index)) %||% 1L),
-    "_",
-    sample.int(99999L, 1)
-  )
-}
-
 article_lab_manual_subtitle_choice_map <- function(target_rows, pending_rows) {
   target_rows <- if (is.null(target_rows)) data.frame() else target_rows
   pending_rows <- if (is.null(pending_rows)) data.frame() else pending_rows
@@ -2056,19 +2011,6 @@ article_lab_manual_subtitle_choice_map <- function(target_rows, pending_rows) {
   choices <- as.list(rows$candidate_id)
   names(choices) <- labels
   choices
-}
-
-article_lab_thumbnail_id <- function(subtitle_id, index = 1L) {
-  paste0(
-    "alth_",
-    format(Sys.time(), "%Y%m%d_%H%M%S"),
-    "_",
-    gsub("[^A-Za-z0-9]+", "_", subtitle_id),
-    "_",
-    sprintf("%02d", suppressWarnings(as.integer(index)) %||% 1L),
-    "_",
-    sample.int(99999L, 1)
-  )
 }
 
 article_lab_xml_escape <- function(text) {
