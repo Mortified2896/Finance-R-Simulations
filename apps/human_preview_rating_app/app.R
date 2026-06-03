@@ -20,6 +20,8 @@ source("R/file_helpers.R", local = TRUE)
 source("R/app_config.R", local = TRUE)
 source("R/db_helpers.R", local = TRUE)
 source("R/ui_helpers.R", local = TRUE)
+source("R/status_helpers.R", local = TRUE)
+source("R/workflow_helpers.R", local = TRUE)
 
 ensure_rating_schema <- function(con) {
   dbExecute(con, "
@@ -483,45 +485,6 @@ article_lab_title_good_chars <- 60L
 article_lab_title_long_allowed_chars <- 90L
 article_lab_subtitle_max_chars <- 90L
 article_lab_default_thumbnail_variants <- 3L
-article_lab_candidate_status_values <- c(
-  "generated",
-  "disqualified",
-  "ready_for_api_scoring",
-  "api_pending",
-  "api_scored",
-  "approved_for_subtitle",
-  "ready_for_thumbnail",
-  "ready_for_outline",
-  "ready_for_draft",
-  "ready_for_review_publish",
-  "archived",
-  "rejected"
-)
-article_lab_candidate_status_labels <- c(
-  generated = "New",
-  disqualified = "Disqualified",
-  ready_for_api_scoring = "API queue",
-  api_pending = "API scoring",
-  api_scored = "API scored",
-  approved_for_subtitle = "Approved",
-  ready_for_thumbnail = "Ready for thumbnail",
-  ready_for_outline = "Ready for outline",
-  ready_for_draft = "Ready for draft",
-  ready_for_review_publish = "Ready for review",
-  archived = "Archived",
-  rejected = "Rejected",
-  draft = "Draft"
-)
-article_lab_subtitle_status_labels <- c(
-  generated = "Generated",
-  approved = "Approved",
-  rejected = "Rejected"
-)
-article_lab_thumbnail_status_labels <- c(
-  generated = "Generated",
-  approved = "Approved",
-  rejected = "Rejected"
-)
 article_lab_publish_target_choices <- c(
   "Publish on my own Medium profile",
   "Submit to Medium publication",
@@ -533,99 +496,6 @@ article_lab_monetization_choices <- c(
   "Member-only / monetized",
   "Free article",
   "Undecided"
-)
-article_lab_publish_status_values <- c(
-  "ready_for_review_publish",
-  "ready_to_publish",
-  "submitted",
-  "published",
-  "needs_changes",
-  "rejected",
-  "archived"
-)
-article_lab_publish_status_labels <- c(
-  ready_for_review_publish = "Ready for Review & Publish",
-  ready_to_publish = "Ready to publish",
-  submitted = "Submitted",
-  published = "Published",
-  needs_changes = "Needs changes",
-  rejected = "Rejected",
-  archived = "Archived"
-)
-article_lab_workflow_sections <- c(
-  "research_inbox",
-  "summary",
-  "generate",
-  "api_scoring",
-  "subtitle_generation",
-  "thumbnails",
-  "outline",
-  "full_text",
-  "review_publish"
-)
-article_lab_page_meta <- list(
-  home = list(
-    nav_title = "Home",
-    nav_subtitle = "Current rating workflow"
-  ),
-  research_inbox = list(
-    nav_title = "Research Inbox",
-    nav_subtitle = "Track papers and article angles",
-    title = "Article Lab - Research Inbox",
-    subtitle = "Track papers and article angles."
-  ),
-  summary = list(
-    nav_title = "Summary",
-    nav_subtitle = "Check paper summary",
-    title = "Article Lab - Summary",
-    subtitle = "Check paper summary."
-  ),
-  generate = list(
-    nav_title = "Generate",
-    nav_subtitle = "Generate & triage titles",
-    title = "Article Lab \u2013 Generate",
-    subtitle = "Generate title candidates, disqualify bad-fit ideas, and move selected titles to the API queue."
-  ),
-  api_scoring = list(
-    nav_title = "API Scoring",
-    nav_subtitle = "Score with API & approve",
-    title = "Article Lab \u2013 API Scoring",
-    subtitle = "Score queued titles with the API and manually approve selected titles for subtitle generation."
-  ),
-  subtitle_generation = list(
-    nav_title = "Subtitle Generation",
-    nav_subtitle = "Generate subtitles",
-    title = "Article Lab \u2013 Subtitle Generation",
-    subtitle = "Generate subtitle candidates for approved titles."
-  ),
-  thumbnails = list(
-    nav_title = "Thumbnails",
-    nav_subtitle = "Generate thumbnails",
-    title = "Article Lab \u2013 Thumbnails",
-    subtitle = "Create and evaluate thumbnail candidates."
-  ),
-  outline = list(
-    nav_title = "Outline",
-    nav_subtitle = "Create article outline",
-    title = "Article Lab \u2013 Outline",
-    subtitle = "Build the article structure before drafting."
-  ),
-  full_text = list(
-    nav_title = "Full Text",
-    nav_subtitle = "Write full article",
-    title = "Article Lab \u2013 Full Text",
-    subtitle = "Draft the full article."
-  ),
-  review_publish = list(
-    nav_title = "Review & Publish",
-    nav_subtitle = "Prepare publishing",
-    title = "Article Lab \u2013 Review & Publish",
-    subtitle = "Set publishing metadata, export/copy the approved draft, and track publishing status."
-  ),
-  settings = list(
-    nav_title = "Settings",
-    nav_subtitle = "App settings"
-  )
 )
 article_lab_score_fields <- c(
   "clarity",
@@ -693,76 +563,6 @@ article_lab_combined_title_score <- function(curiosity, emotional_pull, medium_c
     trust_penalty -
     length_penalty
   round(pmax(0, pmin(100, raw_score)), 1)
-}
-
-article_lab_normalize_candidate_status <- function(status, ready_for_human_rating = 0, promoted = 0, archived = 0) {
-  status_value <- clean_text(status)
-  status_value <- if (length(status_value) == 0 || is.na(status_value[[1]])) NA_character_ else status_value[[1]]
-  ready_value <- suppressWarnings(as.integer(ready_for_human_rating))
-  promoted_value <- suppressWarnings(as.integer(promoted))
-  archived_value <- suppressWarnings(as.integer(archived))
-
-  if (!is.na(archived_value) && archived_value == 1L) return("archived")
-  if (!is.na(promoted_value) && promoted_value == 1L) return("approved_for_subtitle")
-  if (!is.na(status_value) && identical(status_value, "draft")) return("draft")
-  if (!is.na(status_value) && status_value %in% c("promoted", "approved", "approved_for_subtitle")) return("approved_for_subtitle")
-  if (!is.na(status_value) && identical(status_value, "ready_for_human_rating")) return("api_scored")
-  if (!is.na(ready_value) && ready_value == 1L) return("api_scored")
-  if (!is.na(status_value) && status_value %in% article_lab_candidate_status_values) return(status_value)
-  "generated"
-}
-
-article_lab_status_label <- function(status) {
-  status <- article_lab_input_string(status)
-  if (is.null(status)) return("Unknown")
-  if (!(status %in% names(article_lab_candidate_status_labels))) return(status)
-  label <- article_lab_candidate_status_labels[[status]]
-  if (is.null(label) || is.na(label) || !nzchar(label)) status else label
-}
-
-article_lab_subtitle_status_label <- function(status) {
-  status <- article_lab_input_string(status)
-  if (is.null(status)) return("Unknown")
-  if (!(status %in% names(article_lab_subtitle_status_labels))) return(status)
-  label <- article_lab_subtitle_status_labels[[status]]
-  if (is.null(label) || is.na(label) || !nzchar(label)) status else label
-}
-
-article_lab_thumbnail_status_label <- function(status) {
-  status <- article_lab_input_string(status)
-  if (is.null(status)) return("Unknown")
-  if (!(status %in% names(article_lab_thumbnail_status_labels))) return(status)
-  label <- article_lab_thumbnail_status_labels[[status]]
-  if (is.null(label) || is.na(label) || !nzchar(label)) status else label
-}
-
-article_lab_publish_status_label <- function(status) {
-  status <- article_lab_input_string(status)
-  if (is.null(status)) return("Unknown")
-  if (!(status %in% names(article_lab_publish_status_labels))) return(status)
-  label <- article_lab_publish_status_labels[[status]]
-  if (is.null(label) || is.na(label) || !nzchar(label)) status else label
-}
-
-article_lab_status_choices <- function(values) {
-  setNames(values, vapply(values, article_lab_status_label, character(1)))
-}
-
-article_lab_nav_meta <- function(section) {
-  meta <- article_lab_page_meta[[section]]
-  if (is.null(meta)) {
-    list(nav_title = section, nav_subtitle = "")
-  } else {
-    meta
-  }
-}
-
-article_lab_is_workflow_section <- function(section) {
-  !is.na(section) && identical(length(section), 1L) && section %in% article_lab_workflow_sections
-}
-
-article_lab_row_input_id <- function(prefix, candidate_id) {
-  paste0(prefix, "_", gsub("[^A-Za-z0-9]+", "_", candidate_id))
 }
 
 article_lab_normalize_candidate_rows <- function(rows) {
