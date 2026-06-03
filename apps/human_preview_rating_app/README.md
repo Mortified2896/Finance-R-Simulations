@@ -10,6 +10,8 @@ Extracted helpers:
 - `R/db_helpers.R`: database connection and low-level add-column helper.
 - `R/ui_helpers.R`: small reusable Article Lab UI wrappers such as section cards, empty states, prompt blocks, buttons, and table footers.
 - `R/ui_assets.R`: CSS and JavaScript assets for the local Shiny UI.
+- `R/schema_rating.R`, `R/schema_article_lab.R`, and `R/schema_research.R`: database schema setup helpers for rating, Article Lab, and research workflow tables.
+- `R/schema_startup.R`: app database initialization orchestration that runs schema setup, recovery, and dimension queue preparation once per process.
 - `R/table_helpers.R`: Article Lab table/card rendering helpers extracted from `app.R`.
 
 Future rule: verify this behavior-preserving extraction before moving tab modules, reactive state, observers, or doing UI/design/workflow changes. Do not rename persisted IDs or status values during cleanup passes.

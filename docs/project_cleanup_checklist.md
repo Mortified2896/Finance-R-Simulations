@@ -111,6 +111,7 @@ After each cleanup batch:
 - [x] Re-run relevant checks for the initial documentation/hygiene cleanup batch.
 - [x] Re-run relevant checks for the manual launcher and Article Lab table-helper extraction batch.
 - [x] Re-run relevant checks for the README/checklist link and stale-workflow audit documentation batch.
+- [x] Re-run relevant checks for the Article Lab schema startup extraction batch.
 - [x] Review `git status --short` for accidental local/generated files.
 - [ ] Commit small, focused changes only after validation passes.
 
@@ -122,3 +123,4 @@ After each cleanup batch:
 - 2026-06-03: Kept `scripts/writing_api/draft_section.mjs` and `scripts/writing_api/critique_draft.mjs` as intentionally reserved placeholders after confirming they are not referenced by tracked source/docs beyond inventory documentation.
 - 2026-06-03: Extracted Article Lab table/card UI helpers from `apps/human_preview_rating_app/app.R` into `apps/human_preview_rating_app/R/table_helpers.R` without SQL/schema/prompt/status changes. Verified `app.R` sources successfully, `zsh -n` passes for manual launchers/scripts, tracked-file hygiene still reports zero suspicious matches, and `test:tag-bookmarklet`, `test:search-tags`, `test:tag-watcher`, and `validate:medium-v2` all pass. Medium V2 validation still reports the known `Write` and `Search` publication warnings.
 - 2026-06-03: Linked `docs/project_cleanup_checklist.md` from the root README and added `docs/stale_workflow_audit.md` to summarize the TODO/FIXME/placeholder audit. No stale workflow was deleted; remaining matches are legitimate UI/SQL placeholder language, active cleanup planning, or intentionally reserved future-work placeholders. Re-ran tracked-file hygiene checks, `git diff --check`, `test:tag-bookmarklet`, `test:search-tags`, `test:tag-watcher`, and `validate:medium-v2`; all completed successfully. Medium V2 validation still reports the known `Write` and `Search` publication warnings.
+- 2026-06-03: Extracted Article Lab database startup orchestration from `app.R` into `apps/human_preview_rating_app/R/schema_startup.R`. This was an exact move of `initialize_app_database()` and kept schema SQL, migrations, defaults, indexes, statuses, prompts, and API behavior unchanged. Verified `app.R` sources successfully, tracked-file hygiene still reports zero suspicious matches, and the standard JS/Medium V2 validation gate passes with only the known `Write` and `Search` publication warnings.

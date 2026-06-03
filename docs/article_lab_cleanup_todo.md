@@ -5,7 +5,7 @@ Project-wide cleanup is tracked in [`project_cleanup_checklist.md`](project_clea
 ## Current status
 
 - `app.R` has been partially modularized through behavior-preserving helper extraction.
-- `app.R` still remains large because schema setup, DB reads/writes, API orchestration, UI, server logic, observers, and workflow stages are still inside it.
+- `app.R` still remains large because DB reads/writes, API orchestration, UI, server logic, observers, and workflow stages are still inside it.
 - The goal is not to fully split Shiny tabs yet. The workflow is still evolving, so refactor by layer first.
 
 ## Completed cleanup passes
@@ -17,23 +17,18 @@ Project-wide cleanup is tracked in [`project_cleanup_checklist.md`](project_clea
 - Title/subtitle helper extraction.
 - ID helper extraction.
 - Display/table/card helper extraction into `R/table_helpers.R`.
+- Schema startup orchestration extraction into `R/schema_startup.R`.
 - Startup/smoke validation with disposable DB.
 
 ## Next cleanup candidates
 
-1. Schema setup extraction
-
-- Exact move only.
-- Possible files: `R/schema_rating.R`, `R/schema_article_lab.R`, `R/schema_research.R`.
-- No SQL, migration, default, index, or status changes.
-
-2. API boundary documentation / wrapper cleanup
+1. API boundary documentation / wrapper cleanup
 
 - Document R-to-Node/Python request/response boundaries.
 - Move API wrapper functions only if behavior-preserving.
 - No prompt, payload, timeout, stdout/stderr, fallback, or model default changes.
 
-4. Small helper tests
+2. Small helper tests
 
 - Status labels.
 - Input normalization.
