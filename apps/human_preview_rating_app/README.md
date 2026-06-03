@@ -8,6 +8,8 @@ Extracted helpers:
 - `R/text_helpers.R`: text cleanup, row value fallback helpers, UTC timestamp formatting, and duration estimate formatting.
 - `R/file_helpers.R`: project root discovery, absolute path handling, image URL normalization, SHA-256 helper, debug logging, and thumbnail-display helpers.
 - `R/db_helpers.R`: database connection and low-level add-column helper.
-- `R/ui_helpers.R`: small reusable Article Lab UI wrappers such as badges, section cards, empty states, prompt blocks, and buttons.
+- `R/ui_helpers.R`: small reusable Article Lab UI wrappers such as section cards, empty states, prompt blocks, buttons, and table footers.
+- `R/ui_assets.R`: CSS and JavaScript assets for the local Shiny UI.
+- `R/table_helpers.R`: Article Lab table/card rendering helpers extracted from `app.R`.
 
 Future rule: verify this behavior-preserving extraction before moving tab modules, reactive state, observers, or doing UI/design/workflow changes. Do not rename persisted IDs or status values during cleanup passes.
