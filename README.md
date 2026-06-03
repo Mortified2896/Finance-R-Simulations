@@ -57,6 +57,8 @@ Generated data, SQLite files, browser profiles, queues, raw API outputs, downloa
 ## More Detail
 
 - [Agent instructions](AGENTS.md)
+- [Project cleanup checklist](docs/project_cleanup_checklist.md)
+- [Stale workflow / placeholder audit](docs/stale_workflow_audit.md)
 - [Local-only files](docs/local_only_files.md)
 - [Medium Analysis V2](docs/medium_analysis_v2.md)
 - [Manual tools index](01_manual_tools/manual_tools_index.md)

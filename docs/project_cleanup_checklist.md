@@ -54,7 +54,7 @@ Current preflight result: no bad tracked local/generated files were found. `.env
 - [x] Keep `docs/article_lab_cleanup_todo.md` as the Article Lab/Shiny-specific cleanup list.
 - [x] Update `docs/script_inventory.md` after any script add, rename, move, or removal.
 - [x] Update `01_manual_tools/manual_tools_index.md` after any manual tool move.
-- [ ] Consider linking this checklist from `README.md` once it becomes the active cleanup source of truth.
+- [x] Consider linking this checklist from `README.md` once it becomes the active cleanup source of truth.
 
 ## 4. Source / launcher / generated-output separation
 
@@ -70,8 +70,10 @@ Current preflight result: no bad tracked local/generated files were found. `.env
   - [x] `scripts/writing_api/draft_section.mjs`
   - [x] `scripts/writing_api/critique_draft.mjs`
 - [x] Decide for each placeholder whether to keep, remove, document as intentionally reserved, or implement later.
-- [ ] Search for stale TODO/FIXME/placeholder mentions in tracked source/docs.
-- [ ] Move legacy-but-useful workflows into clearly documented legacy sections rather than deleting them casually.
+- [x] Search for stale TODO/FIXME/placeholder mentions in tracked source/docs.
+- [x] Move legacy-but-useful workflows into clearly documented legacy sections rather than deleting them casually.
+
+Audit summary: see [`stale_workflow_audit.md`](stale_workflow_audit.md). No deletion-only cleanup was taken from the audit; remaining matches are legitimate UI/SQL placeholder language, active cleanup docs, or intentionally reserved future-work placeholders.
 
 ## 6. Article Lab / Shiny app cleanup
 
@@ -108,6 +110,7 @@ After each cleanup batch:
 
 - [x] Re-run relevant checks for the initial documentation/hygiene cleanup batch.
 - [x] Re-run relevant checks for the manual launcher and Article Lab table-helper extraction batch.
+- [x] Re-run relevant checks for the README/checklist link and stale-workflow audit documentation batch.
 - [x] Review `git status --short` for accidental local/generated files.
 - [ ] Commit small, focused changes only after validation passes.
 
@@ -118,3 +121,4 @@ After each cleanup batch:
 - 2026-06-03: Moved three long `.command` launcher implementations into reusable `scripts/manual_tools/*.zsh` scripts and kept the `.command` files as thin macOS double-click wrappers. Updated `docs/script_inventory.md` and `01_manual_tools/manual_tools_index.md` for the move.
 - 2026-06-03: Kept `scripts/writing_api/draft_section.mjs` and `scripts/writing_api/critique_draft.mjs` as intentionally reserved placeholders after confirming they are not referenced by tracked source/docs beyond inventory documentation.
 - 2026-06-03: Extracted Article Lab table/card UI helpers from `apps/human_preview_rating_app/app.R` into `apps/human_preview_rating_app/R/table_helpers.R` without SQL/schema/prompt/status changes. Verified `app.R` sources successfully, `zsh -n` passes for manual launchers/scripts, tracked-file hygiene still reports zero suspicious matches, and `test:tag-bookmarklet`, `test:search-tags`, `test:tag-watcher`, and `validate:medium-v2` all pass. Medium V2 validation still reports the known `Write` and `Search` publication warnings.
+- 2026-06-03: Linked `docs/project_cleanup_checklist.md` from the root README and added `docs/stale_workflow_audit.md` to summarize the TODO/FIXME/placeholder audit. No stale workflow was deleted; remaining matches are legitimate UI/SQL placeholder language, active cleanup planning, or intentionally reserved future-work placeholders. Re-ran tracked-file hygiene checks, `git diff --check`, `test:tag-bookmarklet`, `test:search-tags`, `test:tag-watcher`, and `validate:medium-v2`; all completed successfully. Medium V2 validation still reports the known `Write` and `Search` publication warnings.
