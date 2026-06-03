@@ -2,6 +2,14 @@
 
 Planning status for the Finance R Simulations Article Lab / Shiny app cleanup. This document is intentionally investigation-only: no schema, UI, API, status, ID, or behavior changes are proposed as part of this planning pass.
 
+## Completed Cleanup Passes
+
+- First helper extraction into focused files.
+- Status/workflow helper extraction.
+- Input/coercion helper extraction.
+- Scoring helper extraction.
+- Title/subtitle normalization helper extraction.
+
 ## Current Architecture Status
 
 ### Already Extracted Into `apps/human_preview_rating_app/R/`
@@ -364,26 +372,24 @@ Planning status for the Finance R Simulations Article Lab / Shiny app cleanup. T
 
 ## Next Recommended Implementation Pass
 
-Extract pure status/workflow/display helpers from `app.R` into focused files without moving observers, reactive values, render blocks, tab logic, DB schema, or API functions.
+Extract persisted ID helpers from `app.R` into a focused file without renaming IDs or changing ID formats.
 
 Recommended files:
 
-- `R/status_helpers.R`: status values, status label maps, `article_lab_normalize_candidate_status()`, `article_lab_status_label()`, `article_lab_subtitle_status_label()`, `article_lab_thumbnail_status_label()`, `article_lab_publish_status_label()`, and `article_lab_status_choices()`.
-- `R/workflow_helpers.R`: `article_lab_workflow_sections`, `article_lab_page_meta`, `article_lab_nav_meta()`, `article_lab_is_workflow_section()`, and possibly `article_lab_row_input_id()` if source order and dependency review stay simple.
+- `R/id_helpers.R`: pure ID constructors only, preserving existing prefixes, separators, and sequence formatting.
 
 Why this pass:
 
-- It is low-risk and behavior-preserving.
-- It removes central constants/helpers from `app.R` without touching persisted data or workflow logic.
-- It supports later UI polish because labels and workflow metadata become easier to audit.
-- It creates natural seams for later helper tests.
+- ID helpers are persisted-contract helpers, so isolating them makes the contract easier to review.
+- The pass should be behavior-preserving and limited to pure value-in/value-out constructors.
+- It should not touch schema, DB readers/writers, statuses, or API payloads.
 
 Suggested validation for that pass:
 
 - Source helper files in the same order as `app.R` startup.
-- Run representative status/label and workflow metadata calls.
+- Run representative ID constructor calls and compare exact strings before/after extraction.
 - Run `git diff --check` and `git status --short`.
-- Optionally launch the app later for a smoke check, but no full app launch is required for the first helper-only extraction.
+- Use a disposable SQLite copy for any app startup smoke check.
 
 ## Do Not Do Yet
 
