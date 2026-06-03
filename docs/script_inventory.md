@@ -8,10 +8,12 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `collect_medium_public_stats.R`: collect public Medium stats from stored/imported article metadata.
 - `collect_medium_public_stats_pw.js`: Playwright-based public stats collection helper.
 - `watch_medium_tag_page_pw.cjs`: visible/attached browser watcher for Medium tag, search, publication, and article pages.
+- `manual_tools/start_medium_tag_page_watcher_attached_chrome.zsh`: macOS/manual attached-Chrome watcher workflow; the matching `.command` launcher is only a thin wrapper.
 - `medium_tag_snapshot_watcher_helpers.mjs`: helper functions used by the tag watcher and tests.
 - `medium_in_app_tag_watcher_runtime.mjs`: runtime for the in-app watcher snippet.
 - `import_medium_manual_stats.R`: interactive/manual Medium stats importer.
 - `import_medium_path_router.R`: routes dropped JSON/HTML inputs to the correct importer.
+- `manual_tools/start_medium_own_stats_importer.zsh`: interactive macOS/manual file-drop loop for `import_medium_path_router.R`; the matching `.command` launcher is only a thin wrapper.
 - `import_medium_own_stats_from_html.R`: imports saved Medium stats HTML.
 - `import_medium_tag_page_bookmarklet.R`: imports JSON produced by the tag-page bookmarklet.
 - `import_medium_tag_page_html.R`: imports saved/rendered Medium tag page HTML.
@@ -54,6 +56,7 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `export_medium_image_download_queue.R`: creates the thumbnail image download queue and preserves validated per-row local paths from prior runs.
 - `export_medium_body_image_download_queue.R`: creates the body image download queue.
 - `download_medium_images.py`: downloads queued Medium images with robot/crawl-delay awareness. Duplicate image hashes are allowed; when downloaded bytes match an existing file, the downloader copies that file to the current row's expected `image_file_stem` path and records duplicate metadata so local paths remain unique.
+- `manual_tools/download_missing_medium_images.zsh`: interactive macOS/manual workflow that rebuilds thumbnail/body queues and calls the downloader; the matching `.command` launcher is only a thin wrapper.
 
 ## Research Library
 
@@ -83,5 +86,4 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `writing_api/score_article_lab_titles.py`: live OpenAI title-only scoring helper for the Article Lab API score tab using the v2_2 rubric.
 - `writing_api/reroll_sentence.mjs`: article sentence/paragraph rewrite helper.
 - `writing_api/langfuse.mjs`: shared Node helper for optional Langfuse tracing around writing API calls.
-- `writing_api/draft_section.mjs`: placeholder.
-- `writing_api/critique_draft.mjs`: placeholder.
+- `writing_api/draft_section.mjs` and `writing_api/critique_draft.mjs`: intentionally reserved placeholders for future draft-stage helpers; they are not referenced by the app or launchers yet.
