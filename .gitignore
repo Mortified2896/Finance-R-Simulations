@@ -30,6 +30,7 @@ id_ed25519
 *.RDS
 
 # Generated/runtime outputs
+.pi/
 outputs/
 logs/
 cache/
