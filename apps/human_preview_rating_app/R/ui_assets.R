@@ -908,7 +908,7 @@ article_lab_css <- function() {
     "      }",
     "      .lab-publish-workspace {",
     "        display: grid;",
-    "        grid-template-columns: minmax(320px, .85fr) minmax(420px, 1.15fr);",
+    "        grid-template-columns: minmax(0, 1fr);",
     "        gap: 18px;",
     "        align-items: start;",
     "      }",
