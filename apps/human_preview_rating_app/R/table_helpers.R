@@ -478,6 +478,7 @@ article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, inc
         row <- packages[i, , drop = FALSE]
         outline_id <- row$outline_id[[1]]
         package_drafts <- draft_rows[draft_rows$outline_id == outline_id, , drop = FALSE]
+        primary_draft <- if (nrow(package_drafts) > 0) package_drafts[1, , drop = FALSE] else data.frame()
         div(
           class = "thumbnail-preview-card approved lab-full-text-package-card",
           `data-selection-group` = "article_lab_full_text_packages",
@@ -485,7 +486,13 @@ article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, inc
           div(
             class = "thumbnail-preview-topbar lab-full-text-choicebar",
             div(class = "lab-chip-row", article_lab_badge("ready_for_draft"), article_lab_full_text_source_badge(row, summary_contexts, include_context)),
-            checkboxInput(article_lab_row_input_id("article_lab_full_text_packages", outline_id), "Generate draft for this outline", value = FALSE)
+            div(
+              class = "lab-full-text-choice-row",
+              checkboxInput(article_lab_row_input_id("article_lab_full_text_packages", outline_id), "Generate draft for this outline", value = FALSE),
+              if (nrow(primary_draft) > 0) {
+                checkboxInput(article_lab_row_input_id("article_lab_full_text_drafts", primary_draft$full_text_draft_id[[1]]), "Select draft", value = FALSE)
+              }
+            )
           ),
           div(
             class = "thumbnail-preview-shell",
@@ -515,11 +522,20 @@ article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, inc
                 class = "lab-outline-editor",
                 `data-selection-group` = "article_lab_full_text_drafts",
                 `data-candidate-id` = draft_id,
-                div(
-                  class = "thumbnail-preview-topbar lab-full-text-choicebar",
-                  div(class = "lab-chip-row", article_lab_badge(draft$draft_status[[1]] %||% "draft"), tags$span(class = "lab-chip default", draft$source_context_mode[[1]] %||% "none"), tags$span(class = "lab-chip default", draft$draft_model[[1]] %||% "model unknown")),
-                  checkboxInput(article_lab_row_input_id("article_lab_full_text_drafts", draft_id), "Select draft", value = FALSE)
-                ),
+                if (j == 1L) {
+                  div(
+                    class = "lab-chip-row lab-full-text-draft-meta",
+                    article_lab_badge(draft$draft_status[[1]] %||% "draft"),
+                    tags$span(class = "lab-chip default", draft$source_context_mode[[1]] %||% "none"),
+                    tags$span(class = "lab-chip default", draft$draft_model[[1]] %||% "model unknown")
+                  )
+                } else {
+                  div(
+                    class = "thumbnail-preview-topbar lab-full-text-choicebar",
+                    div(class = "lab-chip-row", article_lab_badge(draft$draft_status[[1]] %||% "draft"), tags$span(class = "lab-chip default", draft$source_context_mode[[1]] %||% "none"), tags$span(class = "lab-chip default", draft$draft_model[[1]] %||% "model unknown")),
+                    div(class = "lab-full-text-choice-row", checkboxInput(article_lab_row_input_id("article_lab_full_text_drafts", draft_id), "Select draft", value = FALSE))
+                  )
+                },
                 div(
                   class = "lab-actions",
                   tags$button(type = "button", class = "btn lab-secondary", onclick = sprintf("window.articleLabCopyValueFromElement('%s', this, 'Copied draft');", draft_text_id), "Copy full article draft")
