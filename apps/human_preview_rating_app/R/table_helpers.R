@@ -479,11 +479,11 @@ article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, inc
         outline_id <- row$outline_id[[1]]
         package_drafts <- draft_rows[draft_rows$outline_id == outline_id, , drop = FALSE]
         div(
-          class = "thumbnail-preview-card approved",
+          class = "thumbnail-preview-card approved lab-full-text-package-card",
           `data-selection-group` = "article_lab_full_text_packages",
           `data-candidate-id` = outline_id,
           div(
-            class = "thumbnail-preview-topbar",
+            class = "thumbnail-preview-topbar lab-full-text-choicebar",
             div(class = "lab-chip-row", article_lab_badge("ready_for_draft"), article_lab_full_text_source_badge(row, summary_contexts, include_context)),
             checkboxInput(article_lab_row_input_id("article_lab_full_text_packages", outline_id), "Generate draft for this outline", value = FALSE)
           ),
@@ -500,7 +500,6 @@ article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, inc
               tags$img(class = "thumbnail-preview-image", src = row$thumbnail_data_uri[[1]] %||% "", alt = paste("Approved thumbnail for", row$title[[1]] %||% "untitled article"))
             )
           ),
-          div(class = "lab-status-copy", sprintf("Outline ID: %s", outline_id)),
           tags$details(
             tags$summary("Show approved outline"),
             tags$pre(class = "lab-status-copy", row$outline_text[[1]] %||% "")
@@ -517,7 +516,7 @@ article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, inc
                 `data-selection-group` = "article_lab_full_text_drafts",
                 `data-candidate-id` = draft_id,
                 div(
-                  class = "thumbnail-preview-topbar",
+                  class = "thumbnail-preview-topbar lab-full-text-choicebar",
                   div(class = "lab-chip-row", article_lab_badge(draft$draft_status[[1]] %||% "draft"), tags$span(class = "lab-chip default", draft$source_context_mode[[1]] %||% "none"), tags$span(class = "lab-chip default", draft$draft_model[[1]] %||% "model unknown")),
                   checkboxInput(article_lab_row_input_id("article_lab_full_text_drafts", draft_id), "Select draft", value = FALSE)
                 ),
