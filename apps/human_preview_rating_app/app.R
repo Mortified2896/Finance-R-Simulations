@@ -6068,7 +6068,8 @@ server <- function(input, output, session) {
             actionButton("article_lab_save_full_text_drafts", "Save draft edits", class = "lab-secondary"),
             actionButton("article_lab_approve_full_text_draft", "Approve selected draft", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_full_text_drafts');"),
             actionButton("article_lab_reject_full_text_draft", "Reject selected draft", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_full_text_drafts');"),
-            actionButton("article_lab_refresh_full_text", "Refresh", class = "lab-secondary")
+            actionButton("article_lab_refresh_full_text", "Refresh", class = "lab-secondary"),
+            class_name = "lab-actions-full-text"
           ),
           div(class = "lab-status-copy", "Generate drafts from approved outlines, edit the selected draft directly, save revisions, then approve one draft for Review & Publish."),
           uiOutput("article_lab_full_text_effective_prompt"),

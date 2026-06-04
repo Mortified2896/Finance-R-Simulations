@@ -33,9 +33,9 @@ article_lab_section_card <- function(title, description, body, count = NULL, foo
   )
 }
 
-article_lab_action_bar <- function(..., align = c("start", "split")) {
+article_lab_action_bar <- function(..., align = c("start", "split"), class_name = NULL) {
   align <- match.arg(align)
-  div(class = paste("lab-actions", paste0("lab-actions-", align)), ...)
+  div(class = paste(c("lab-actions", paste0("lab-actions-", align), class_name), collapse = " "), ...)
 }
 
 article_lab_local_notice <- function(copy) {
