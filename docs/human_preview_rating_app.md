@@ -10,6 +10,14 @@ One-score mode:
 01_manual_tools/rating/rate_medium_previews.command
 ```
 
+Experimental laptop UI design v2:
+
+```sh
+01_manual_tools/rating/rate_medium_previews_design_v2.command
+```
+
+This starts the same app and local database with `ARTICLE_LAB_UI_VERSION=v2` on port `3844`, so the stable launcher remains unchanged.
+
 Dimension pass mode:
 
 ```sh

@@ -1,4 +1,6 @@
 requested_rating_mode <- Sys.getenv("HUMAN_RATING_MODE", unset = "feed_preview_1_5")
+article_lab_ui_version <- Sys.getenv("ARTICLE_LAB_UI_VERSION", unset = "v1")
+article_lab_design_v2 <- identical(tolower(article_lab_ui_version), "v2")
 is_dimension_v1_mode <- requested_rating_mode %in% c("dimensions_v1", "human_preview_dimensions_v1")
 is_dimension_v2_mode <- requested_rating_mode %in% c("dimensions_v2", "human_preview_dimensions_v2")
 is_dimension_mode <- is_dimension_v1_mode || is_dimension_v2_mode
@@ -66,6 +68,25 @@ title_only_placeholder_thumbnail_label <- "Placeholder image\nThumbnail hidden f
 target_n_env <- Sys.getenv("HUMAN_RATING_TARGET_N", unset = "")
 default_target_n <- suppressWarnings(as.integer(target_n_env))
 if (!nzchar(target_n_env) || is.na(default_target_n) || default_target_n < 1L) default_target_n <- Inf
+
+if (!exists("find_project_root", mode = "function")) {
+  find_project_root <- function() {
+    env_root <- Sys.getenv("MEDIUM_PROJECT_ROOT", unset = "")
+    candidates <- unique(c(
+      env_root,
+      getwd(),
+      normalizePath(file.path(getwd(), ".."), mustWork = FALSE),
+      normalizePath(file.path(getwd(), "..", ".."), mustWork = FALSE)
+    ))
+    candidates <- candidates[nzchar(candidates)]
+    for (candidate in candidates) {
+      if (file.exists(file.path(candidate, "data", "db", "medium_articles.sqlite"))) {
+        return(normalizePath(candidate, mustWork = TRUE))
+      }
+    }
+    stop("Could not find project root with data/db/medium_articles.sqlite.", call. = FALSE)
+  }
+}
 
 project_root <- find_project_root()
 db_path <- Sys.getenv(

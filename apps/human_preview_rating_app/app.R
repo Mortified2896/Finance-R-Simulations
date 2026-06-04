@@ -5436,12 +5436,16 @@ ui <- fluidPage(
     tags$script(article_lab_js())
   ),
   div(
-    class = "topbar",
+    class = paste("topbar", if (article_lab_design_v2) "topbar-v2" else ""),
     div(class = "brand", div(class = "brand-mark", "M"), div("Medium Preview Rating")),
-    div(class = "top-actions", span("Focus mode"), span("Local SQLite"))
+    div(
+      class = "top-actions",
+      if (article_lab_design_v2) span(class = "v2-env-pill", "Design v2") else span("Focus mode"),
+      span("Local SQLite")
+    )
   ),
   div(
-    class = "app-shell",
+    class = paste("app-shell", if (article_lab_design_v2) "app-shell-v2" else ""),
     tags$aside(
       class = "sidebar",
       uiOutput("sidebar_nav"),
@@ -5714,9 +5718,115 @@ server <- function(input, output, session) {
         draft_rows <- article_lab_state$draft
         nrow(saved_rows) > 0 || (!is.null(draft_rows) && nrow(draft_rows) > 0)
       }
-      generate_panel <- tagList(
+      generate_prompt_card <- div(
+        class = "lab-card lab-setup-card",
+        h2("Generation prompt"),
         div(
-          class = "lab-card",
+          class = "lab-grid",
+          div(class = "lab-field", uiOutput("article_lab_prompt_selector")),
+          div(class = "lab-field", textInput("article_lab_prompt_key", "Prompt key", value = article_lab_manual_prompt_key, width = "100%"))
+        ),
+        div(
+          class = "lab-field",
+          textAreaInput(
+            "article_lab_prompt",
+            label = "Manual/default prompt",
+            value = saved_article_lab_prompt(),
+            width = "100%",
+            height = if (article_lab_design_v2) "170px" else "230px"
+          )
+        ),
+        div(class = "lab-actions", uiOutput("article_lab_prompt_save_button")),
+        div(
+          class = "lab-grid",
+          div(
+            class = "lab-field",
+            uiOutput("article_lab_research_summary_selector")
+          ),
+          div(
+            class = "lab-field",
+            numericInput("article_lab_batch_size", "Batch size", value = 12L, min = 1L, max = 25L, width = "100%")
+          ),
+          div(
+            class = "lab-field",
+            selectInput("article_lab_model", "Model", choices = article_lab_title_generation_model_choices, selected = article_lab_default_model, width = "100%")
+          ),
+          div(
+            class = "lab-field",
+            textInput("article_lab_seed_topic", "Optional seed/topic (manual mode)", value = "", width = "100%", placeholder = "Optional article idea or angle")
+          ),
+          div(
+            class = "lab-field",
+            selectInput(
+              "article_lab_inspiration_source",
+              "Optional inspiration source (manual mode)",
+              choices = c("", "manual prompt", "top performing titles", "custom"),
+              selected = "",
+              width = "100%"
+            )
+          )
+        ),
+        uiOutput("article_lab_effective_prompt"),
+        article_lab_action_bar(
+          uiOutput("article_lab_generate_button"),
+          actionButton("article_lab_save", "Save batch", class = "lab-secondary"),
+          actionButton("article_lab_clear", "Clear draft", class = "lab-secondary")
+        ),
+        div(
+          class = "lab-field",
+          textAreaInput(
+            "article_lab_manual_titles",
+            "Add title ideas manually",
+            value = "",
+            width = "100%",
+            height = if (article_lab_design_v2) "86px" else "120px",
+            placeholder = "Enter one title idea per line"
+          )
+        ),
+        article_lab_action_bar(
+          actionButton("article_lab_add_manual_titles", "Add manual titles", class = "lab-secondary")
+        ),
+        uiOutput("article_lab_notice")
+      )
+      generate_triage_card <- div(
+        class = "lab-card lab-primary-work-card",
+        div(
+          class = "lab-section-header",
+          div(
+            h3("Current batch triage"),
+            p(class = "lab-section-copy", "Select promising titles, disqualify weak ones, and move ready candidates to API scoring.")
+          ),
+          if (article_lab_design_v2) article_lab_count_badge(nrow(article_lab_generate_candidates()), "saved titles") else NULL
+        ),
+        article_lab_action_bar(
+          checkboxInput("article_lab_generate_select_all", "Select all", value = FALSE),
+          checkboxInput("article_lab_show_disqualified", "Show disqualified titles", value = FALSE),
+          article_lab_button("article_lab_save_triage", "Save triage changes", class = "lab-secondary", disabled = !generate_has_rows),
+          article_lab_button("article_lab_move_to_api_queue", "Move selected to API queue", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_generate');", disabled = !generate_has_rows)
+        ),
+        uiOutput("article_lab_latest_titles")
+      )
+      generate_panel <- if (article_lab_design_v2) {
+        tagList(
+          div(
+            class = "lab-workflow-toolbar",
+            div(
+              div(class = "lab-workflow-eyebrow", "Active workspace"),
+              div(class = "lab-workflow-title", "Triage titles before API scoring")
+            ),
+            div(class = "lab-workflow-hint", "Prompt setup is available below the table.")
+          ),
+          generate_triage_card,
+          tags$details(
+            class = "lab-card lab-collapsible-setup",
+            tags$summary("Prompt, model, and manual title setup"),
+            generate_prompt_card
+          )
+        )
+      } else {
+        tagList(
+          div(
+            class = "lab-card",
           h2("Generation prompt"),
           div(
             class = "lab-grid",
@@ -5796,7 +5906,8 @@ server <- function(input, output, session) {
           ),
           uiOutput("article_lab_latest_titles")
         )
-      )
+        )
+      }
 
       api_score_panel <- tagList(
         div(
@@ -6076,8 +6187,14 @@ server <- function(input, output, session) {
       )
 
       return(tagList(
-        h1(page_meta$title %||% page_meta$nav_title),
-        div(class = "page-subtitle", page_meta$subtitle %||% page_meta$nav_subtitle),
+        div(
+          class = "page-header",
+          div(
+            h1(page_meta$title %||% page_meta$nav_title),
+            div(class = "page-subtitle", page_meta$subtitle %||% page_meta$nav_subtitle)
+          ),
+          if (article_lab_design_v2) div(class = "page-version-badge", "UI v2 experiment") else NULL
+        ),
         page_body
       ))
     }
@@ -9540,6 +9657,16 @@ server <- function(input, output, session) {
       } else {
         rating_prompt
       }
+      score_label <- function(score, shortcut) {
+        if (article_lab_design_v2) {
+          tagList(
+            span(class = "rating-score-value", as.character(score)),
+            span(class = "rating-score-shortcut", shortcut)
+          )
+        } else {
+          as.character(score)
+        }
+      }
       return(div(
         class = "rating-panel",
         div(class = "prompt", prompt_text),
@@ -9556,16 +9683,46 @@ server <- function(input, output, session) {
         div(class = "scale-labels", span("Very weak"), span("Very strong")),
         div(
           class = "rating-buttons",
-          actionButton("score_1", "1"),
-          actionButton("score_2", "2"),
-          actionButton("score_3", "3"),
-          actionButton("score_4", "4"),
-          actionButton("score_5", "5")
+          actionButton("score_1", score_label(1, "A or 1")),
+          actionButton("score_2", score_label(2, "S or 2")),
+          actionButton("score_3", score_label(3, "D or 3")),
+          actionButton("score_4", score_label(4, "F or 4")),
+          actionButton("score_5", score_label(5, "J or 5"))
         ),
         div(
           class = "rating-actions",
-          div(actionButton("skip", "Skip"), actionButton("undo", "Undo previous")),
-          div(class = "shortcut-copy", "A=1, S=2, D=3, F=4, J=5 · 1-5 also work · Space=skip · U=undo · N=note · Enter/Esc exits note")
+          div(
+            actionButton("skip", if (article_lab_design_v2) tagList("Skip", span(class = "rating-action-shortcut", "Space")) else "Skip"),
+            actionButton("undo", if (article_lab_design_v2) tagList("Undo previous", span(class = "rating-action-shortcut", "U")) else "Undo previous")
+          ),
+          if (article_lab_design_v2) {
+            div(
+              class = "rating-shortcut-buttons",
+              tags$button(
+                type = "button",
+                class = "shortcut-key-button",
+                onclick = "var note = document.getElementById('note'); if (note) { note.focus(); }",
+                span(class = "shortcut-key", "N"),
+                span(class = "shortcut-key-label", "Focus note")
+              ),
+              tags$button(
+                type = "button",
+                class = "shortcut-key-button",
+                tabindex = "-1",
+                span(class = "shortcut-key", "Enter"),
+                span(class = "shortcut-key-label", "Exit note")
+              ),
+              tags$button(
+                type = "button",
+                class = "shortcut-key-button",
+                tabindex = "-1",
+                span(class = "shortcut-key", "Esc"),
+                span(class = "shortcut-key-label", "Exit note")
+              )
+            )
+          } else {
+            div(class = "shortcut-copy", "A=1, S=2, D=3, F=4, J=5 · 1-5 also work · Space=skip · U=undo · N=note · Enter/Esc exits note")
+          }
         )
       ))
     }
