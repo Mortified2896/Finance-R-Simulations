@@ -18,6 +18,7 @@ Project-wide cleanup is tracked in [`project_cleanup_checklist.md`](project_clea
 - ID helper extraction.
 - Display/table/card helper extraction into `R/table_helpers.R`.
 - Schema startup orchestration extraction into `R/schema_startup.R`.
+- Initial UI streamlining pass: compact workflow sidebar and default Research Inbox source tables to 10 rows while preserving 5/10/25/50/100 row choices.
 - Startup/smoke validation with disposable DB.
 
 ## Next cleanup candidates

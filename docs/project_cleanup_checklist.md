@@ -112,6 +112,7 @@ After each cleanup batch:
 - [x] Re-run relevant checks for the manual launcher and Article Lab table-helper extraction batch.
 - [x] Re-run relevant checks for the README/checklist link and stale-workflow audit documentation batch.
 - [x] Re-run relevant checks for the Article Lab schema startup extraction batch.
+- [x] Re-run relevant checks for the initial browser-backed Article Lab UI streamlining batch.
 - [x] Review `git status --short` for accidental local/generated files.
 - [ ] Commit small, focused changes only after validation passes.
 

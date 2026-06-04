@@ -15,24 +15,25 @@ library(RSQLite)
 library(jsonlite)
 library(DT)
 
-source("R/text_helpers.R", local = TRUE)
-source("R/input_helpers.R", local = TRUE)
-source("R/file_helpers.R", local = TRUE)
-source("R/app_config.R", local = TRUE)
-source("R/db_helpers.R", local = TRUE)
-source("R/ui_helpers.R", local = TRUE)
-source("R/ui_assets.R", local = TRUE)
-source("R/status_helpers.R", local = TRUE)
-source("R/workflow_helpers.R", local = TRUE)
-source("R/scoring_helpers.R", local = TRUE)
-source("R/title_subtitle_helpers.R", local = TRUE)
-source("R/id_helpers.R", local = TRUE)
-source("R/article_lab_config.R", local = TRUE)
-source("R/schema_rating.R", local = TRUE)
-source("R/schema_article_lab.R", local = TRUE)
-source("R/schema_research.R", local = TRUE)
-source("R/schema_startup.R", local = TRUE)
-source("R/table_helpers.R", local = TRUE)
+app_env <- environment()
+source("R/text_helpers.R", local = app_env)
+source("R/input_helpers.R", local = app_env)
+source("R/file_helpers.R", local = app_env)
+source("R/app_config.R", local = app_env)
+source("R/db_helpers.R", local = app_env)
+source("R/ui_helpers.R", local = app_env)
+source("R/ui_assets.R", local = app_env)
+source("R/status_helpers.R", local = app_env)
+source("R/workflow_helpers.R", local = app_env)
+source("R/scoring_helpers.R", local = app_env)
+source("R/title_subtitle_helpers.R", local = app_env)
+source("R/id_helpers.R", local = app_env)
+source("R/article_lab_config.R", local = app_env)
+source("R/schema_rating.R", local = app_env)
+source("R/schema_article_lab.R", local = app_env)
+source("R/schema_research.R", local = app_env)
+source("R/schema_startup.R", local = app_env)
+source("R/table_helpers.R", local = app_env)
 
 
 
@@ -7727,7 +7728,7 @@ server <- function(input, output, session) {
         check.names = FALSE
       )
     }
-    DT::datatable(display, rownames = FALSE, escape = FALSE, class = "compact stripe hover research-source-table", selection = list(mode = "single", target = "row"), options = list(pageLength = 100, autoWidth = FALSE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE), list(targets = 1, width = "6%"), list(targets = 2, width = "10%"), list(targets = 3, width = "60%"), list(targets = 4, width = "12%"), list(targets = 5, width = "7%"), list(targets = 6, width = "5%"))))
+    DT::datatable(display, rownames = FALSE, escape = FALSE, class = "compact stripe hover research-source-table", selection = list(mode = "single", target = "row"), options = list(pageLength = 10, lengthMenu = c(5, 10, 25, 50, 100), autoWidth = FALSE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE), list(targets = 1, width = "6%"), list(targets = 2, width = "10%"), list(targets = 3, width = "60%"), list(targets = 4, width = "12%"), list(targets = 5, width = "7%"), list(targets = 6, width = "5%"))))
   })
 
   output$research_unranked_sources_table <- DT::renderDT({
@@ -7747,7 +7748,7 @@ server <- function(input, output, session) {
         check.names = FALSE
       )
     }
-    DT::datatable(display, rownames = FALSE, escape = FALSE, class = "compact stripe hover research-source-table", selection = list(mode = "single", target = "row"), options = list(pageLength = 100, autoWidth = FALSE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE), list(targets = 1, width = "10%"), list(targets = 2, width = "45%"), list(targets = 3, width = "23%"), list(targets = 4, width = "12%"), list(targets = 5, width = "6%"), list(targets = 6, width = "4%"))))
+    DT::datatable(display, rownames = FALSE, escape = FALSE, class = "compact stripe hover research-source-table", selection = list(mode = "single", target = "row"), options = list(pageLength = 10, lengthMenu = c(5, 10, 25, 50, 100), autoWidth = FALSE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE), list(targets = 1, width = "10%"), list(targets = 2, width = "45%"), list(targets = 3, width = "23%"), list(targets = 4, width = "12%"), list(targets = 5, width = "6%"), list(targets = 6, width = "4%"))))
   })
 
   output$research_selected_source_summary <- renderUI({
