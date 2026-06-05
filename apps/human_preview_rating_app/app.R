@@ -666,6 +666,7 @@ server <- function(input, output, session) {
             actionButton("article_lab_generate_outlines", "Generate selected outline(s)", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_outline_packages');"),
             actionButton("article_lab_save_outlines", "Save outline edits", class = "lab-secondary"),
             actionButton("article_lab_approve_outlines", "Approve selected outline(s)", class = "lab-secondary", onclick = "window.articleLabSyncSelections('article_lab_outline_candidates');"),
+            actionButton("article_lab_archive_outlines", "Archive selected outline(s)", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_outline_archive');"),
             actionButton("article_lab_refresh_outlines", "Refresh", class = "lab-secondary")
           ),
           div(class = "lab-status-copy", "Generate an outline from approved packages, edit/review it here, then approve it to move the package to draft-ready."),
@@ -4429,6 +4430,29 @@ server <- function(input, output, session) {
       ifelse(result$approved_n == 1L, "", "s"),
       length(result$candidate_ids),
       ifelse(length(result$candidate_ids) == 1L, "", "s")
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_archive_outlines, {
+    outline_rows <- article_lab_ready_for_outline_rows()
+    article_lab_update_outlines(con, collect_outline_updates(outline_rows))
+    selected_ids <- collect_selected_ids(
+      outline_rows,
+      "article_lab_outline_archive",
+      snapshot_ids = input$article_lab_outline_archive_selected_snapshot,
+      key_col = "outline_id"
+    )
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one outline before archiving it."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    result <- article_lab_archive_outlines(con, selected_ids)
+    article_lab_state$notice <- sprintf(
+      "Archived %s selected outline%s.",
+      result$archived_n,
+      ifelse(result$archived_n == 1L, "", "s")
     )
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
