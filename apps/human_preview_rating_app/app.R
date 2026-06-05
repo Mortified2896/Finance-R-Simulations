@@ -624,6 +624,57 @@ research_status_label <- function(status) {
   labels[[status]] %||% status
 }
 
+research_normalize_marker_text <- function(value) {
+  text <- article_lab_input_string(value) %||% ""
+  text <- tolower(gsub("\\s+", " ", trimws(text), perl = TRUE))
+  if (!nzchar(text)) NA_character_ else text
+}
+
+research_marker_label <- function(indices) {
+  values <- sort(unique(suppressWarnings(as.integer(indices))))
+  values <- values[!is.na(values)]
+  if (length(values) == 0) return("[]")
+  if (length(values) > 1L && all(diff(values) == 1L)) {
+    return(sprintf("[%s-%s]", values[[1]], values[[length(values)]]))
+  }
+  sprintf("[%s]", paste(values, collapse = ","))
+}
+
+research_group_marker_status <- function(rows) {
+  if (is.null(rows) || nrow(rows) == 0) return("evidence_not_fetched")
+  statuses <- vapply(seq_len(nrow(rows)), function(i) research_marker_status(rows[i, , drop = FALSE]), character(1))
+  if (all(statuses == "evidence_not_fetched")) return("evidence_not_fetched")
+  if (all(statuses == "verified")) return("verified")
+  priority <- c("rejected", "contradicts", "no_match", "weak_support", "generally_supported_no_direct_quote", "partially_supports", "supports", "suggested", "verified")
+  for (status in priority) {
+    if (any(statuses == status)) return(status)
+  }
+  statuses[[1]]
+}
+
+research_group_status_summary <- function(rows) {
+  if (is.null(rows) || nrow(rows) == 0) return("No claims")
+  statuses <- vapply(seq_len(nrow(rows)), function(i) research_marker_status(rows[i, , drop = FALSE]), character(1))
+  pieces <- c(sprintf("%s claim%s", nrow(rows), ifelse(nrow(rows) == 1L, "", "s")))
+  for (status in unique(statuses)) {
+    count <- sum(statuses == status)
+    pieces <- c(pieces, sprintf("%s %s", count, research_status_label(status)))
+  }
+  paste(pieces, collapse = " · ")
+}
+
+research_prepare_evidence_marker_rows <- function(rows) {
+  if (is.null(rows) || nrow(rows) == 0) return(rows)
+  rows$display_index <- seq_len(nrow(rows))
+  normalized_original <- vapply(rows$original_text, research_normalize_marker_text, character(1))
+  rows$marker_group_key <- ifelse(
+    !is.na(normalized_original) & nzchar(normalized_original),
+    paste0("original:", normalized_original),
+    paste0("sentence:", rows$claim_index)
+  )
+  rows
+}
+
 research_quote_rows_for_evidence <- function(con, evidence_id, legacy_sentence_id = NA_integer_) {
   evidence_id_value <- research_input_integer(evidence_id)
   if (!is.na(evidence_id_value) && dbExistsTable(con, "research_summary_claim_evidence_sentences")) {
@@ -6496,12 +6547,12 @@ server <- function(input, output, session) {
               actionButton("research_mark_claim_sentences", "Mark claim sentences", class = "lab-primary"),
               actionButton("research_find_source_sentences", "Find source sentences", class = "lab-primary"),
               actionButton("research_rerun_weak_evidence", "Rerun weak/no-match with fallback", class = "lab-secondary")
-            ),
-            uiOutput("research_summary_inline_evidence"),
-            uiOutput("research_summary_evidence_table")
-          ),
-          uiOutput("article_lab_notice")
-        )
+            )
+          )
+        ),
+        uiOutput("research_summary_inline_evidence"),
+        uiOutput("research_summary_evidence_table"),
+        uiOutput("article_lab_notice")
       )
 
       page_body <- switch(
@@ -6838,6 +6889,7 @@ server <- function(input, output, session) {
   research_refresh <- reactiveVal(0L)
   selected_research_source_id <- reactiveVal(NA_integer_)
   selected_research_evidence_claim_id <- reactiveVal(NA_integer_)
+  selected_research_evidence_group_key <- reactiveVal(NA_character_)
 
   research_ranked_sources <- reactive({
     research_refresh()
@@ -7948,8 +8000,14 @@ server <- function(input, output, session) {
     selected_research_evidence_claim_id(research_input_integer(input$research_select_evidence_claim))
   }, ignoreInit = TRUE)
 
+  observeEvent(input$research_select_evidence_group, {
+    key <- article_lab_input_string(input$research_select_evidence_group)
+    selected_research_evidence_group_key(if (is.na(key) || !nzchar(key)) NA_character_ else key)
+  }, ignoreInit = TRUE)
+
   observeEvent(input$research_close_evidence_drawer, {
     selected_research_evidence_claim_id(NA_integer_)
+    selected_research_evidence_group_key(NA_character_)
   }, ignoreInit = TRUE)
 
   output$research_summary_inline_evidence <- renderUI({
@@ -7958,7 +8016,7 @@ server <- function(input, output, session) {
     if (!nzchar(trimws(summary_text))) return(div(class = "lab-status-copy", "Add or select a summary to mark evidence-worthy claim sentences."))
     blocks <- research_summary_line_blocks(summary_text)
     if (length(blocks) == 0) return(div(class = "lab-status-copy", "No summary sentences found."))
-    rows <- if (nrow(summary) > 0) research_latest_evidence_by_claim(load_research_summary_evidence_rows(con, summary$summary_id[[1]])) else data.frame()
+    rows <- if (nrow(summary) > 0) research_prepare_evidence_marker_rows(research_latest_evidence_by_claim(load_research_summary_evidence_rows(con, summary$summary_id[[1]]))) else data.frame()
     row_by_index <- list()
     if (nrow(rows) > 0) {
       for (i in seq_len(nrow(rows))) {
@@ -7966,46 +8024,56 @@ server <- function(input, output, session) {
         row_by_index[[key]] <- c(row_by_index[[key]] %||% list(), list(rows[i, , drop = FALSE]))
       }
     }
-    selected_claim_id <- selected_research_evidence_claim_id()
-    selected_row <- data.frame()
-    if (nrow(rows) > 0 && !is.na(selected_claim_id) && selected_claim_id %in% rows$claim_id) {
-      selected_row <- rows[match(selected_claim_id, rows$claim_id), , drop = FALSE]
+    selected_group_key <- selected_research_evidence_group_key()
+    selected_group_rows <- data.frame()
+    if (nrow(rows) > 0 && !is.na(selected_group_key) && selected_group_key %in% rows$marker_group_key) {
+      selected_group_rows <- rows[rows$marker_group_key == selected_group_key, , drop = FALSE]
     }
-    marker_for_row <- function(row) {
-      if (is.null(row) || nrow(row) == 0) return(NULL)
-      status <- research_marker_status(row)
-      fetched <- !is.na(row$evidence_id[[1]])
-      quote_rows <- if (fetched) research_quote_rows_for_evidence(con, row$evidence_id[[1]], row$sentence_id[[1]]) else data.frame()
-      has_quotes <- nrow(quote_rows) > 0
-      quote_label <- if (has_quotes && nrow(quote_rows) > 1L) "PDF quotes" else "PDF quote"
-      tooltip <- if (fetched && has_quotes) {
-        span(
-          class = "research-citation-tooltip",
-          span(class = "research-citation-tooltip-label", if (identical(status, "rejected")) paste("Rejected", quote_label) else quote_label),
-          tagList(lapply(seq_len(nrow(quote_rows)), function(i) {
-            quote_page <- if (is.na(quote_rows$page_number[[i]])) "page unavailable" else paste("page", quote_rows$page_number[[i]])
-            tagList(
-              span(class = "research-citation-tooltip-quote", quote_rows$sentence_text[[i]]),
-              span(class = "research-citation-tooltip-meta", quote_page)
-            )
-          })),
-          span(class = "research-citation-tooltip-meta", sprintf("confidence: %s · %s", row$confidence[[1]] %||% "", research_status_label(status)))
-        )
-      } else if (fetched) {
-        no_quote_status <- if (identical(status, "generally_supported_no_direct_quote")) "Paper seems to support this generally, but no direct quote was selected" else "No supporting PDF sentence selected"
-        span(
-          class = "research-citation-tooltip",
-          span(class = "research-citation-tooltip-label", "Atomic claim"),
-          span(class = "research-citation-tooltip-claim", research_truncate(row$claim_text[[1]], max_chars = 220L)),
-          span(class = "research-citation-tooltip-meta", sprintf("Status: %s · confidence: %s", no_quote_status, row$confidence[[1]] %||% "none")),
-          if (!is.na(row$selector_reason[[1]]) && nzchar(row$selector_reason[[1]])) span(class = "research-citation-tooltip-reason", research_truncate(row$selector_reason[[1]], max_chars = 180L)) else NULL
-        )
+    marker_for_group <- function(marker_rows) {
+      if (is.null(marker_rows) || length(marker_rows) == 0) return(NULL)
+      group_rows <- do.call(rbind, marker_rows)
+      group_rows <- group_rows[order(group_rows$display_index, group_rows$claim_id), , drop = FALSE]
+      group_key <- group_rows$marker_group_key[[1]]
+      label <- research_marker_label(group_rows$display_index)
+      status <- research_group_marker_status(group_rows)
+      active <- !is.na(selected_group_key) && identical(group_key, selected_group_key)
+      if (nrow(group_rows) == 1L) {
+        row <- group_rows[1, , drop = FALSE]
+        fetched <- !is.na(row$evidence_id[[1]])
+        quote_rows <- if (fetched) research_quote_rows_for_evidence(con, row$evidence_id[[1]], row$sentence_id[[1]]) else data.frame()
+        has_quote <- nrow(quote_rows) > 0 && !(research_marker_status(row) %in% c("generally_supported_no_direct_quote", "no_match"))
+        tooltip <- if (fetched && has_quote) {
+          quote_page <- if (is.na(quote_rows$page_number[[1]])) "page unavailable" else paste("page", quote_rows$page_number[[1]])
+          span(
+            class = "research-citation-tooltip",
+            span(class = "research-citation-tooltip-label", sprintf("Marker %s", label)),
+            span(class = "research-citation-tooltip-meta", sprintf("%s · confidence: %s", research_status_label(research_marker_status(row)), row$confidence[[1]] %||% "none")),
+            span(class = "research-citation-tooltip-quote-preview", research_truncate(quote_rows$sentence_text[[1]], max_chars = 96L)),
+            span(class = "research-citation-tooltip-meta", quote_page)
+          )
+        } else if (fetched) {
+          span(
+            class = "research-citation-tooltip",
+            span(class = "research-citation-tooltip-label", sprintf("Marker %s", label)),
+            span(class = "research-citation-tooltip-claim", research_truncate(row$claim_text[[1]], max_chars = 150L)),
+            span(class = "research-citation-tooltip-meta", sprintf("%s · confidence: %s", research_status_label(research_marker_status(row)), row$confidence[[1]] %||% "none")),
+            span(class = "research-citation-tooltip-meta", "Click to inspect evidence")
+          )
+        } else {
+          span(
+            class = "research-citation-tooltip",
+            span(class = "research-citation-tooltip-label", sprintf("Marker %s", label)),
+            span(class = "research-citation-tooltip-claim", research_truncate(row$claim_text[[1]], max_chars = 150L)),
+            span(class = "research-citation-tooltip-meta", sprintf("Evidence not fetched yet · marker model: %s", row$marker_model[[1]] %||% "")),
+            span(class = "research-citation-tooltip-meta", "Click to inspect evidence")
+          )
+        }
       } else {
-        span(
+        tooltip <- span(
           class = "research-citation-tooltip",
-          span(class = "research-citation-tooltip-label", "Atomic claim"),
-          span(class = "research-citation-tooltip-claim", research_truncate(row$claim_text[[1]], max_chars = 220L)),
-          span(class = "research-citation-tooltip-meta", sprintf("Status: evidence not fetched yet · marker model: %s", row$marker_model[[1]] %||% ""))
+          span(class = "research-citation-tooltip-label", sprintf("Markers %s", label)),
+          span(class = "research-citation-tooltip-meta", research_group_status_summary(group_rows)),
+          span(class = "research-citation-tooltip-meta", "Click to inspect evidence")
         )
       }
       tags$button(
@@ -8013,10 +8081,10 @@ server <- function(input, output, session) {
         class = paste(
           "btn lab-secondary research-citation-marker",
           paste0("status-", gsub("[^a-z0-9_]+", "_", tolower(status))),
-          if (!is.na(selected_claim_id) && identical(as.integer(row$claim_id[[1]]), as.integer(selected_claim_id))) "active" else ""
+          if (isTRUE(active)) "active" else ""
         ),
-        onclick = sprintf("Shiny.setInputValue('research_select_evidence_claim', %s, {priority:'event'})", row$claim_id[[1]]),
-        span(class = "research-citation-marker-label", sprintf("[%s]", row$claim_id[[1]])),
+        onclick = sprintf("Shiny.setInputValue('research_select_evidence_group', %s, {priority:'event'})", toJSON(group_key, auto_unbox = TRUE)),
+        span(class = "research-citation-marker-label", label),
         tooltip
       )
     }
@@ -8024,7 +8092,7 @@ server <- function(input, output, session) {
       if (identical(block$type, "blank")) return(div(class = "research-summary-spacer"))
       unit_nodes <- lapply(block$units, function(unit) {
         marker_rows <- row_by_index[[as.character(unit$sentence_index)]] %||% list()
-        tagList(span(unit$text), tagList(lapply(marker_rows, marker_for_row)), " ")
+        tagList(span(unit$text), marker_for_group(marker_rows), " ")
       })
       if (identical(block$type, "heading")) {
         div(class = "research-summary-line research-summary-heading", unit_nodes)
@@ -8034,70 +8102,15 @@ server <- function(input, output, session) {
         div(class = "research-summary-line research-summary-paragraph", unit_nodes)
       }
     })
-    drawer <- if (nrow(selected_row) == 0) {
-      NULL
-    } else {
-      page <- if (is.na(selected_row$page_number[[1]])) "page unavailable" else paste("page", selected_row$page_number[[1]])
-      fetched <- !is.na(selected_row$evidence_id[[1]])
-      status <- research_marker_status(selected_row)
-      quote_rows <- if (fetched) research_quote_rows_for_evidence(con, selected_row$evidence_id[[1]], selected_row$sentence_id[[1]]) else data.frame()
-      has_quotes <- nrow(quote_rows) > 0
-      quote_label <- if (has_quotes && nrow(quote_rows) > 1L) "PDF quotes" else "PDF quote"
-      div(
-        class = "research-evidence-drawer",
-        div(
-          class = "research-evidence-drawer-header",
-          div(
-            div(class = "research-evidence-drawer-title", sprintf("Marker [%s] · %s", selected_row$claim_id[[1]], if (fetched) research_status_label(status) else "evidence not fetched yet")),
-            div(class = "research-evidence-drawer-subtitle", if (fetched) sprintf("confidence: %s · selector: %s", selected_row$confidence[[1]] %||% "", selected_row$model[[1]] %||% "") else sprintf("Marker model: %s · reasoning: %s", selected_row$marker_model[[1]] %||% "", selected_row$marker_reasoning_effort[[1]] %||% ""))
-          ),
-          tags$button(type = "button", class = "btn lab-secondary research-evidence-drawer-close", onclick = "Shiny.setInputValue('research_close_evidence_drawer', Date.now(), {priority:'event'})", "Close")
-        ),
-        div(
-          class = "research-evidence-drawer-body",
-          p(class = "lab-status-copy", strong("Atomic claim: "), selected_row$claim_text[[1]]),
-          if (!is.na(selected_row$original_text[[1]]) && nzchar(selected_row$original_text[[1]])) p(class = "lab-status-copy", strong("Original summary sentence/bullet: "), selected_row$original_text[[1]]) else NULL,
-          if (fetched && has_quotes) {
-            tagList(
-              div(class = "research-pdf-quote-label", if (identical(status, "rejected")) paste("Rejected", quote_label) else quote_label),
-              tagList(lapply(seq_len(nrow(quote_rows)), function(i) {
-                quote_page <- if (is.na(quote_rows$page_number[[i]])) "page unavailable" else paste("page", quote_rows$page_number[[i]])
-                tagList(
-                  div(class = "research-pdf-quote", quote_rows$sentence_text[[i]]),
-                  p(class = "lab-status-copy", quote_page)
-                )
-              }))
-            )
-          } else if (fetched) {
-            p(class = "lab-status-copy", if (identical(status, "generally_supported_no_direct_quote")) "Paper seems to support this generally, but no direct quote was selected." else "No matching source sentence selected.")
-          } else {
-            p(class = "lab-status-copy", "Source evidence not fetched yet.")
-          },
-          if (fetched) p(class = "lab-status-copy", sprintf("Support status: %s · confidence: %s · selector model: %s", research_status_label(status), selected_row$confidence[[1]] %||% "", selected_row$model[[1]] %||% "")) else NULL,
-          if (fetched && !is.na(selected_row$selector_reason[[1]]) && nzchar(selected_row$selector_reason[[1]])) p(class = "lab-status-copy", strong("Reason: "), selected_row$selector_reason[[1]]) else NULL,
-          tags$details(
-            class = "lab-secondary-details",
-            tags$summary("Prompt/run metadata"),
-            h5(if (fetched) "Evidence selector prompt template" else "Claim marker prompt template"),
-            tags$pre(class = "lab-status-copy", if (fetched) selected_row$prompt_template[[1]] %||% "" else selected_row$marker_prompt_template[[1]] %||% ""),
-            h5(if (fetched) "Evidence selector prompt payload JSON" else "Claim marker prompt payload JSON"),
-            tags$pre(class = "lab-status-copy", if (fetched) selected_row$prompt_payload_json[[1]] %||% "" else selected_row$marker_prompt_payload_json[[1]] %||% "")
-          ),
-          if (fetched && !is.na(selected_row$evidence_id[[1]])) div(
-            class = "lab-actions",
-            tags$button(type = "button", class = "btn lab-primary", onclick = sprintf("Shiny.setInputValue('research_verify_evidence', %s, {priority:'event'})", selected_row$evidence_id[[1]]), "Verify"),
-            tags$button(type = "button", class = "btn lab-secondary", onclick = sprintf("Shiny.setInputValue('research_reject_evidence', %s, {priority:'event'})", selected_row$evidence_id[[1]]), "Reject")
-          ) else NULL
-        )
-      )
-    }
     div(
-      class = "lab-card",
-      h4("Summary with claim markers"),
-      p(class = "lab-status-copy", "Markers show detected claim sentences first; source evidence appears after running Find source sentences."),
-      div(class = "lab-status-copy research-inline-summary", block_nodes),
-      if (nrow(selected_row) == 0) div(class = "lab-status-copy", "Hover over a marker for a quick preview. Click a marker to open the evidence drawer.") else NULL,
-      drawer
+      class = "research-evidence-review-layout",
+      div(
+        class = "research-evidence-summary-pane lab-card",
+        h4("Summary with claim markers"),
+        p(class = "lab-status-copy", "Markers show detected claim sentences first; source evidence appears after running Find source sentences."),
+          div(class = "lab-status-copy research-inline-summary", block_nodes),
+          if (nrow(selected_group_rows) == 0) div(class = "lab-status-copy", "Hover over a marker for a quick preview. Click a marker to inspect evidence in the side panel.") else NULL
+      )
     )
   })
 
@@ -8139,6 +8152,89 @@ server <- function(input, output, session) {
         ) else NULL
       )
       })
+    )
+  })
+
+  output$research_summary_evidence_side_panel <- renderUI({
+    if (!identical(active_section(), "summary")) return(NULL)
+    summary <- selected_research_source_summary()
+    rows <- if (nrow(summary) > 0) research_prepare_evidence_marker_rows(research_latest_evidence_by_claim(load_research_summary_evidence_rows(con, summary$summary_id[[1]]))) else data.frame()
+    selected_group_key <- selected_research_evidence_group_key()
+    selected_group_rows <- data.frame()
+    if (nrow(rows) > 0 && !is.na(selected_group_key) && selected_group_key %in% rows$marker_group_key) {
+      selected_group_rows <- rows[rows$marker_group_key == selected_group_key, , drop = FALSE]
+    }
+
+    claim_panel <- function(row) {
+      status <- research_marker_status(row)
+      fetched <- !is.na(row$evidence_id[[1]])
+      quote_rows <- if (fetched) research_quote_rows_for_evidence(con, row$evidence_id[[1]], row$sentence_id[[1]]) else data.frame()
+      show_quotes <- fetched && nrow(quote_rows) > 0 && !(status %in% c("generally_supported_no_direct_quote", "no_match"))
+      div(
+        class = "research-evidence-claim-section",
+        div(
+          class = "research-evidence-claim-header",
+          h5(sprintf("Claim %s", research_marker_label(row$display_index[[1]]))),
+          span(class = paste("research-evidence-status-pill", paste0("status-", gsub("[^a-z0-9_]+", "_", tolower(status)))), research_status_label(status))
+        ),
+        p(class = "research-evidence-claim-text", row$claim_text[[1]]),
+        if (show_quotes) {
+          tagList(
+            div(class = "research-pdf-quote-label", if (identical(status, "rejected")) "Rejected PDF quote(s)" else "PDF quote(s)"),
+            tagList(lapply(seq_len(nrow(quote_rows)), function(i) {
+              quote_page <- if (is.na(quote_rows$page_number[[i]])) "page unavailable" else paste("page", quote_rows$page_number[[i]])
+              tagList(div(class = "research-pdf-quote", quote_rows$sentence_text[[i]]), p(class = "lab-status-copy", quote_page))
+            }))
+          )
+        } else if (fetched) {
+          p(class = "lab-status-copy", if (identical(status, "generally_supported_no_direct_quote")) "Paper seems to support this generally, but no direct quote was selected." else "No matching source sentence selected.")
+        } else {
+          p(class = "lab-status-copy", "Source evidence not fetched yet.")
+        },
+        if (fetched) p(class = "lab-status-copy", sprintf("Confidence: %s · selector model: %s · reasoning: %s", row$confidence[[1]] %||% "none", row$model[[1]] %||% "", row$reasoning_effort[[1]] %||% "")) else p(class = "lab-status-copy", sprintf("Marker model: %s · reasoning: %s", row$marker_model[[1]] %||% "", row$marker_reasoning_effort[[1]] %||% "")),
+        if (fetched && !is.na(row$selector_reason[[1]]) && nzchar(row$selector_reason[[1]])) p(class = "lab-status-copy", strong("Reason: "), row$selector_reason[[1]]) else NULL,
+        tags$details(
+          class = "lab-secondary-details",
+          tags$summary("Prompt/run metadata"),
+          h5(if (fetched) "Evidence selector prompt template" else "Claim marker prompt template"),
+          tags$pre(class = "lab-status-copy", if (fetched) row$prompt_template[[1]] %||% "" else row$marker_prompt_template[[1]] %||% ""),
+          h5(if (fetched) "Evidence selector prompt payload JSON" else "Claim marker prompt payload JSON"),
+          tags$pre(class = "lab-status-copy", if (fetched) row$prompt_payload_json[[1]] %||% "" else row$marker_prompt_payload_json[[1]] %||% "")
+        ),
+        if (fetched && !is.na(row$evidence_id[[1]])) div(
+          class = "lab-actions research-evidence-actions",
+          tags$button(type = "button", class = "btn lab-primary", onclick = sprintf("Shiny.setInputValue('research_verify_evidence', %s, {priority:'event'})", row$evidence_id[[1]]), "Verify"),
+          tags$button(type = "button", class = "btn lab-secondary", onclick = sprintf("Shiny.setInputValue('research_reject_evidence', %s, {priority:'event'})", row$evidence_id[[1]]), "Reject")
+        ) else NULL
+      )
+    }
+
+    if (nrow(selected_group_rows) == 0) {
+      return(div(
+        class = "status-card research-evidence-side-panel research-evidence-side-panel-empty",
+        div(class = "research-evidence-side-panel-header", div(div(class = "research-evidence-drawer-title", "Evidence"), div(class = "research-evidence-drawer-subtitle", "No marker selected"))),
+        div(class = "research-evidence-panel-body", p(class = "lab-status-copy", "Click a marker to inspect evidence."))
+      ))
+    }
+
+    selected_group_rows <- selected_group_rows[order(selected_group_rows$display_index, selected_group_rows$claim_id), , drop = FALSE]
+    selected_label <- research_marker_label(selected_group_rows$display_index)
+    original_text <- article_lab_input_string(selected_group_rows$original_text[[1]]) %||% ""
+    div(
+      class = "status-card research-evidence-side-panel",
+      div(
+        class = "research-evidence-side-panel-header",
+        div(
+          div(class = "research-evidence-drawer-title", "Evidence"),
+          div(class = "research-evidence-drawer-subtitle", sprintf("Marker %s · %s", selected_label, research_group_status_summary(selected_group_rows)))
+        ),
+        tags$button(type = "button", class = "btn lab-secondary research-evidence-drawer-close", onclick = "Shiny.setInputValue('research_close_evidence_drawer', Date.now(), {priority:'event'})", "Close")
+      ),
+      div(
+        class = "research-evidence-panel-body",
+        div(class = "research-evidence-selected-summary", strong("Selected summary sentence/bullet"), p(original_text)),
+        tagList(lapply(seq_len(nrow(selected_group_rows)), function(i) claim_panel(selected_group_rows[i, , drop = FALSE])))
+      )
     )
   })
 
@@ -10301,6 +10397,7 @@ server <- function(input, output, session) {
           p(sprintf("%s saved candidates across %s batches.", overview$saved_candidates[[1]], overview$saved_batches[[1]])),
           p(class = "lab-status-copy", sprintf("%s remain New, %s are in API queue, %s are approved for subtitles, %s are ready for Thumbnails, and %s are ready for Outline.", overview$generated[[1]], overview$ready_for_api_scoring[[1]], overview$approved_for_subtitle[[1]], overview$ready_for_thumbnail[[1]], overview$ready_for_outline[[1]]))
         ),
+        if (identical(current_section, "summary")) uiOutput("research_summary_evidence_side_panel") else NULL,
         div(
           class = "status-card",
           h3("Current selection"),
