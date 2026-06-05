@@ -1620,7 +1620,7 @@ article_lab_archive_api_scored_candidates <- function(con, candidate_ids) {
   )
   if (nrow(rows) == 0) return(list(archived_n = 0L, skipped_n = length(candidate_ids), batch_ids = character()))
   rows <- article_lab_normalize_candidate_rows(rows)
-  eligible_ids <- rows$candidate_id[rows$normalized_status %in% c("ready_for_api_scoring", "api_scored", "approved_for_subtitle")]
+  eligible_ids <- rows$candidate_id[rows$normalized_status %in% c("ready_for_api_scoring", "api_scored", "approved_for_subtitle", "ready_for_outline", "ready_for_draft")]
   skipped_n <- length(candidate_ids) - length(eligible_ids)
   batch_ids <- unique(rows$batch_id)
 

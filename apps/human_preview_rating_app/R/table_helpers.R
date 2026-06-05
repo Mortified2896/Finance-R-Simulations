@@ -398,6 +398,7 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
       row <- rows[i, , drop = FALSE]
       outline_id <- article_lab_row_value(row, "outline_id")
       thumbnail_id <- article_lab_row_value(row, "thumbnail_id")
+      candidate_id <- article_lab_row_value(row, "candidate_id")
       has_outline <- !is.na(outline_id) && nzchar(outline_id)
       outline_status <- article_lab_input_string(article_lab_row_value(row, "outline_status")) %||% "none"
       div(
@@ -409,11 +410,11 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
           article_lab_thumbnail_badge("approved"),
           checkboxInput(article_lab_row_input_id("article_lab_outline_packages", thumbnail_id), if (has_outline) "Regenerate outline" else "Generate outline", value = FALSE),
           if (has_outline && identical(outline_status, "draft")) checkboxInput(article_lab_row_input_id("article_lab_outline_candidates", outline_id), "Approve outline", value = FALSE),
-          if (has_outline) div(
-            `data-selection-group` = "article_lab_outline_archive",
-            `data-candidate-id` = outline_id,
+          div(
+            `data-selection-group` = "article_lab_outline_archive_packages",
+            `data-candidate-id` = candidate_id,
             style = "display:inline-block;",
-            checkboxInput(article_lab_row_input_id("article_lab_outline_archive", outline_id), "Archive outline", value = FALSE)
+            checkboxInput(article_lab_row_input_id("article_lab_outline_archive_packages", candidate_id), "Archive package", value = FALSE)
           )
         ),
         div(
