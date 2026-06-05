@@ -198,6 +198,7 @@ article_lab_default_subtitle_prompt <- paste(
   "Keep subtitles clear, credible, useful, and not sensational.",
   "Do not repeat the title verbatim.",
   "Do not include numbering, markdown, or explanations.",
+  "Use the attached article summary when available to ground subtitles in the paper's actual content.",
   sep = "\n"
 )
 article_lab_default_thumbnail_prompt <- paste(
@@ -276,3 +277,50 @@ article_lab_monetization_choices <- c(
   "Free article",
   "Undecided"
 )
+
+
+list_article_lab_prompt_keys <- function(con, default_key = article_lab_manual_prompt_key) {
+  if (!dbExistsTable(con, "article_lab_prompts")) return(default_key)
+  rows <- dbGetQuery(con, "
+    SELECT prompt_key
+    FROM article_lab_prompts
+    WHERE prompt_key IS NOT NULL AND TRIM(prompt_key) <> ''
+    ORDER BY updated_at DESC, prompt_key ASC
+  ")
+  keys <- unique(c(default_key, rows$prompt_key %||% character()))
+  keys[nzchar(keys)]
+}
+
+load_article_lab_prompt <- function(con, prompt_key = article_lab_manual_prompt_key, default_prompt = article_lab_default_prompt) {
+  key <- article_lab_input_string(prompt_key) %||% article_lab_manual_prompt_key
+  fallback <- article_lab_input_multiline(default_prompt) %||% article_lab_default_prompt
+  if (!dbExistsTable(con, "article_lab_prompts")) return(fallback)
+  rows <- dbGetQuery(con, "
+    SELECT prompt_text
+    FROM article_lab_prompts
+    WHERE prompt_key = ?
+    LIMIT 1
+  ", params = list(key))
+  if (nrow(rows) == 0) return(fallback)
+  article_lab_input_multiline(rows$prompt_text[[1]]) %||% fallback
+}
+
+save_article_lab_prompt <- function(con, prompt_text, prompt_key = article_lab_manual_prompt_key, default_prompt = article_lab_default_prompt) {
+  key <- article_lab_input_string(prompt_key) %||% article_lab_manual_prompt_key
+  text <- article_lab_input_multiline(prompt_text) %||% (article_lab_input_multiline(default_prompt) %||% article_lab_default_prompt)
+  timestamp <- now_utc()
+  rows <- dbGetQuery(con, "SELECT prompt_key FROM article_lab_prompts WHERE prompt_key = ? LIMIT 1", params = list(key))
+  if (nrow(rows) > 0) {
+    dbExecute(con, "
+      UPDATE article_lab_prompts
+      SET updated_at = ?, prompt_text = ?
+      WHERE prompt_key = ?
+    ", params = list(timestamp, text, key))
+    return(invisible(key))
+  }
+  dbExecute(con, "
+    INSERT INTO article_lab_prompts (prompt_key, created_at, updated_at, prompt_text)
+    VALUES (?, ?, ?, ?)
+  ", params = list(key, timestamp, timestamp, text))
+  invisible(key)
+}

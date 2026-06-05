@@ -121,6 +121,14 @@ function buildPrompt({ prompt, manualPrompt, batchSize, seedTopic, inspirationSo
   return sections.join("\n\n");
 }
 
+function buildPromptWithContext({ prompt, manualPrompt, batchSize, seedTopic, inspirationSource, exampleTitles, contextNotes }) {
+  const base = buildPrompt({ prompt, manualPrompt, batchSize, seedTopic, inspirationSource, exampleTitles });
+  if (contextNotes) {
+    return `Article context:\n${contextNotes}\n\n${base}`;
+  }
+  return base;
+}
+
 function buildRetryPrompt({ originalPrompt, batchSize, invalidTitles }) {
   return [
     "Your previous title candidates were too long.",
@@ -157,6 +165,7 @@ async function main() {
   const model = cleanText(payload.model) ?? "gpt-5-mini";
   const seedTopic = cleanText(payload.seed_topic);
   const inspirationSource = cleanText(payload.inspiration_source);
+  const contextNotes = cleanText(payload.context_notes);
   const exampleTitles = Array.isArray(payload.example_titles)
     ? payload.example_titles.map(cleanText).filter(Boolean)
     : [];
@@ -168,13 +177,14 @@ async function main() {
     return;
   }
 
-  const builtPrompt = buildPrompt({
+  const builtPrompt = buildPromptWithContext({
     prompt,
     manualPrompt,
     batchSize,
     seedTopic,
     inspirationSource,
-    exampleTitles
+    exampleTitles,
+    contextNotes
   });
 
   try {

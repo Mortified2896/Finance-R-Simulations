@@ -108,3 +108,21 @@ article_lab_publish_status_label <- function(status) {
 article_lab_status_choices <- function(values) {
   setNames(values, vapply(values, article_lab_status_label, character(1)))
 }
+
+
+article_lab_normalize_candidate_rows <- function(rows) {
+  if (nrow(rows) == 0) return(rows)
+  ready_column <- if ("ready_for_human_rating" %in% names(rows)) rows$ready_for_human_rating else rep(0L, nrow(rows))
+  promoted_column <- if ("promoted" %in% names(rows)) rows$promoted else rep(0L, nrow(rows))
+  archived_column <- if ("archived" %in% names(rows)) rows$archived else rep(0L, nrow(rows))
+  rows$normalized_status <- vapply(seq_len(nrow(rows)), function(i) {
+    article_lab_normalize_candidate_status(
+      status = rows$status[[i]],
+      ready_for_human_rating = ready_column[[i]],
+      promoted = promoted_column[[i]],
+      archived = archived_column[[i]]
+    )
+  }, character(1))
+  rows$status_label <- vapply(rows$normalized_status, article_lab_status_label, character(1))
+  rows
+}

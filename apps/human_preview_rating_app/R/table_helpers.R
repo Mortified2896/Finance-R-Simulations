@@ -408,7 +408,13 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
           class = "thumbnail-preview-topbar",
           article_lab_thumbnail_badge("approved"),
           checkboxInput(article_lab_row_input_id("article_lab_outline_packages", thumbnail_id), if (has_outline) "Regenerate outline" else "Generate outline", value = FALSE),
-          if (has_outline && identical(outline_status, "draft")) checkboxInput(article_lab_row_input_id("article_lab_outline_candidates", outline_id), "Approve outline", value = FALSE)
+          if (has_outline && identical(outline_status, "draft")) checkboxInput(article_lab_row_input_id("article_lab_outline_candidates", outline_id), "Approve outline", value = FALSE),
+          if (has_outline) div(
+            `data-selection-group` = "article_lab_outline_archive",
+            `data-candidate-id` = outline_id,
+            style = "display:inline-block;",
+            checkboxInput(article_lab_row_input_id("article_lab_outline_archive", outline_id), "Archive outline", value = FALSE)
+          )
         ),
         div(
           class = "thumbnail-preview-shell",

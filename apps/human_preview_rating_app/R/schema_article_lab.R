@@ -41,6 +41,8 @@ ensure_article_lab_schema <- function(con) {
     )
   ")
 
+  db_add_column_if_missing(con, "article_lab_title_batches", "article_context_notes", "TEXT")
+
   db_add_column_if_missing(con, "article_lab_title_candidates", "title_char_count", "INTEGER")
   db_add_column_if_missing(con, "article_lab_title_candidates", "title_length_flag", "TEXT")
   db_add_column_if_missing(con, "article_lab_title_candidates", "notes", "TEXT")
@@ -166,6 +168,8 @@ ensure_article_lab_schema <- function(con) {
   db_add_column_if_missing(con, "article_lab_outlines", "generation_mode", "TEXT")
   db_add_column_if_missing(con, "article_lab_outlines", "raw_json", "TEXT")
   db_add_column_if_missing(con, "article_lab_outlines", "approved_at", "TEXT")
+  db_add_column_if_missing(con, "article_lab_outlines", "archived", "INTEGER NOT NULL DEFAULT 0")
+  db_add_column_if_missing(con, "article_lab_outlines", "archived_at", "TEXT")
 
   dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_lab_full_text_drafts (
