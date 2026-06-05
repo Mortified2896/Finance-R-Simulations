@@ -827,6 +827,41 @@ load_research_summary_evidence_rows <- function(con, summary_id) {
   ", params = list(summary_id_value))
 }
 
+build_checked_summary_evidence <- function(con, summary_id) {
+  if (is.na(research_input_integer(summary_id))) return(list())
+  rows <- research_latest_evidence_by_claim(load_research_summary_evidence_rows(con, summary_id))
+  if (nrow(rows) == 0) return(list())
+  checked_statuses <- c("supports", "partially_supports", "verified")
+  out <- list()
+  for (i in seq_len(nrow(rows))) {
+    row <- rows[i, , drop = FALSE]
+    selection_status <- article_lab_input_string(row$selection_status[[1]]) %||% "suggested"
+    quote_rows <- research_quote_rows_for_evidence(con, row$evidence_id[[1]], row$sentence_id[[1]])
+    if (nrow(quote_rows) == 0) next
+    sentence_ids <- vapply(quote_rows$sentence_id, function(value) {
+      num <- suppressWarnings(as.integer(value))
+      if (is.na(num)) "" else as.character(num)
+    }, character(1))
+    sentence_ids <- sentence_ids[nzchar(sentence_ids)]
+    if (length(sentence_ids) == 0) next
+    page_value <- quote_rows$page_number[[1]]
+    page_text <- if (is.na(page_value)) NA_character_ else as.character(as.integer(page_value))
+    supporting_quote <- quote_rows$sentence_text[[1]] %||% NA_character_
+    if (is.na(supporting_quote) || !nzchar(supporting_quote)) next
+    out[[length(out) + 1L]] <- list(
+      claim_id = row$claim_id[[1]],
+      claim_text = article_lab_input_string(row$claim_text[[1]]) %||% "",
+      supporting_quote = supporting_quote,
+      page = page_text,
+      sentence_ids = sentence_ids,
+      selection_status = selection_status,
+      confidence = article_lab_input_string(row$confidence[[1]]) %||% NA_character_,
+      evidence_status = if (selection_status %in% checked_statuses) "checked" else "unchecked"
+    )
+  }
+  out
+}
+
 research_latest_evidence_by_claim <- function(rows) {
   if (nrow(rows) == 0) return(rows)
   rows[!duplicated(rows$claim_id), , drop = FALSE]
@@ -2450,7 +2485,7 @@ load_article_lab_full_text_rows <- function(con, batch_id) {
       d.full_text_draft_id, d.original_generated_text, d.current_draft_text,
       d.status AS draft_status, d.is_approved, d.model AS draft_model,
       d.prompt_key, d.prompt_version, d.generation_mode AS draft_generation_mode,
-      d.source_context_mode, d.notes AS draft_notes, d.created_at AS draft_created_at,
+      d.source_context_mode, d.citation_map_json, d.notes AS draft_notes, d.created_at AS draft_created_at,
       d.updated_at AS draft_updated_at, d.approved_at AS draft_approved_at, d.rejected_at AS draft_rejected_at
     FROM article_lab_outlines o
     INNER JOIN article_lab_thumbnail_candidates t ON t.thumbnail_id = o.thumbnail_id
@@ -2469,7 +2504,7 @@ load_article_lab_full_text_rows <- function(con, batch_id) {
       d.full_text_draft_id, d.original_generated_text, d.current_draft_text,
       d.status AS draft_status, d.is_approved, d.model AS draft_model,
       d.prompt_key, d.prompt_version, d.generation_mode AS draft_generation_mode,
-      d.source_context_mode, d.notes AS draft_notes, d.created_at AS draft_created_at,
+      d.source_context_mode, d.citation_map_json, d.notes AS draft_notes, d.created_at AS draft_created_at,
       d.updated_at AS draft_updated_at, d.approved_at AS draft_approved_at, d.rejected_at AS draft_rejected_at
     FROM article_lab_outlines o
     INNER JOIN article_lab_thumbnail_candidates t ON t.thumbnail_id = o.thumbnail_id
@@ -2491,15 +2526,18 @@ article_lab_full_text_api_request <- function(packages, model = NA_character_, p
   helper_path <- file.path("scripts", "writing_api", "generate_full_text.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_full_text.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
-  if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_full_text_model, mode = "api", raw_json = NULL))
+  if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_full_text_model, mode = "api", raw_json = NULL, warnings = character()))
 
   request_payload <- list(
     model = article_lab_input_string(model) %||% article_lab_default_full_text_model,
     prompt = article_lab_input_multiline(prompt) %||% article_lab_default_full_text_prompt,
     prompt_key = article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
     packages = unname(lapply(seq_len(nrow(packages)), function(i) {
+      summary_id <- research_input_integer(packages$summary_id[[i]])
+      checked_evidence <- if (isTRUE(include_context) && !is.na(summary_id)) build_checked_summary_evidence(con, summary_id) else list()
       pdf_path <- if ("pdf_local_path" %in% names(packages) && isTRUE(include_context)) research_resolve_local_pdf_path(packages$pdf_local_path[[i]]) else NA_character_
-      source_mode <- if (!isTRUE(include_context)) "none" else if (!is.na(pdf_path) && file.exists(pdf_path)) "pdf_attachment" else if ("article_summary" %in% names(packages) && !is.na(packages$article_summary[[i]]) && nzchar(packages$article_summary[[i]])) "summary_fallback" else "none"
+      has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
+      source_mode <- if (!isTRUE(include_context)) "none" else if (has_pdf) "pdf_attachment" else if (length(checked_evidence) > 0) "checked_summary_evidence" else "none"
       list(
         outline_id = packages$outline_id[[i]],
         thumbnail_id = packages$thumbnail_id[[i]],
@@ -2511,8 +2549,9 @@ article_lab_full_text_api_request <- function(packages, model = NA_character_, p
         thumbnail_label = packages$thumbnail_label[[i]],
         outline_text = packages$outline_text[[i]],
         source_context_mode = source_mode,
-        article_summary = if (identical(source_mode, "summary_fallback")) packages$article_summary[[i]] else NULL,
-        pdf_path = if (identical(source_mode, "pdf_attachment")) pdf_path else NULL
+        article_summary = NULL,
+        checked_evidence = checked_evidence,
+        pdf_path = if (has_pdf) pdf_path else NULL
       )
     }))
   )
@@ -2535,6 +2574,8 @@ article_lab_full_text_api_request <- function(packages, model = NA_character_, p
 
   parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
   result_rows <- lapply(parsed$results %||% list(), function(entry) {
+    citation_map <- entry$citation_map %||% list()
+    citation_map_json <- if (length(citation_map) == 0) NA_character_ else toJSON(citation_map, auto_unbox = TRUE, null = "null")
     data.frame(
       outline_id = article_lab_input_string(entry$outline_id),
       thumbnail_id = article_lab_input_string(entry$thumbnail_id),
@@ -2543,6 +2584,7 @@ article_lab_full_text_api_request <- function(packages, model = NA_character_, p
       batch_id = article_lab_input_string(entry$batch_id),
       full_text = article_lab_input_multiline(entry$full_text),
       source_context_mode = article_lab_input_string(entry$source_context_mode) %||% "none",
+      citation_map_json = citation_map_json,
       created_at = now_utc(),
       model = article_lab_input_string(parsed$model) %||% request_payload$model,
       generation_mode = "api",
@@ -2552,7 +2594,13 @@ article_lab_full_text_api_request <- function(packages, model = NA_character_, p
     )
   })
   result_rows <- Filter(function(row) nrow(row) > 0 && !is.na(row$full_text[[1]]), result_rows)
-  list(rows = if (length(result_rows) == 0) data.frame() else do.call(rbind, result_rows), model = article_lab_input_string(parsed$model) %||% request_payload$model, mode = article_lab_input_string(parsed$mode) %||% "api", raw_json = stdout_text)
+  list(
+    rows = if (length(result_rows) == 0) data.frame() else do.call(rbind, result_rows),
+    model = article_lab_input_string(parsed$model) %||% request_payload$model,
+    mode = article_lab_input_string(parsed$mode) %||% "api",
+    raw_json = stdout_text,
+    warnings = parsed$warnings %||% list()
+  )
 }
 
 generate_full_text_drafts <- function(packages, model = NA_character_, prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
@@ -2569,20 +2617,21 @@ article_lab_insert_full_text_drafts <- function(con, draft_rows, prompt_key = NA
   tryCatch({
     for (i in seq_len(nrow(draft_rows))) {
       timestamp <- draft_rows$created_at[[i]] %||% now_utc()
+      citation_map_json <- if ("citation_map_json" %in% names(draft_rows)) draft_rows$citation_map_json[[i]] else NA_character_
       dbExecute(
         con,
         "INSERT INTO article_lab_full_text_drafts
          (full_text_draft_id, outline_id, thumbnail_id, subtitle_id, candidate_id, batch_id,
           original_generated_text, current_draft_text, status, is_approved, model, prompt_key, prompt_version,
-          generation_mode, source_context_mode, raw_json, notes, created_at, updated_at, approved_at, rejected_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL)",
+          generation_mode, source_context_mode, citation_map_json, raw_json, notes, created_at, updated_at, approved_at, rejected_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL)",
         params = list(
           article_lab_full_text_draft_id(draft_rows$outline_id[[i]]),
           draft_rows$outline_id[[i]], draft_rows$thumbnail_id[[i]], draft_rows$subtitle_id[[i]], draft_rows$candidate_id[[i]], draft_rows$batch_id[[i]],
           draft_rows$full_text[[i]], draft_rows$full_text[[i]], draft_rows$model[[i]] %||% article_lab_default_full_text_model,
           article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
           article_lab_input_string(prompt_version) %||% article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
-          draft_rows$generation_mode[[i]] %||% "api", draft_rows$source_context_mode[[i]] %||% "none", draft_rows$raw_json[[i]], timestamp, timestamp
+          draft_rows$generation_mode[[i]] %||% "api", draft_rows$source_context_mode[[i]] %||% "none", citation_map_json, draft_rows$raw_json[[i]], timestamp, timestamp
         )
       )
       inserted_n <- inserted_n + 1L
@@ -2704,6 +2753,7 @@ load_article_lab_review_publish_rows <- function(con, batch_id) {
     SELECT
       d.full_text_draft_id, d.outline_id, d.thumbnail_id, d.subtitle_id, d.candidate_id, d.batch_id,
       d.current_draft_text, d.status AS draft_status, d.is_approved, d.approved_at, d.updated_at AS draft_updated_at,
+      d.citation_map_json,
       c.title, c.status AS candidate_status, c.archived,
       s.subtitle,
       t.thumbnail_label, t.thumbnail_data_uri,
@@ -6407,7 +6457,7 @@ server <- function(input, output, session) {
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
             div(class = "lab-field", selectInput("article_lab_full_text_model", "Model", choices = article_lab_full_text_model_choices, selected = article_lab_default_full_text_model, width = "100%")),
-            div(class = "lab-field", checkboxInput("article_lab_full_text_include_context", "Include available source context (PDF preferred, summary fallback)", value = TRUE, width = "100%"))
+            div(class = "lab-field", checkboxInput("article_lab_full_text_include_context", "Include source PDF and checked evidence (indirect citations enforced)", value = TRUE, width = "100%"))
           ),
           article_lab_action_bar(
             actionButton("article_lab_generate_full_text", "Generate full article draft", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_full_text_packages');"),
@@ -8659,7 +8709,8 @@ server <- function(input, output, session) {
       sprintf("Model: %s", article_lab_input_string(input$article_lab_full_text_model) %||% article_lab_default_full_text_model),
       sprintf("Prompt key/version: %s", prompt_key),
       sprintf("Include available source context: %s", if (include_context) "yes" else "no"),
-      "Response format: JSON with one complete Markdown full_text for the selected package; if a single-package response is plain Markdown, the helper accepts it as that package's draft.",
+      "Response format: JSON {\"results\":[{\"outline_id\",\"thumbnail_id\",\"subtitle_id\",\"candidate_id\",\"batch_id\",\"source_context_mode\",\"full_text\",\"citation_map\":[...]}]}",
+      "The public article must use indirect citations/paraphrases only. Every in-text citation must appear in citation_map.",
       sep = "\n"
     )
     package_list <- if (nrow(selected_packages) == 0) {
@@ -8679,10 +8730,12 @@ server <- function(input, output, session) {
     } else {
       paste(vapply(seq_len(nrow(selected_packages)), function(i) {
         context <- if (nrow(summary_contexts) == 0) data.frame() else summary_contexts[summary_contexts$batch_id == selected_packages$batch_id[[i]], , drop = FALSE]
+        summary_id <- if (nrow(context) > 0) research_input_integer(context$summary_id[[1]]) else NA_integer_
+        checked_evidence <- if (isTRUE(include_context) && !is.na(summary_id)) build_checked_summary_evidence(con, summary_id) else list()
         pdf_path <- if (nrow(context) > 0 && isTRUE(include_context)) research_resolve_local_pdf_path(context$pdf_local_path[[1]]) else NA_character_
         has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
-        has_summary <- isTRUE(include_context) && nrow(context) > 0 && !is.na(context$article_summary[[1]]) && nzchar(context$article_summary[[1]])
-        source_mode <- if (!isTRUE(include_context)) "none" else if (has_pdf) "pdf_attachment" else if (has_summary) "summary_fallback" else "none"
+        has_evidence <- length(checked_evidence) > 0
+        source_mode <- if (!isTRUE(include_context)) "none" else if (has_pdf) "pdf_attachment" else if (has_evidence) "checked_summary_evidence" else "none"
         lines <- c(
           sprintf(
             "%s. outline_id=%s | thumbnail_id=%s | subtitle_id=%s | candidate_id=%s | batch_id=%s",
@@ -8696,15 +8749,24 @@ server <- function(input, output, session) {
           selected_packages$outline_text[[i]],
           sprintf("Source context mode: %s", source_mode)
         )
-        if (identical(source_mode, "summary_fallback")) lines <- c(lines, "Research summary/full text fallback:", context$article_summary[[1]])
         if (identical(source_mode, "pdf_attachment")) lines <- c(lines, "Research PDF: attached as input_file")
+        if (has_evidence) {
+          lines <- c(lines, "Checked summary evidence (use these to ground paper-based claims):")
+          for (item in checked_evidence) {
+            ids <- paste(item$sentence_ids %||% character(), collapse = ", ")
+            page <- item$page %||% "n/a"
+            quote <- item$supporting_quote %||% "n/a"
+            claim <- item$claim_text %||% "n/a"
+            lines <- c(lines, sprintf("- Claim: %s | Quote: %s | page: %s | sentence_ids: [%s] | status: %s | confidence: %s", claim, quote, page, if (nzchar(ids)) ids else "n/a", item$selection_status %||% "n/a", item$confidence %||% "n/a"))
+          }
+        }
         paste(lines, collapse = "\n")
       }, character(1)), collapse = "\n\n")
     }
     exact_api_prompt <- paste(
       base_prompt,
       "Return valid JSON only.",
-      "Return JSON only in this shape: {\"results\":[{\"outline_id\":string,\"thumbnail_id\":string,\"subtitle_id\":string,\"candidate_id\":string,\"batch_id\":string,\"source_context_mode\":\"pdf_attachment\"|\"summary_fallback\"|\"none\",\"full_text\":string}]}",
+      "Return JSON only in this shape: {\"results\":[{\"outline_id\":string,\"thumbnail_id\":string,\"subtitle_id\":string,\"candidate_id\":string,\"batch_id\":string,\"source_context_mode\":\"pdf_attachment\"|\"checked_summary_evidence\"|\"none\",\"full_text\":string,\"citation_map\":[{\"citation_text\":string,\"article_sentence\":string,\"source_title\":string,\"source_author_or_org\":string,\"source_year\":string|null,\"page\":string|null,\"sentence_ids\":[string],\"supporting_quote\":string|null,\"verification_note\":string,\"evidence_status\":\"checked\"|\"unchecked\"}]}]}",
       "Copy ids exactly from the package. The full_text value must be the complete Markdown article draft, not a schema example, MARKDOWN_ARTICLE_HERE, placeholder, excerpt, note, or explanation.",
       "Ignore any earlier placeholder value such as MARKDOWN_ARTICLE_HERE; replace it with the actual full Markdown article.",
       "Return one full article draft per package, preserving all ids exactly.",
@@ -8719,23 +8781,25 @@ server <- function(input, output, session) {
     } else {
       paste(vapply(seq_len(nrow(selected_packages)), function(i) {
         context <- if (nrow(summary_contexts) == 0) data.frame() else summary_contexts[summary_contexts$batch_id == selected_packages$batch_id[[i]], , drop = FALSE]
+        summary_id <- if (nrow(context) > 0) research_input_integer(context$summary_id[[1]]) else NA_integer_
         pdf_path <- if (nrow(context) > 0) research_resolve_local_pdf_path(context$pdf_local_path[[1]]) else NA_character_
         has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
-        has_summary <- nrow(context) > 0 && !is.na(context$article_summary[[1]]) && nzchar(context$article_summary[[1]])
+        lines <- c(sprintf("Outline: %s", selected_packages$outline_id[[i]]))
         if (has_pdf) {
-          paste(sprintf("Outline: %s", selected_packages$outline_id[[i]]), "Context sent: PDF file attachment", sprintf("Attached local file/path: %s", pdf_path), "Text summary sent: no, because the PDF itself is attached", sep = "\n")
-        } else if (has_summary) {
-          paste(sprintf("Outline: %s", selected_packages$outline_id[[i]]), "Context sent: text summary/full text fallback", sprintf("Summary ID: %s", context$summary_id[[1]]), sprintf("Source title: %s", context$source_title[[1]] %||% ""), "Exact text sent to API:", context$article_summary[[1]], sep = "\n")
-        } else {
-          paste(sprintf("Outline: %s", selected_packages$outline_id[[i]]), "Context sent: none", sep = "\n")
+          lines <- c(lines, "Context sent: PDF file attachment", sprintf("Attached local file/path: %s", pdf_path))
         }
+        evidence <- if (isTRUE(include_context) && !is.na(summary_id)) build_checked_summary_evidence(con, summary_id) else list()
+        if (length(evidence) > 0) {
+          lines <- c(lines, sprintf("Checked evidence rows: %s", length(evidence)))
+        }
+        paste(lines, collapse = "\n")
       }, character(1)), collapse = "\n\n---\n\n")
     }
 
     div(
       class = "lab-card",
       h3("Prompt that will be sent to the API"),
-      p(class = "lab-status-copy", "Full article generation sends this prompt plus the selected title/subtitle/thumbnail/outline context. When enabled, a local PDF is attached first; summary text is sent only when no local PDF is available."),
+      p(class = "lab-status-copy", "Full article generation sends this prompt plus the selected approved outline context. Use indirect citations/paraphrases only. Every reader-facing in-text citation must appear in citation_map. A local PDF is attached when available; checked evidence records from the confirmed summary ground paper-based claims."),
       tags$details(
         open = if (nrow(selected_packages) > 0) "open" else NULL,
         tags$summary("Show exact full article API prompt"),
@@ -8750,7 +8814,7 @@ server <- function(input, output, session) {
         h4("Full article helper wrapper"),
         tags$pre(class = "lab-status-copy", paste(
           "Return one full article draft for the selected package, preserving all ids exactly.",
-          "Required response shape: {\"results\":[{\"outline_id\":string,\"thumbnail_id\":string,\"subtitle_id\":string,\"candidate_id\":string,\"batch_id\":string,\"source_context_mode\":\"pdf_attachment\"|\"summary_fallback\"|\"none\",\"full_text\":string}]}",
+          "Required response shape: {\"results\":[{\"outline_id\":...,\"full_text\":...,\"citation_map\":[...]}]}",
           "The full_text value must be the complete Markdown article draft, not MARKDOWN_ARTICLE_HERE, a placeholder, schema example, excerpt, note, or explanation. For a single selected package, a plain Markdown response or single-object {\"full_text\":...} response is accepted as that package's draft.",
           sep = "\n"
         )),
@@ -10139,10 +10203,12 @@ server <- function(input, output, session) {
     summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(selected_rows$batch_id))
     selected_rows$article_summary <- NA_character_
     selected_rows$pdf_local_path <- NA_character_
+    selected_rows$summary_id <- NA_integer_
     if (nrow(summary_contexts) > 0) {
       matched_summary <- match(selected_rows$batch_id, summary_contexts$batch_id)
       selected_rows$article_summary <- summary_contexts$article_summary[matched_summary]
       selected_rows$pdf_local_path <- summary_contexts$pdf_local_path[matched_summary]
+      selected_rows$summary_id <- summary_contexts$summary_id[matched_summary]
     }
     article_lab_state$notice <- if (variant) "Generating another full article variant. Waiting for OpenAI." else "Generating full article draft. Waiting for OpenAI."
     article_lab_refresh(article_lab_refresh() + 1L)
@@ -10160,13 +10226,15 @@ server <- function(input, output, session) {
       article_lab_state$notice <- "Full article API call returned no usable draft rows. No draft was saved."
     } else {
       inserted_n <- article_lab_insert_full_text_drafts(con, generated$rows, prompt_key = input$article_lab_full_text_prompt_key, prompt_version = input$article_lab_full_text_prompt_key)
+      warning_copy <- if (length(generated$warnings %||% list()) > 0) paste0(" ", length(generated$warnings), " validation warning(s); see helper stderr for details.") else ""
       article_lab_state$notice <- sprintf(
-        "Generated %s full article draft%s using model %s in %s mode in %s.",
+        "Generated %s full article draft%s using model %s in %s mode in %s.%s",
         inserted_n,
         ifelse(inserted_n == 1L, "", "s"),
         generated$model %||% article_lab_default_full_text_model,
         generated$mode %||% "unknown",
-        article_lab_format_duration(as.numeric(difftime(Sys.time(), started_at, units = "secs")))
+        article_lab_format_duration(as.numeric(difftime(Sys.time(), started_at, units = "secs"))),
+        warning_copy
       )
     }
     article_lab_refresh(article_lab_refresh() + 1L)

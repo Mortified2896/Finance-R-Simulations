@@ -454,14 +454,63 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
 }
 
 article_lab_full_text_source_badge <- function(row, summary_contexts, include_context = TRUE) {
+  if (!isTRUE(include_context)) return(tags$span(class = "lab-chip default", "Source off"))
+  if (identical(row$source_context_mode[[1]], "checked_summary_evidence") || identical(row$source_context_mode[[1]], "pdf_attachment")) {
+    if (identical(row$source_context_mode[[1]], "checked_summary_evidence")) return(tags$span(class = "lab-chip green", "Checked evidence"))
+    return(tags$span(class = "lab-chip blue", "PDF + evidence"))
+  }
   context <- if (nrow(summary_contexts) == 0) data.frame() else summary_contexts[summary_contexts$batch_id == row$batch_id[[1]], , drop = FALSE]
   pdf_path <- if (nrow(context) > 0) research_resolve_local_pdf_path(context$pdf_local_path[[1]]) else NA_character_
   has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
-  has_summary <- nrow(context) > 0 && !is.na(context$article_summary[[1]]) && nzchar(context$article_summary[[1]])
-  if (!isTRUE(include_context)) return(tags$span(class = "lab-chip default", "Source off"))
-  if (has_pdf) return(tags$span(class = "lab-chip blue", "PDF available"))
-  if (has_summary) return(tags$span(class = "lab-chip green", "Summary fallback"))
+  if (has_pdf) return(tags$span(class = "lab-chip blue", "PDF + evidence"))
+  has_evidence <- nrow(context) > 0 && !is.na(context$summary_id[[1]])
+  if (has_evidence) return(tags$span(class = "lab-chip green", "Checked evidence"))
   tags$span(class = "lab-chip orange", "No source context")
+}
+
+article_lab_full_text_citation_map_ui <- function(draft) {
+  citation_map_json <- article_lab_row_value(draft, "citation_map_json")
+  if (is.na(citation_map_json) || !nzchar(citation_map_json)) return(NULL)
+  parsed <- tryCatch(fromJSON(citation_map_json), error = function(e) NULL)
+  if (is.null(parsed) || length(parsed) == 0) return(NULL)
+  entries <- if (is.data.frame(parsed)) split(parsed, seq_len(nrow(parsed))) else parsed
+  tags$details(
+    class = "lab-card lab-citation-details",
+    tags$summary(sprintf("Citation / evidence map (%s)", length(entries))),
+    p(class = "lab-status-copy", "Internal evidence record for verification. Sentence IDs, page numbers, and supporting quotes are NOT part of the public Medium article."),
+    lapply(seq_along(entries), function(i) {
+      entry <- entries[[i]]
+      citation_text <- clean_text(entry$citation_text %||% entry[["citation_text"]] %||% "")
+      article_sentence <- clean_text(entry$article_sentence %||% entry[["article_sentence"]] %||% "")
+      source_title <- clean_text(entry$source_title %||% entry[["source_title"]] %||% "")
+      source_author <- clean_text(entry$source_author_or_org %||% entry[["source_author_or_org"]] %||% "")
+      source_year <- clean_text(entry$source_year %||% entry[["source_year"]] %||% "")
+      page <- entry$page %||% entry[["page"]] %||% NA_character_
+      sentence_ids <- entry$sentence_ids %||% entry[["sentence_ids"]] %||% list()
+      supporting_quote <- clean_text(entry$supporting_quote %||% entry[["supporting_quote"]] %||% "")
+      verification_note <- clean_text(entry$verification_note %||% entry[["verification_note"]] %||% "")
+      evidence_status <- clean_text(entry$evidence_status %||% entry[["evidence_status"]] %||% "unchecked")
+      status_badge <- if (identical(evidence_status, "checked")) {
+        tags$span(class = "lab-chip green", "checked")
+      } else {
+        tags$span(class = "lab-chip orange", "unchecked")
+      }
+      div(
+        class = "lab-card lab-citation-map-entry",
+        h4(style = "margin-bottom:4px;", citation_text, " ", status_badge),
+        div(class = "lab-grid", style = "font-size:0.9em;",
+          if (!is.na(article_sentence) && nzchar(article_sentence)) div(class = "lab-citation-field", strong("Article sentence: "), article_sentence),
+          if (!is.na(source_title) && nzchar(source_title)) div(class = "lab-citation-field", strong("Source title: "), source_title),
+          if (!is.na(source_author) && nzchar(source_author)) div(class = "lab-citation-field", strong("Author/Org: "), source_author),
+          if (!is.na(source_year) && nzchar(source_year)) div(class = "lab-citation-field", strong("Year: "), source_year),
+          if (!is.na(page) && nzchar(page)) div(class = "lab-citation-field", strong("Page: "), page),
+          if (!is.null(sentence_ids) && length(sentence_ids) > 0) div(class = "lab-citation-field", strong("Sentence IDs: "), paste(sentence_ids, collapse = ", ")),
+          if (!is.na(supporting_quote) && nzchar(supporting_quote)) div(class = "lab-citation-field", strong("Supporting quote: "), supporting_quote),
+          if (!is.na(verification_note) && nzchar(verification_note)) div(class = "lab-citation-field", strong("Verification note: "), verification_note)
+        )
+      )
+    })
+  )
 }
 
 article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, include_context = TRUE) {
@@ -541,7 +590,8 @@ article_lab_full_text_table_ui <- function(rows, packages, summary_contexts, inc
                   tags$button(type = "button", class = "btn lab-secondary", onclick = sprintf("window.articleLabCopyValueFromElement('%s', this, 'Copied draft');", draft_text_id), "Copy full article draft")
                 ),
                 textAreaInput(draft_text_id, "Full article draft", value = draft$current_draft_text[[1]] %||% "", width = "100%", height = "720px"),
-                textInput(article_lab_row_input_id("article_lab_full_text_draft_notes", draft_id), "Draft notes", value = draft$draft_notes[[1]] %||% "", width = "100%")
+                textInput(article_lab_row_input_id("article_lab_full_text_draft_notes", draft_id), "Draft notes", value = draft$draft_notes[[1]] %||% "", width = "100%"),
+                article_lab_full_text_citation_map_ui(draft)
               )
               if (j == 1L) editor else tags$details(tags$summary(sprintf("Show older draft variant %s", j)), editor)
             }))

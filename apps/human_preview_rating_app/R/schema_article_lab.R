@@ -204,8 +204,9 @@ ensure_article_lab_schema <- function(con) {
     original_generated_text = "TEXT NOT NULL DEFAULT ''", current_draft_text = "TEXT NOT NULL DEFAULT ''",
     status = "TEXT NOT NULL DEFAULT 'draft'", is_approved = "INTEGER NOT NULL DEFAULT 0",
     model = "TEXT", prompt_key = "TEXT", prompt_version = "TEXT", generation_mode = "TEXT NOT NULL DEFAULT 'generated'",
-    source_context_mode = "TEXT", raw_json = "TEXT", notes = "TEXT", created_at = "TEXT NOT NULL DEFAULT ''",
-    updated_at = "TEXT NOT NULL DEFAULT ''", approved_at = "TEXT", rejected_at = "TEXT"
+    source_context_mode = "TEXT", citation_map_json = "TEXT", raw_json = "TEXT", notes = "TEXT",
+    created_at = "TEXT NOT NULL DEFAULT ''", updated_at = "TEXT NOT NULL DEFAULT ''",
+    approved_at = "TEXT", rejected_at = "TEXT"
   )
   for (column_name in names(full_text_columns)) db_add_column_if_missing(con, "article_lab_full_text_drafts", column_name, full_text_columns[[column_name]])
 

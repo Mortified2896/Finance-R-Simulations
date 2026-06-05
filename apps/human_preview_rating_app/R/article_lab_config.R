@@ -216,10 +216,32 @@ article_lab_default_outline_prompt <- paste(
 article_lab_outline_prompt_key <- "outline_default"
 article_lab_default_full_text_prompt <- paste(
   "Draft a complete Medium article from the approved package and outline.",
-  "Use the title, subtitle, thumbnail concept, approved outline, and available source context.",
+  "Use the title, subtitle, thumbnail concept, approved outline, and the available source context.",
   "Default to the source material when it is available; do not invent research claims beyond the provided context.",
   "Write in clear, beginner-friendly personal finance language with practical examples, caveats, and a measured conclusion.",
   "The article body should be Markdown. Do not include notes or explanations inside the article draft.",
+  "",
+  "Reader-facing citation rules:",
+  "- Use indirect citations and paraphrases by default. Do not include direct quotes unless the prompt or outline explicitly asks for a direct quote.",
+  "- Use readable Medium-friendly, APA-inspired in-text citations such as 'Vanguard (2019) argues that ...' or '... (Vanguard, 2019)'.",
+  "- Add a page number like (Vanguard, 2019, p. 7) only when it helps the reader verify a precise paraphrase. Do not make the whole article feel like an academic paper.",
+  "- Do not invent authors, organizations, years, page numbers, statistics, findings, or references. If evidence is weak or missing, soften the claim, mark it as [needs verification], or omit it.",
+  "- Do not include internal evidence tags such as {{EVID:...}}, [Q1], or sentence or page IDs in the public article text. Page and sentence IDs belong only in the citation_map below.",
+  "",
+  "Internal citation_map rules:",
+  "- Every reader-facing in-text citation in the article must appear in the citation_map array.",
+  "- For each citation, return one citation_map entry that includes:",
+  "  - citation_text: the exact in-text citation as it appears in the article, e.g. '(Vanguard, 2019)' or 'Vanguard (2019)'.",
+  "  - article_sentence: the article sentence (or short paragraph) that contains the citation, copied from full_text.",
+  "  - source_title: the source title from the provided context.",
+  "  - source_author_or_org: the author or organization as it appears in the citation.",
+  "  - source_year: the publication year, or null if not available.",
+  "  - page: the page number if known, or null.",
+  "  - sentence_ids: the internal PDF sentence IDs that support the paraphrase, or an empty array if not available.",
+  "  - supporting_quote: a short quote from the source that supports the paraphrase, or null if not available.",
+  "  - verification_note: a short note flagging any uncertainty, e.g. 'Supports the paraphrase, but does not prove X.' or 'Needs manual verification: page not yet mapped.'.",
+  "  - evidence_status: 'checked' when the paraphrase is grounded in a confirmed summary claim or verified evidence row, otherwise 'unchecked'.",
+  "- Return an empty citation_map when the article contains no reader-facing citations.",
   sep = "\n"
 )
 article_lab_full_text_prompt_key <- "full_text_default"
