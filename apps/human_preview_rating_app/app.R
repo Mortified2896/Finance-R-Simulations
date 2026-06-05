@@ -6579,7 +6579,8 @@ server <- function(input, output, session) {
           ),
           if (article_lab_design_v2) div(class = "page-version-badge", "UI v2 experiment") else NULL
         ),
-        page_body
+        page_body,
+        if (identical(current_section, "summary")) uiOutput("research_summary_evidence_overlay") else NULL
       ))
     }
 
@@ -8155,13 +8156,13 @@ server <- function(input, output, session) {
     )
   })
 
-  output$research_summary_evidence_side_panel <- renderUI({
+  output$research_summary_evidence_overlay <- renderUI({
     if (!identical(active_section(), "summary")) return(NULL)
     summary <- selected_research_source_summary()
     rows <- if (nrow(summary) > 0) research_prepare_evidence_marker_rows(research_latest_evidence_by_claim(load_research_summary_evidence_rows(con, summary$summary_id[[1]]))) else data.frame()
     selected_group_key <- selected_research_evidence_group_key()
     selected_group_rows <- data.frame()
-    if (nrow(rows) > 0 && !is.na(selected_group_key) && selected_group_key %in% rows$marker_group_key) {
+    if (nrow(rows) > 0 && !is.na(selected_group_key) && nzchar(selected_group_key) && selected_group_key %in% rows$marker_group_key) {
       selected_group_rows <- rows[rows$marker_group_key == selected_group_key, , drop = FALSE]
     }
 
@@ -8211,8 +8212,12 @@ server <- function(input, output, session) {
 
     if (nrow(selected_group_rows) == 0) {
       return(div(
-        class = "status-card research-evidence-side-panel research-evidence-side-panel-empty",
-        div(class = "research-evidence-side-panel-header", div(div(class = "research-evidence-drawer-title", "Evidence"), div(class = "research-evidence-drawer-subtitle", "No marker selected"))),
+        class = "research-evidence-side-overlay hidden",
+        div(
+          class = "research-evidence-side-overlay-header",
+          div(div(class = "research-evidence-drawer-title", "Evidence"), div(class = "research-evidence-drawer-subtitle", "No marker selected")),
+          tags$button(type = "button", class = "btn lab-secondary research-evidence-drawer-close", onclick = "Shiny.setInputValue('research_close_evidence_drawer', Date.now(), {priority:'event'})", "Close")
+        ),
         div(class = "research-evidence-panel-body", p(class = "lab-status-copy", "Click a marker to inspect evidence."))
       ))
     }
@@ -8220,13 +8225,14 @@ server <- function(input, output, session) {
     selected_group_rows <- selected_group_rows[order(selected_group_rows$display_index, selected_group_rows$claim_id), , drop = FALSE]
     selected_label <- research_marker_label(selected_group_rows$display_index)
     original_text <- article_lab_input_string(selected_group_rows$original_text[[1]]) %||% ""
+    claim_count <- nrow(selected_group_rows)
     div(
-      class = "status-card research-evidence-side-panel",
+      class = "research-evidence-side-overlay",
       div(
-        class = "research-evidence-side-panel-header",
+        class = "research-evidence-side-overlay-header",
         div(
           div(class = "research-evidence-drawer-title", "Evidence"),
-          div(class = "research-evidence-drawer-subtitle", sprintf("Marker %s · %s", selected_label, research_group_status_summary(selected_group_rows)))
+          div(class = "research-evidence-drawer-subtitle", sprintf("Marker %s · %s claim%s · %s", selected_label, claim_count, ifelse(claim_count == 1, "", "s"), research_group_status_summary(selected_group_rows)))
         ),
         tags$button(type = "button", class = "btn lab-secondary research-evidence-drawer-close", onclick = "Shiny.setInputValue('research_close_evidence_drawer', Date.now(), {priority:'event'})", "Close")
       ),
@@ -10397,7 +10403,6 @@ server <- function(input, output, session) {
           p(sprintf("%s saved candidates across %s batches.", overview$saved_candidates[[1]], overview$saved_batches[[1]])),
           p(class = "lab-status-copy", sprintf("%s remain New, %s are in API queue, %s are approved for subtitles, %s are ready for Thumbnails, and %s are ready for Outline.", overview$generated[[1]], overview$ready_for_api_scoring[[1]], overview$approved_for_subtitle[[1]], overview$ready_for_thumbnail[[1]], overview$ready_for_outline[[1]]))
         ),
-        if (identical(current_section, "summary")) uiOutput("research_summary_evidence_side_panel") else NULL,
         div(
           class = "status-card",
           h3("Current selection"),
