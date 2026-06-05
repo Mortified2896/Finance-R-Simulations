@@ -19,6 +19,7 @@
     "dotenv": "^16.4.7",
     "openai": "^6.10.0",
     "opencode-plugin-langfuse": "^0.1.8",
+    "pdf-parse": "^2.4.5",
     "playwright": "^1.60.0"
   }
 }

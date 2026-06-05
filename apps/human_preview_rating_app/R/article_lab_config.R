@@ -112,6 +112,82 @@ article_lab_default_research_summary_prompt <- paste(
   "Possible article directions:",
   sep = "\n"
 )
+article_lab_default_claim_extraction_model <- local({
+  configured <- Sys.getenv("OPENAI_CLAIM_EXTRACTION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5.4-mini"
+  configured
+})
+article_lab_claim_extraction_model_choices <- article_lab_model_choices_with_default(
+  article_lab_default_claim_extraction_model,
+  base_choices = c("gpt-5.4-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5")
+)
+article_lab_default_evidence_selection_model <- local({
+  configured <- Sys.getenv("OPENAI_EVIDENCE_SELECTION_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5.4-mini"
+  configured
+})
+article_lab_evidence_selection_model_choices <- article_lab_model_choices_with_default(
+  article_lab_default_evidence_selection_model,
+  base_choices = c("gpt-5.4-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5")
+)
+article_lab_default_evidence_fallback_model <- local({
+  configured <- Sys.getenv("OPENAI_EVIDENCE_FALLBACK_MODEL", unset = "")
+  if (!nzchar(configured)) configured <- "gpt-5.4"
+  configured
+})
+article_lab_evidence_fallback_model_choices <- article_lab_model_choices_with_default(
+  article_lab_default_evidence_fallback_model,
+  base_choices = c("gpt-5.4", "gpt-5", "gpt-5.4-mini", "gpt-5-mini")
+)
+article_lab_evidence_reasoning_choices <- c("minimal", "low", "medium")
+article_lab_default_evidence_reasoning_effort <- Sys.getenv("OPENAI_EVIDENCE_REASONING_EFFORT", unset = "low")
+if (!article_lab_default_evidence_reasoning_effort %in% article_lab_evidence_reasoning_choices) {
+  article_lab_default_evidence_reasoning_effort <- "low"
+}
+article_lab_default_claim_extraction_prompt <- paste(
+  "Identify atomic factual claims in the numbered summary sentences that should eventually be supported by the source paper.",
+  "Return JSON only in this exact shape: {\"claims\":[{\"sentence_index\":1,\"claim_text\":\"atomic claim text\",\"original_text\":\"exact source summary sentence or bullet\",\"placement_hint\":\"after_sentence\",\"importance\":\"high|medium|low\"}]}",
+  "Rules:",
+  "- Return at most {{max_claims}} atomic claims.",
+  "- Select only from the numbered summary sentences provided below.",
+  "- If a sentence or bullet contains multiple factual claims, split it into smaller atomic claims.",
+  "- Atomic claims may be shorter than the original sentence, but they must preserve the original meaning and numbers.",
+  "- Do not add facts that are not present in the summary.",
+  "- Put the exact original numbered sentence/bullet in original_text.",
+  "- Use placement_hint \"after_sentence\" unless there is an obvious clause-level placement.",
+  "- Prefer concrete measured findings, data, causal/mechanism claims, and source limitations.",
+  "- Avoid headings, article ideas, generic commentary, and sentences that do not assert a source-checkable fact.",
+  "",
+  "Source metadata:",
+  "Research source ID: {{research_source_id}}",
+  "Source title: {{source_title}}",
+  "Summary ID: {{summary_id}}",
+  "",
+  "Numbered summary sentences:",
+  "{{summary_sentence_payload_json}}",
+  sep = "\n"
+)
+article_lab_default_evidence_selection_prompt <- paste(
+  "Choose up to three exact source sentence IDs that best support each atomic summary claim.",
+  "Return JSON only in this exact shape: {\"results\":[{\"claim_id\":1,\"sentence_ids\":[123,456],\"support_status\":\"supports|partially_supports|generally_supported_no_direct_quote|weak_support|contradicts|no_match\",\"confidence\":\"high|medium|low|none\",\"reason\":\"short reason\"}]}",
+  "Rules:",
+  "- Select only from the provided candidate sentences.",
+  "- Return sentence_ids as an empty array when no direct quote should be selected.",
+  "- Do not quote, paraphrase, rewrite, or invent source text; choose IDs only.",
+  "- Do not use no_match just because one sentence does not support every detail; use up to three sentences or partially_supports when appropriate.",
+  "- Use supports when selected sentence(s) directly support the atomic claim.",
+  "- Use partially_supports when selected sentence(s) support part, but not all, of the claim.",
+  "- Use generally_supported_no_direct_quote when the candidates indicate broad support but no clean quote sentence should be selected.",
+  "- Use weak_support for related but indirect evidence.",
+  "- Use contradicts if candidate evidence conflicts with the claim.",
+  "- Use no_match only when candidates provide no useful support.",
+  "- Prefer a sentence that directly states the evidence over one that only hints at it.",
+  "- Page numbers are metadata only; do not use them as evidence.",
+  "",
+  "Claims and candidate sentences:",
+  "{{claim_candidate_payload_json}}",
+  sep = "\n"
+)
 article_lab_default_subtitle_prompt <- paste(
   "Generate Medium-style subtitle candidates for approved personal finance and investing article titles.",
   "Return valid JSON only.",

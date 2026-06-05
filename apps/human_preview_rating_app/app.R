@@ -484,6 +484,303 @@ research_summary_api_request <- function(source, asset, model = NA_character_, p
   )
 }
 
+research_evidence_render_template <- function(template, variables) {
+  out <- article_lab_input_multiline(template) %||% ""
+  for (name in names(variables)) {
+    value <- variables[[name]]
+    if (is.null(value) || length(value) == 0 || is.na(value[[1]])) value <- ""
+    out <- gsub(paste0("\\{\\{", name, "\\}\\}"), as.character(value[[1]]), out, fixed = FALSE)
+  }
+  out
+}
+
+research_evidence_api_request <- function(step, resolved_prompt, model, reasoning_effort, summary_id, research_source_id) {
+  helper_path <- file.path("scripts", "writing_api", "select_summary_evidence.mjs")
+  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/select_summary_evidence.mjs", call. = FALSE)
+  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+  request_payload <- list(
+    step = step,
+    model = article_lab_input_string(model) %||% article_lab_default_evidence_selection_model,
+    reasoning_effort = article_lab_input_string(reasoning_effort) %||% article_lab_default_evidence_reasoning_effort,
+    resolved_prompt = article_lab_input_multiline(resolved_prompt),
+    summary_id = summary_id,
+    research_source_id = research_source_id
+  )
+  request_file <- tempfile(pattern = paste0(step, "_request_"), fileext = ".json")
+  stdout_file <- tempfile(pattern = paste0(step, "_stdout_"), fileext = ".json")
+  stderr_file <- tempfile(pattern = paste0(step, "_stderr_"), fileext = ".log")
+  on.exit(unlink(c(request_file, stdout_file, stderr_file), force = TRUE), add = TRUE)
+  write_json(request_payload, request_file, auto_unbox = TRUE, pretty = FALSE, null = "null")
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2("node", args = c(helper_path, request_file), stdout = stdout_file, stderr = stderr_file, timeout = 120L)
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
+    stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Evidence helper failed.", call. = FALSE)
+  }
+  if (!nzchar(trimws(stdout_text))) stop("Evidence helper returned no output.", call. = FALSE)
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  parsed$raw_json <- stdout_text
+  parsed
+}
+
+research_pdf_split_sentences <- function(text) {
+  text <- gsub("\r\n?", "\n", text %||% "")
+  text <- gsub("-\\s*\n\\s*", "", text)
+  text <- gsub("\\s*\n\\s*", " ", text)
+  text <- gsub("\\s+", " ", text)
+  text <- trimws(text)
+  if (!nzchar(text)) return(character())
+  parts <- unlist(strsplit(text, "(?<=[.!?])\\s+(?=[A-Z0-9(\\[])", perl = TRUE), use.names = FALSE)
+  parts <- trimws(parts)
+  parts[nzchar(parts)]
+}
+
+research_summary_split_sentences <- function(text) {
+  lines <- unlist(strsplit(article_lab_input_multiline(text) %||% "", "\n+", perl = TRUE), use.names = FALSE)
+  out <- character()
+  for (line in lines) {
+    line <- trimws(line)
+    if (!nzchar(line)) next
+    if (grepl(":\\s*$", line)) {
+      out <- c(out, line)
+    } else {
+      out <- c(out, research_pdf_split_sentences(line))
+    }
+  }
+  out[nzchar(out)]
+}
+
+research_summary_sentence_payload <- function(summary_text) {
+  sentences <- research_summary_split_sentences(summary_text)
+  lapply(seq_along(sentences), function(i) list(sentence_index = i, sentence_text = sentences[[i]]))
+}
+
+research_claim_marker_id <- function(claim_id) paste0("research_claim_marker_", as.integer(claim_id))
+
+research_summary_line_blocks <- function(text) {
+  lines <- unlist(strsplit(article_lab_input_multiline(text) %||% "", "\n", fixed = TRUE), use.names = FALSE)
+  blocks <- list()
+  sentence_index <- 0L
+  for (line in lines) {
+    raw_line <- line
+    trimmed <- trimws(line)
+    if (!nzchar(trimmed)) {
+      blocks[[length(blocks) + 1L]] <- list(type = "blank", prefix = "", units = list())
+      next
+    }
+    prefix <- ""
+    body <- trimmed
+    type <- "paragraph"
+    bullet_match <- regexpr("^([-*]|[0-9]+[.)])\\s+", body, perl = TRUE)
+    if (bullet_match[[1]] == 1L) {
+      prefix <- regmatches(body, bullet_match)
+      body <- trimws(sub("^([-*]|[0-9]+[.)])\\s+", "", body, perl = TRUE))
+      type <- "list_item"
+    } else if (grepl(":\\s*$", body)) {
+      type <- "heading"
+    }
+    parts <- if (identical(type, "heading")) body else research_pdf_split_sentences(body)
+    units <- lapply(parts, function(part) {
+      sentence_index <<- sentence_index + 1L
+      list(sentence_index = sentence_index, text = part)
+    })
+    blocks[[length(blocks) + 1L]] <- list(type = type, prefix = prefix, units = units, raw = raw_line)
+  }
+  blocks
+}
+
+research_marker_status <- function(row) {
+  if (is.null(row) || nrow(row) == 0 || is.na(row$evidence_id[[1]])) return("evidence_not_fetched")
+  status <- row$selection_status[[1]] %||% "suggested"
+  if (is.na(status) || !nzchar(status)) "suggested" else status
+}
+
+research_support_status <- function(value, sentence_ids = integer(), confidence = NULL) {
+  status <- article_lab_input_string(value) %||% ""
+  allowed <- c("supports", "partially_supports", "generally_supported_no_direct_quote", "weak_support", "contradicts", "no_match", "suggested", "verified", "rejected", "failed")
+  if (!nzchar(status) || !(status %in% allowed)) {
+    status <- if (length(sentence_ids) > 0 && !identical(confidence, "none")) "supports" else "no_match"
+  }
+  status
+}
+
+research_status_label <- function(status) {
+  labels <- c(
+    supports = "supports",
+    partially_supports = "partially supports",
+    generally_supported_no_direct_quote = "generally supported, no direct quote",
+    weak_support = "weak support",
+    contradicts = "contradicts",
+    no_match = "no match",
+    suggested = "suggested",
+    verified = "verified",
+    rejected = "rejected",
+    failed = "failed",
+    evidence_not_fetched = "evidence not fetched yet"
+  )
+  labels[[status]] %||% status
+}
+
+research_quote_rows_for_evidence <- function(con, evidence_id, legacy_sentence_id = NA_integer_) {
+  evidence_id_value <- research_input_integer(evidence_id)
+  if (!is.na(evidence_id_value) && dbExistsTable(con, "research_summary_claim_evidence_sentences")) {
+    rows <- dbGetQuery(con, "
+      SELECT es.sentence_id, es.quote_rank, COALESCE(es.page_number, s.page_number) AS page_number, s.sentence_text
+      FROM research_summary_claim_evidence_sentences es
+      JOIN research_pdf_sentences s ON s.sentence_id = es.sentence_id
+      WHERE es.evidence_id = ?
+      ORDER BY es.quote_rank ASC, es.evidence_sentence_id ASC
+    ", params = list(evidence_id_value))
+    if (nrow(rows) > 0) return(rows)
+  }
+  legacy_id <- research_input_integer(legacy_sentence_id)
+  if (is.na(legacy_id)) return(data.frame())
+  dbGetQuery(con, "
+    SELECT sentence_id, 1 AS quote_rank, page_number, sentence_text
+    FROM research_pdf_sentences
+    WHERE sentence_id = ?
+  ", params = list(legacy_id))
+}
+
+research_evidence_sentence_ids <- function(result) {
+  values <- result$sentence_ids %||% result$sentence_id %||% list()
+  if (is.null(values)) return(integer())
+  if (!is.list(values)) values <- as.list(values)
+  ids <- vapply(values, research_input_integer, integer(1))
+  unique(ids[!is.na(ids)])
+}
+
+research_pdf_extract_pages <- function(pdf_path) {
+  if (requireNamespace("pdftools", quietly = TRUE)) {
+    pages <- pdftools::pdf_text(pdf_path)
+    return(data.frame(page_number = seq_along(pages), text = pages, stringsAsFactors = FALSE))
+  }
+  helper_path <- file.path("scripts", "writing_api", "extract_pdf_text.mjs")
+  if (!file.exists(file.path(project_root, helper_path))) {
+    stop("No PDF text extractor is available. Install pdftools or restore scripts/writing_api/extract_pdf_text.mjs.", call. = FALSE)
+  }
+  stdout_file <- tempfile(pattern = "pdf_extract_stdout_", fileext = ".json")
+  stderr_file <- tempfile(pattern = "pdf_extract_stderr_", fileext = ".log")
+  on.exit(unlink(c(stdout_file, stderr_file), force = TRUE), add = TRUE)
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2("node", args = c(helper_path, pdf_path), stdout = stdout_file, stderr = stderr_file, timeout = 120L)
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+  if (!is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
+    stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "PDF text extraction helper failed.", call. = FALSE)
+  }
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  pages <- parsed$pages %||% list()
+  data.frame(
+    page_number = vapply(pages, function(page) {
+      value <- suppressWarnings(as.integer(page$page_number))
+      if (length(value) == 0 || is.na(value[[1]])) NA_integer_ else value[[1]]
+    }, integer(1)),
+    text = vapply(pages, function(page) article_lab_input_multiline(page$text) %||% "", character(1)),
+    stringsAsFactors = FALSE
+  )
+}
+
+research_extract_pdf_sentences <- function(con, source, asset) {
+  if (nrow(source) == 0 || nrow(asset) == 0) stop("Select a source with a PDF before extracting sentences.", call. = FALSE)
+  pdf_path <- research_resolve_local_pdf_path(asset$local_path[[1]])
+  if (is.na(pdf_path) || !file.exists(pdf_path)) stop("The selected PDF asset does not exist on disk.", call. = FALSE)
+  sha <- research_pdf_sha256(pdf_path)
+  existing_n <- dbGetQuery(con, "
+    SELECT COUNT(*) AS n
+    FROM research_pdf_sentences
+    WHERE research_source_id = ? AND file_sha256 = ? AND NULLIF(TRIM(sentence_text), '') IS NOT NULL
+  ", params = list(source$research_source_id[[1]], sha))$n[[1]]
+  if (!is.na(existing_n) && existing_n > 0) return(existing_n)
+
+  pages <- research_pdf_extract_pages(pdf_path)
+  timestamp <- now_utc()
+  dbExecute(con, "DELETE FROM research_pdf_sentences WHERE research_source_id = ? AND asset_id = ?", params = list(source$research_source_id[[1]], asset$asset_id[[1]]))
+  inserted <- 0L
+  for (page_index in seq_len(nrow(pages))) {
+    sentences <- research_pdf_split_sentences(pages$text[[page_index]])
+    if (length(sentences) == 0) next
+    keep <- nchar(sentences, type = "chars") >= 30L & nchar(sentences, type = "chars") <= 1200L
+    sentences <- unique(sentences[keep])
+    for (sentence_index in seq_along(sentences)) {
+      dbExecute(con, "
+        INSERT INTO research_pdf_sentences
+          (asset_id, research_source_id, file_sha256, page_number, sentence_index, sentence_text, char_count, extracted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ", params = list(asset$asset_id[[1]], source$research_source_id[[1]], sha, pages$page_number[[page_index]], sentence_index, sentences[[sentence_index]], nchar(sentences[[sentence_index]], type = "chars"), timestamp))
+      inserted <- inserted + 1L
+    }
+  }
+  inserted
+}
+
+research_claim_terms <- function(claim_text) {
+  words <- tolower(unlist(strsplit(gsub("[^A-Za-z0-9 ]+", " ", claim_text %||% ""), "\\s+"), use.names = FALSE))
+  words <- words[nchar(words) >= 4L]
+  stop_words <- c("this", "that", "with", "from", "they", "their", "there", "where", "which", "about", "would", "could", "should", "investor", "investors", "paper", "study", "shows", "finds")
+  kept <- unique(words[!(words %in% stop_words)])
+  if (length(kept) == 0) return(character())
+  kept[seq_len(min(8L, length(kept)))]
+}
+
+research_candidate_sentences_for_claim <- function(con, source_id, claim_text, limit = 8L) {
+  terms <- research_claim_terms(claim_text)
+  if (length(terms) == 0) return(data.frame())
+  rows <- dbGetQuery(con, "
+    SELECT sentence_id, page_number, sentence_text, char_count
+    FROM research_pdf_sentences
+    WHERE research_source_id = ?
+      AND char_count BETWEEN 40 AND 450
+    ORDER BY page_number ASC, sentence_index ASC
+  ", params = list(source_id))
+  if (nrow(rows) == 0) return(rows)
+  lower_sentences <- tolower(rows$sentence_text)
+  scores <- vapply(lower_sentences, function(sentence) sum(vapply(terms, function(term) grepl(term, sentence, fixed = TRUE), logical(1))), numeric(1))
+  rows$score <- scores
+  rows <- rows[rows$score > 0, , drop = FALSE]
+  if (nrow(rows) == 0) return(rows)
+  rows <- rows[order(-rows$score, rows$char_count), , drop = FALSE]
+  rows[seq_len(min(limit, nrow(rows))), , drop = FALSE]
+}
+
+research_current_summary_for_evidence <- function(con, source_id, summary_text) {
+  source_id_value <- research_input_integer(source_id)
+  if (is.na(source_id_value)) return(data.frame())
+  text_value <- article_lab_input_multiline(summary_text)
+  existing <- load_research_source_summary(con, source_id_value)
+  if (nrow(existing) > 0 && identical(article_lab_input_multiline(existing$summary_text[[1]]), text_value)) return(existing)
+  if (nrow(existing) > 0) return(existing)
+  data.frame()
+}
+
+load_research_summary_evidence_rows <- function(con, summary_id) {
+  summary_id_value <- research_input_integer(summary_id)
+  if (is.na(summary_id_value) || !dbExistsTable(con, "research_summary_claims")) return(data.frame())
+  dbGetQuery(con, "
+    SELECT c.claim_id, c.claim_index, c.claim_text, c.original_text, c.placement_hint, c.importance, c.status AS claim_status,
+      c.model AS marker_model, c.reasoning_effort AS marker_reasoning_effort,
+      c.prompt_template AS marker_prompt_template, c.prompt_payload_json AS marker_prompt_payload_json,
+      e.evidence_id, e.selection_status, e.confidence, e.selector_reason, e.model, e.reasoning_effort,
+      e.prompt_template, e.prompt_payload_json, e.error_message, e.verified_at, e.notes,
+      s.sentence_id, s.page_number, s.sentence_text
+    FROM research_summary_claims c
+    LEFT JOIN research_summary_claim_evidence e ON e.claim_id = c.claim_id
+    LEFT JOIN research_pdf_sentences s ON s.sentence_id = e.sentence_id
+    WHERE c.summary_id = ?
+    ORDER BY c.claim_index ASC, c.claim_id ASC, e.updated_at DESC
+  ", params = list(summary_id_value))
+}
+
+research_latest_evidence_by_claim <- function(rows) {
+  if (nrow(rows) == 0) return(rows)
+  rows[!duplicated(rows$claim_id), , drop = FALSE]
+}
+
 research_title_prompt <- function(source, angle) {
   source_context <- research_input_default(source$main_idea[[1]], research_input_default(source$abstract[[1]], ""))
   paste(
@@ -6168,6 +6465,41 @@ server <- function(input, output, session) {
             actionButton("research_confirm_summary", "Mark summary confirmed", class = "lab-primary"),
             actionButton("research_send_summary_to_generate", "Send confirmed summary to Generate", class = "lab-secondary")
           ),
+          div(
+            class = "lab-card",
+            h3("Evidence markers"),
+            div(
+              class = "lab-grid",
+              div(class = "lab-field", numericInput("research_evidence_max_claims", "Max claims", value = 6L, min = 1L, max = 25L, width = "100%")),
+              div(class = "lab-field", numericInput("research_evidence_candidates_per_claim", "Candidate sentences per claim", value = 12L, min = 3L, max = 20L, width = "100%"))
+            ),
+            h4("Claim sentence marking"),
+            div(
+              class = "lab-grid",
+              div(class = "lab-field", selectInput("research_claim_model", "Model", choices = article_lab_claim_extraction_model_choices, selected = article_lab_default_claim_extraction_model, width = "100%")),
+              div(class = "lab-field", selectInput("research_claim_reasoning_effort", "Reasoning effort", choices = article_lab_evidence_reasoning_choices, selected = article_lab_default_evidence_reasoning_effort, width = "100%"))
+            ),
+            div(class = "lab-field lab-editor-textarea", textAreaInput("research_claim_prompt", "Claim sentence marking prompt", value = article_lab_default_claim_extraction_prompt, width = "100%", height = "210px")),
+            h4("Evidence sentence selection"),
+            div(
+              class = "lab-grid",
+              div(class = "lab-field", selectInput("research_evidence_model", "Model", choices = article_lab_evidence_selection_model_choices, selected = article_lab_default_evidence_selection_model, width = "100%")),
+              div(class = "lab-field", selectInput("research_evidence_reasoning_effort", "Reasoning effort", choices = article_lab_evidence_reasoning_choices, selected = article_lab_default_evidence_reasoning_effort, width = "100%")),
+              div(class = "lab-field", selectInput("research_evidence_fallback_model", "Fallback model", choices = article_lab_evidence_fallback_model_choices, selected = article_lab_default_evidence_fallback_model, width = "100%")),
+              div(class = "lab-field", selectInput("research_evidence_fallback_reasoning_effort", "Fallback reasoning", choices = article_lab_evidence_reasoning_choices, selected = "medium", width = "100%"))
+            ),
+            div(class = "lab-field lab-editor-textarea", textAreaInput("research_evidence_prompt", "Evidence selection prompt", value = article_lab_default_evidence_selection_prompt, width = "100%", height = "210px")),
+            uiOutput("research_evidence_effective_prompts"),
+            div(
+              class = "lab-actions",
+              actionButton("research_extract_pdf_sentences", "Extract PDF sentences", class = "lab-secondary"),
+              actionButton("research_mark_claim_sentences", "Mark claim sentences", class = "lab-primary"),
+              actionButton("research_find_source_sentences", "Find source sentences", class = "lab-primary"),
+              actionButton("research_rerun_weak_evidence", "Rerun weak/no-match with fallback", class = "lab-secondary")
+            ),
+            uiOutput("research_summary_inline_evidence"),
+            uiOutput("research_summary_evidence_table")
+          ),
           uiOutput("article_lab_notice")
         )
       )
@@ -6505,6 +6837,7 @@ server <- function(input, output, session) {
 
   research_refresh <- reactiveVal(0L)
   selected_research_source_id <- reactiveVal(NA_integer_)
+  selected_research_evidence_claim_id <- reactiveVal(NA_integer_)
 
   research_ranked_sources <- reactive({
     research_refresh()
@@ -7153,6 +7486,252 @@ server <- function(input, output, session) {
     research_refresh(research_refresh() + 1L)
   }, ignoreInit = TRUE)
 
+  observeEvent(input$research_extract_pdf_sentences, {
+    source <- selected_research_source()
+    asset <- selected_research_pdf_asset()
+    result <- tryCatch(research_extract_pdf_sentences(con, source, asset), error = function(e) e)
+    if (inherits(result, "error")) {
+      article_lab_state$notice <- paste("PDF sentence extraction failed:", conditionMessage(result))
+    } else {
+      article_lab_state$notice <- sprintf("PDF sentence extraction ready with %s stored sentence%s.", result, ifelse(result == 1L, "", "s"))
+    }
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  mark_research_claim_sentences <- function() {
+    source <- selected_research_source()
+    if (nrow(source) == 0) {
+      article_lab_state$notice <- "Select a source before marking claim sentences."
+      return(invisible(NULL))
+    }
+    summary_id <- save_research_summary("draft")
+    if (is.null(summary_id)) return(invisible(NULL))
+    summary <- load_research_source_summary(con, source$research_source_id[[1]], status = "draft")
+    if (nrow(summary) == 0) summary <- load_research_source_summary(con, source$research_source_id[[1]])
+    if (nrow(summary) == 0) {
+      article_lab_state$notice <- "Save a summary before generating evidence."
+      return(invisible(NULL))
+    }
+
+    max_claims <- max(1L, min(25L, suppressWarnings(as.integer(input$research_evidence_max_claims)) %||% 6L))
+    timestamp <- now_utc()
+    summary_sentence_payload <- research_summary_sentence_payload(summary$summary_text[[1]])
+    summary_sentence_payload_json <- toJSON(summary_sentence_payload, auto_unbox = TRUE, null = "null")
+    claim_template <- article_lab_input_multiline(input$research_claim_prompt) %||% article_lab_default_claim_extraction_prompt
+    claim_prompt <- research_evidence_render_template(claim_template, list(
+      max_claims = max_claims,
+      research_source_id = source$research_source_id[[1]],
+      source_title = source$source_title[[1]],
+      summary_id = summary$summary_id[[1]],
+      summary_text = summary$summary_text[[1]],
+      summary_sentence_payload_json = summary_sentence_payload_json
+    ))
+    claim_model <- article_lab_input_string(input$research_claim_model) %||% article_lab_default_claim_extraction_model
+    claim_reasoning <- article_lab_input_string(input$research_claim_reasoning_effort) %||% article_lab_default_evidence_reasoning_effort
+    claim_payload_json <- toJSON(list(
+      max_claims = max_claims,
+      research_source_id = source$research_source_id[[1]],
+      source_title = source$source_title[[1]],
+      summary_id = summary$summary_id[[1]],
+      summary_text = summary$summary_text[[1]],
+      summary_sentence_payload = summary_sentence_payload
+    ), auto_unbox = TRUE, null = "null")
+    claim_result <- tryCatch(
+      research_evidence_api_request("claim-sentence-marking", claim_prompt, claim_model, claim_reasoning, summary$summary_id[[1]], source$research_source_id[[1]]),
+      error = function(e) e
+    )
+    if (inherits(claim_result, "error")) {
+      dbExecute(con, "
+        INSERT INTO research_summary_claims
+          (summary_id, research_source_id, claim_index, claim_text, status, prompt_template, prompt_payload_json, model, reasoning_effort, error_message, created_at, updated_at)
+        VALUES (?, ?, 0, '', 'failed', ?, ?, ?, ?, ?, ?, ?)
+      ", params = list(summary$summary_id[[1]], source$research_source_id[[1]], claim_template, claim_payload_json, claim_model, claim_reasoning, conditionMessage(claim_result), timestamp, timestamp))
+      article_lab_state$notice <- paste("Claim extraction failed:", conditionMessage(claim_result))
+      research_refresh(research_refresh() + 1L)
+      return(invisible(NULL))
+    }
+
+    claims <- claim_result$parsed$claims %||% list()
+    if (length(claims) > max_claims) claims <- claims[seq_len(max_claims)]
+    if (dbExistsTable(con, "research_summary_claim_evidence_sentences")) {
+      dbExecute(con, "
+        DELETE FROM research_summary_claim_evidence_sentences
+        WHERE evidence_id IN (
+          SELECT e.evidence_id
+          FROM research_summary_claim_evidence e
+          JOIN research_summary_claims c ON c.claim_id = e.claim_id
+          WHERE c.summary_id = ?
+        )
+      ", params = list(summary$summary_id[[1]]))
+    }
+    dbExecute(con, "DELETE FROM research_summary_claim_evidence WHERE claim_id IN (SELECT claim_id FROM research_summary_claims WHERE summary_id = ?)", params = list(summary$summary_id[[1]]))
+    dbExecute(con, "DELETE FROM research_summary_claims WHERE summary_id = ?", params = list(summary$summary_id[[1]]))
+    claim_rows <- list()
+    for (i in seq_along(claims)) {
+      sentence_index <- research_input_integer(claims[[i]]$sentence_index)
+      if (is.na(sentence_index) || sentence_index < 1L || sentence_index > length(summary_sentence_payload)) next
+      exact_sentence <- summary_sentence_payload[[sentence_index]]$sentence_text
+      claim_text <- article_lab_input_string(claims[[i]]$claim_text) %||% exact_sentence
+      if (is.null(claim_text) || is.na(claim_text)) next
+      original_text <- article_lab_input_string(claims[[i]]$original_text) %||% exact_sentence
+      placement_hint <- article_lab_input_string(claims[[i]]$placement_hint) %||% "after_sentence"
+      importance <- article_lab_input_string(claims[[i]]$importance) %||% ""
+      dbExecute(con, "
+        INSERT INTO research_summary_claims
+          (summary_id, research_source_id, claim_index, claim_text, original_text, placement_hint, importance, status, prompt_template, prompt_payload_json, model, reasoning_effort, raw_json_response, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'suggested', ?, ?, ?, ?, ?, ?, ?)
+      ", params = list(summary$summary_id[[1]], source$research_source_id[[1]], sentence_index, claim_text, original_text, placement_hint, importance, claim_template, claim_payload_json, claim_model, claim_reasoning, claim_result$raw_json, timestamp, timestamp))
+      claim_id <- dbGetQuery(con, "SELECT last_insert_rowid() AS claim_id")$claim_id[[1]]
+      claim_rows[[length(claim_rows) + 1L]] <- list(claim_id = claim_id, claim_text = claim_text)
+    }
+    if (length(claim_rows) == 0) {
+      article_lab_state$notice <- "Claim sentence marking returned no usable claim sentences."
+      research_refresh(research_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    article_lab_state$notice <- sprintf("Marked %s atomic claim%s using %s. Source evidence has not been fetched yet.", length(claim_rows), ifelse(length(claim_rows) == 1L, "", "s"), claim_model)
+    research_refresh(research_refresh() + 1L)
+  }
+
+  find_research_source_sentences <- function(use_fallback = FALSE) {
+    source <- selected_research_source()
+    asset <- selected_research_pdf_asset()
+    if (nrow(source) == 0) {
+      article_lab_state$notice <- "Select a source before finding source sentences."
+      return(invisible(NULL))
+    }
+    summary <- selected_research_source_summary()
+    if (nrow(summary) == 0) {
+      article_lab_state$notice <- "Mark claim sentences before finding source sentences."
+      return(invisible(NULL))
+    }
+    claim_rows_df <- load_research_summary_evidence_rows(con, summary$summary_id[[1]])
+    claim_rows_df <- research_latest_evidence_by_claim(claim_rows_df)
+    claim_rows_df <- claim_rows_df[!is.na(claim_rows_df$claim_id), , drop = FALSE]
+    if (isTRUE(use_fallback) && nrow(claim_rows_df) > 0) {
+      weak_status <- is.na(claim_rows_df$selection_status) | claim_rows_df$selection_status %in% c("no_match", "failed", "weak_support", "partially_supports", "generally_supported_no_direct_quote", "contradicts")
+      weak_confidence <- is.na(claim_rows_df$confidence) | claim_rows_df$confidence %in% c("none", "low")
+      claim_rows_df <- claim_rows_df[weak_status | weak_confidence, , drop = FALSE]
+    }
+    if (nrow(claim_rows_df) == 0) {
+      article_lab_state$notice <- if (isTRUE(use_fallback)) "No weak or no-match markers need fallback rerun." else "Mark claim sentences before finding source sentences."
+      return(invisible(NULL))
+    }
+
+    sentence_count <- tryCatch(research_extract_pdf_sentences(con, source, asset), error = function(e) e)
+    if (inherits(sentence_count, "error")) {
+      article_lab_state$notice <- paste("PDF sentence extraction failed:", conditionMessage(sentence_count))
+      return(invisible(NULL))
+    }
+    if (sentence_count < 1L) {
+      article_lab_state$notice <- "PDF text extraction produced no candidate sentences."
+      return(invisible(NULL))
+    }
+
+    candidates_per_claim <- max(3L, min(20L, suppressWarnings(as.integer(input$research_evidence_candidates_per_claim)) %||% 12L))
+    timestamp <- now_utc()
+    claim_rows <- lapply(seq_len(nrow(claim_rows_df)), function(i) list(claim_id = claim_rows_df$claim_id[[i]], claim_text = claim_rows_df$claim_text[[i]]))
+    candidate_payload <- lapply(claim_rows, function(claim) {
+      candidates <- research_candidate_sentences_for_claim(con, source$research_source_id[[1]], claim$claim_text, limit = candidates_per_claim)
+      list(
+        claim_id = claim$claim_id,
+        claim_text = claim$claim_text,
+        candidates = unname(lapply(seq_len(nrow(candidates)), function(i) {
+          list(sentence_id = candidates$sentence_id[[i]], page_number = candidates$page_number[[i]], sentence_text = candidates$sentence_text[[i]])
+        }))
+      )
+    })
+    allowed_sentence_ids <- setNames(lapply(candidate_payload, function(entry) {
+      vapply(entry$candidates, function(candidate) as.integer(candidate$sentence_id), integer(1))
+    }), vapply(candidate_payload, function(entry) as.character(entry$claim_id), character(1)))
+    evidence_template <- article_lab_input_multiline(input$research_evidence_prompt) %||% article_lab_default_evidence_selection_prompt
+    evidence_payload_json <- toJSON(candidate_payload, auto_unbox = TRUE, null = "null")
+    evidence_prompt <- research_evidence_render_template(evidence_template, list(claim_candidate_payload_json = evidence_payload_json))
+    evidence_model <- if (isTRUE(use_fallback)) article_lab_input_string(input$research_evidence_fallback_model) %||% article_lab_default_evidence_fallback_model else article_lab_input_string(input$research_evidence_model) %||% article_lab_default_evidence_selection_model
+    evidence_reasoning <- if (isTRUE(use_fallback)) article_lab_input_string(input$research_evidence_fallback_reasoning_effort) %||% "medium" else article_lab_input_string(input$research_evidence_reasoning_effort) %||% article_lab_default_evidence_reasoning_effort
+    evidence_result <- tryCatch(
+      research_evidence_api_request("evidence-selection", evidence_prompt, evidence_model, evidence_reasoning, summary$summary_id[[1]], source$research_source_id[[1]]),
+      error = function(e) e
+    )
+    if (inherits(evidence_result, "error")) {
+      for (claim in claim_rows) {
+        dbExecute(con, "
+          INSERT INTO research_summary_claim_evidence
+            (claim_id, selection_status, prompt_template, prompt_payload_json, model, reasoning_effort, error_message, created_at, updated_at)
+          VALUES (?, 'failed', ?, ?, ?, ?, ?, ?, ?)
+        ", params = list(claim$claim_id, evidence_template, evidence_payload_json, evidence_model, evidence_reasoning, conditionMessage(evidence_result), timestamp, timestamp))
+      }
+      article_lab_state$notice <- paste("Evidence selection failed:", conditionMessage(evidence_result))
+      research_refresh(research_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    results <- evidence_result$parsed$results %||% list()
+    for (result in results) {
+      claim_id <- research_input_integer(result$claim_id)
+      if (is.na(claim_id)) next
+      sentence_ids <- research_evidence_sentence_ids(result)
+      allowed_for_claim <- allowed_sentence_ids[[as.character(claim_id)]] %||% integer()
+      sentence_ids <- sentence_ids[sentence_ids %in% allowed_for_claim]
+      sentence_ids <- sentence_ids[seq_len(min(3L, length(sentence_ids)))]
+      confidence <- article_lab_input_string(result$confidence) %||% "none"
+      status <- research_support_status(result$support_status %||% result$selection_status, sentence_ids = sentence_ids, confidence = confidence)
+      if (status %in% c("generally_supported_no_direct_quote", "no_match")) sentence_ids <- integer()
+      if (length(sentence_ids) == 0 && status %in% c("supports", "partially_supports", "weak_support", "contradicts")) status <- "no_match"
+      sentence_id <- if (length(sentence_ids) > 0) sentence_ids[[1]] else NA_integer_
+      dbExecute(con, "
+        INSERT INTO research_summary_claim_evidence
+          (claim_id, sentence_id, selection_status, confidence, selector_reason, prompt_template, prompt_payload_json, model, reasoning_effort, raw_json_response, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ", params = list(claim_id, if (is.na(sentence_id)) NA_integer_ else sentence_id, status, confidence, article_lab_input_string(result$reason), evidence_template, evidence_payload_json, evidence_model, evidence_reasoning, evidence_result$raw_json, timestamp, timestamp))
+      evidence_id <- dbGetQuery(con, "SELECT last_insert_rowid() AS evidence_id")$evidence_id[[1]]
+      if (dbExistsTable(con, "research_summary_claim_evidence_sentences") && length(sentence_ids) > 0) {
+        quote_pages <- dbGetQuery(con, sprintf(
+          "SELECT sentence_id, page_number FROM research_pdf_sentences WHERE sentence_id IN (%s)",
+          paste(rep("?", length(sentence_ids)), collapse = ",")
+        ), params = as.list(sentence_ids))
+        page_by_id <- setNames(as.list(quote_pages$page_number), as.character(quote_pages$sentence_id))
+        for (rank in seq_along(sentence_ids)) {
+          quote_page <- page_by_id[[as.character(sentence_ids[[rank]])]]
+          dbExecute(con, "
+            INSERT INTO research_summary_claim_evidence_sentences
+              (evidence_id, sentence_id, quote_rank, page_number, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          ", params = list(evidence_id, sentence_ids[[rank]], rank, quote_page %||% NA_integer_, timestamp))
+        }
+      }
+    }
+    article_lab_state$notice <- sprintf("Found source-sentence suggestions for %s marked claim%s using %s.", length(claim_rows), ifelse(length(claim_rows) == 1L, "", "s"), evidence_model)
+    research_refresh(research_refresh() + 1L)
+  }
+
+  observeEvent(input$research_mark_claim_sentences, {
+    mark_research_claim_sentences()
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_find_source_sentences, {
+    find_research_source_sentences(use_fallback = FALSE)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_rerun_weak_evidence, {
+    find_research_source_sentences(use_fallback = TRUE)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_verify_evidence, {
+    evidence_id <- research_input_integer(input$research_verify_evidence)
+    if (is.na(evidence_id)) return(invisible(NULL))
+    dbExecute(con, "UPDATE research_summary_claim_evidence SET selection_status = 'verified', verified_at = ?, verified_by = 'manual', updated_at = ? WHERE evidence_id = ?", params = list(now_utc(), now_utc(), evidence_id))
+    article_lab_state$notice <- sprintf("Verified evidence %s.", evidence_id)
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_reject_evidence, {
+    evidence_id <- research_input_integer(input$research_reject_evidence)
+    if (is.na(evidence_id)) return(invisible(NULL))
+    dbExecute(con, "UPDATE research_summary_claim_evidence SET selection_status = 'rejected', updated_at = ? WHERE evidence_id = ?", params = list(now_utc(), evidence_id))
+    article_lab_state$notice <- sprintf("Rejected evidence %s.", evidence_id)
+    research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
   observeEvent(input$research_generate_summary_draft, {
     source <- selected_research_source()
     asset <- selected_research_pdf_asset()
@@ -7307,6 +7886,260 @@ server <- function(input, output, session) {
     ready <- nrow(asset) > 0 && asset$status[[1]] %in% c("downloaded", "uploaded") && !is.na(research_input_value(asset$local_path[[1]]))
     copy <- if (isTRUE(ready)) "PDF ready for summary generation." else "Download or upload a PDF before generating an API summary."
     div(class = "lab-status-copy", copy)
+  })
+
+  research_evidence_prompt_preview <- reactive({
+    source <- selected_research_source()
+    summary <- selected_research_source_summary()
+    summary_text <- article_lab_input_multiline(input$research_summary_text) %||% ""
+    max_claims <- max(1L, min(25L, suppressWarnings(as.integer(input$research_evidence_max_claims)) %||% 6L))
+    candidates_per_claim <- max(3L, min(20L, suppressWarnings(as.integer(input$research_evidence_candidates_per_claim)) %||% 12L))
+    summary_id <- if (nrow(summary) == 0) "(summary not saved yet)" else summary$summary_id[[1]]
+    variables <- list(
+      max_claims = max_claims,
+      research_source_id = if (nrow(source) == 0) "" else source$research_source_id[[1]],
+      source_title = if (nrow(source) == 0) "" else source$source_title[[1]],
+      summary_id = summary_id,
+      summary_text = summary_text,
+      summary_sentence_payload_json = toJSON(research_summary_sentence_payload(summary_text), auto_unbox = TRUE, null = "null"),
+      claim_candidate_payload_json = sprintf("(Generated after local retrieval: up to %s candidate sentences per claim.)", candidates_per_claim)
+    )
+    claim_template <- article_lab_input_multiline(input$research_claim_prompt) %||% article_lab_default_claim_extraction_prompt
+    evidence_template <- article_lab_input_multiline(input$research_evidence_prompt) %||% article_lab_default_evidence_selection_prompt
+    list(
+      claim_prompt = research_evidence_render_template(claim_template, variables),
+      evidence_prompt = research_evidence_render_template(evidence_template, variables),
+      max_claims = max_claims,
+      candidates_per_claim = candidates_per_claim
+    )
+  })
+
+  output$research_evidence_effective_prompts <- renderUI({
+    preview <- research_evidence_prompt_preview()
+    div(
+      class = "lab-card",
+      h4("Exact prompts before API calls"),
+      p(class = "lab-status-copy", "The claim step sends the summary only. The evidence step sends claim text plus locally retrieved candidate sentence IDs/text/page metadata only."),
+      tags$details(
+        tags$summary("Show exact evidence workflow prompts"),
+        h4("Claim extraction request fields"),
+        tags$pre(class = "lab-status-copy", paste(
+          sprintf("Model: %s", article_lab_input_string(input$research_claim_model) %||% article_lab_default_claim_extraction_model),
+          sprintf("Reasoning effort: %s", article_lab_input_string(input$research_claim_reasoning_effort) %||% article_lab_default_evidence_reasoning_effort),
+          sep = "\n"
+        )),
+        h4("Resolved claim extraction prompt"),
+        tags$pre(class = "lab-status-copy", preview$claim_prompt),
+        h4("Evidence selection request fields"),
+        tags$pre(class = "lab-status-copy", paste(
+          sprintf("Model: %s", article_lab_input_string(input$research_evidence_model) %||% article_lab_default_evidence_selection_model),
+          sprintf("Reasoning effort: %s", article_lab_input_string(input$research_evidence_reasoning_effort) %||% article_lab_default_evidence_reasoning_effort),
+          sprintf("Fallback model: %s", article_lab_input_string(input$research_evidence_fallback_model) %||% article_lab_default_evidence_fallback_model),
+          sprintf("Fallback reasoning effort: %s", article_lab_input_string(input$research_evidence_fallback_reasoning_effort) %||% "medium"),
+          sep = "\n"
+        )),
+        h4("Evidence selection prompt template preview"),
+        tags$pre(class = "lab-status-copy", preview$evidence_prompt)
+      )
+    )
+  })
+
+  observeEvent(input$research_select_evidence_claim, {
+    selected_research_evidence_claim_id(research_input_integer(input$research_select_evidence_claim))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_close_evidence_drawer, {
+    selected_research_evidence_claim_id(NA_integer_)
+  }, ignoreInit = TRUE)
+
+  output$research_summary_inline_evidence <- renderUI({
+    summary <- selected_research_source_summary()
+    summary_text <- article_lab_input_multiline(input$research_summary_text) %||% if (nrow(summary) > 0) summary$summary_text[[1]] else ""
+    if (!nzchar(trimws(summary_text))) return(div(class = "lab-status-copy", "Add or select a summary to mark evidence-worthy claim sentences."))
+    blocks <- research_summary_line_blocks(summary_text)
+    if (length(blocks) == 0) return(div(class = "lab-status-copy", "No summary sentences found."))
+    rows <- if (nrow(summary) > 0) research_latest_evidence_by_claim(load_research_summary_evidence_rows(con, summary$summary_id[[1]])) else data.frame()
+    row_by_index <- list()
+    if (nrow(rows) > 0) {
+      for (i in seq_len(nrow(rows))) {
+        key <- as.character(rows$claim_index[[i]])
+        row_by_index[[key]] <- c(row_by_index[[key]] %||% list(), list(rows[i, , drop = FALSE]))
+      }
+    }
+    selected_claim_id <- selected_research_evidence_claim_id()
+    selected_row <- data.frame()
+    if (nrow(rows) > 0 && !is.na(selected_claim_id) && selected_claim_id %in% rows$claim_id) {
+      selected_row <- rows[match(selected_claim_id, rows$claim_id), , drop = FALSE]
+    }
+    marker_for_row <- function(row) {
+      if (is.null(row) || nrow(row) == 0) return(NULL)
+      status <- research_marker_status(row)
+      fetched <- !is.na(row$evidence_id[[1]])
+      quote_rows <- if (fetched) research_quote_rows_for_evidence(con, row$evidence_id[[1]], row$sentence_id[[1]]) else data.frame()
+      has_quotes <- nrow(quote_rows) > 0
+      quote_label <- if (has_quotes && nrow(quote_rows) > 1L) "PDF quotes" else "PDF quote"
+      tooltip <- if (fetched && has_quotes) {
+        span(
+          class = "research-citation-tooltip",
+          span(class = "research-citation-tooltip-label", if (identical(status, "rejected")) paste("Rejected", quote_label) else quote_label),
+          tagList(lapply(seq_len(nrow(quote_rows)), function(i) {
+            quote_page <- if (is.na(quote_rows$page_number[[i]])) "page unavailable" else paste("page", quote_rows$page_number[[i]])
+            tagList(
+              span(class = "research-citation-tooltip-quote", quote_rows$sentence_text[[i]]),
+              span(class = "research-citation-tooltip-meta", quote_page)
+            )
+          })),
+          span(class = "research-citation-tooltip-meta", sprintf("confidence: %s · %s", row$confidence[[1]] %||% "", research_status_label(status)))
+        )
+      } else if (fetched) {
+        no_quote_status <- if (identical(status, "generally_supported_no_direct_quote")) "Paper seems to support this generally, but no direct quote was selected" else "No supporting PDF sentence selected"
+        span(
+          class = "research-citation-tooltip",
+          span(class = "research-citation-tooltip-label", "Atomic claim"),
+          span(class = "research-citation-tooltip-claim", research_truncate(row$claim_text[[1]], max_chars = 220L)),
+          span(class = "research-citation-tooltip-meta", sprintf("Status: %s · confidence: %s", no_quote_status, row$confidence[[1]] %||% "none")),
+          if (!is.na(row$selector_reason[[1]]) && nzchar(row$selector_reason[[1]])) span(class = "research-citation-tooltip-reason", research_truncate(row$selector_reason[[1]], max_chars = 180L)) else NULL
+        )
+      } else {
+        span(
+          class = "research-citation-tooltip",
+          span(class = "research-citation-tooltip-label", "Atomic claim"),
+          span(class = "research-citation-tooltip-claim", research_truncate(row$claim_text[[1]], max_chars = 220L)),
+          span(class = "research-citation-tooltip-meta", sprintf("Status: evidence not fetched yet · marker model: %s", row$marker_model[[1]] %||% ""))
+        )
+      }
+      tags$button(
+        type = "button",
+        class = paste(
+          "btn lab-secondary research-citation-marker",
+          paste0("status-", gsub("[^a-z0-9_]+", "_", tolower(status))),
+          if (!is.na(selected_claim_id) && identical(as.integer(row$claim_id[[1]]), as.integer(selected_claim_id))) "active" else ""
+        ),
+        onclick = sprintf("Shiny.setInputValue('research_select_evidence_claim', %s, {priority:'event'})", row$claim_id[[1]]),
+        span(class = "research-citation-marker-label", sprintf("[%s]", row$claim_id[[1]])),
+        tooltip
+      )
+    }
+    block_nodes <- lapply(blocks, function(block) {
+      if (identical(block$type, "blank")) return(div(class = "research-summary-spacer"))
+      unit_nodes <- lapply(block$units, function(unit) {
+        marker_rows <- row_by_index[[as.character(unit$sentence_index)]] %||% list()
+        tagList(span(unit$text), tagList(lapply(marker_rows, marker_for_row)), " ")
+      })
+      if (identical(block$type, "heading")) {
+        div(class = "research-summary-line research-summary-heading", unit_nodes)
+      } else if (identical(block$type, "list_item")) {
+        div(class = "research-summary-line research-summary-list-item", span(class = "research-summary-list-prefix", block$prefix), span(unit_nodes))
+      } else {
+        div(class = "research-summary-line research-summary-paragraph", unit_nodes)
+      }
+    })
+    drawer <- if (nrow(selected_row) == 0) {
+      NULL
+    } else {
+      page <- if (is.na(selected_row$page_number[[1]])) "page unavailable" else paste("page", selected_row$page_number[[1]])
+      fetched <- !is.na(selected_row$evidence_id[[1]])
+      status <- research_marker_status(selected_row)
+      quote_rows <- if (fetched) research_quote_rows_for_evidence(con, selected_row$evidence_id[[1]], selected_row$sentence_id[[1]]) else data.frame()
+      has_quotes <- nrow(quote_rows) > 0
+      quote_label <- if (has_quotes && nrow(quote_rows) > 1L) "PDF quotes" else "PDF quote"
+      div(
+        class = "research-evidence-drawer",
+        div(
+          class = "research-evidence-drawer-header",
+          div(
+            div(class = "research-evidence-drawer-title", sprintf("Marker [%s] · %s", selected_row$claim_id[[1]], if (fetched) research_status_label(status) else "evidence not fetched yet")),
+            div(class = "research-evidence-drawer-subtitle", if (fetched) sprintf("confidence: %s · selector: %s", selected_row$confidence[[1]] %||% "", selected_row$model[[1]] %||% "") else sprintf("Marker model: %s · reasoning: %s", selected_row$marker_model[[1]] %||% "", selected_row$marker_reasoning_effort[[1]] %||% ""))
+          ),
+          tags$button(type = "button", class = "btn lab-secondary research-evidence-drawer-close", onclick = "Shiny.setInputValue('research_close_evidence_drawer', Date.now(), {priority:'event'})", "Close")
+        ),
+        div(
+          class = "research-evidence-drawer-body",
+          p(class = "lab-status-copy", strong("Atomic claim: "), selected_row$claim_text[[1]]),
+          if (!is.na(selected_row$original_text[[1]]) && nzchar(selected_row$original_text[[1]])) p(class = "lab-status-copy", strong("Original summary sentence/bullet: "), selected_row$original_text[[1]]) else NULL,
+          if (fetched && has_quotes) {
+            tagList(
+              div(class = "research-pdf-quote-label", if (identical(status, "rejected")) paste("Rejected", quote_label) else quote_label),
+              tagList(lapply(seq_len(nrow(quote_rows)), function(i) {
+                quote_page <- if (is.na(quote_rows$page_number[[i]])) "page unavailable" else paste("page", quote_rows$page_number[[i]])
+                tagList(
+                  div(class = "research-pdf-quote", quote_rows$sentence_text[[i]]),
+                  p(class = "lab-status-copy", quote_page)
+                )
+              }))
+            )
+          } else if (fetched) {
+            p(class = "lab-status-copy", if (identical(status, "generally_supported_no_direct_quote")) "Paper seems to support this generally, but no direct quote was selected." else "No matching source sentence selected.")
+          } else {
+            p(class = "lab-status-copy", "Source evidence not fetched yet.")
+          },
+          if (fetched) p(class = "lab-status-copy", sprintf("Support status: %s · confidence: %s · selector model: %s", research_status_label(status), selected_row$confidence[[1]] %||% "", selected_row$model[[1]] %||% "")) else NULL,
+          if (fetched && !is.na(selected_row$selector_reason[[1]]) && nzchar(selected_row$selector_reason[[1]])) p(class = "lab-status-copy", strong("Reason: "), selected_row$selector_reason[[1]]) else NULL,
+          tags$details(
+            class = "lab-secondary-details",
+            tags$summary("Prompt/run metadata"),
+            h5(if (fetched) "Evidence selector prompt template" else "Claim marker prompt template"),
+            tags$pre(class = "lab-status-copy", if (fetched) selected_row$prompt_template[[1]] %||% "" else selected_row$marker_prompt_template[[1]] %||% ""),
+            h5(if (fetched) "Evidence selector prompt payload JSON" else "Claim marker prompt payload JSON"),
+            tags$pre(class = "lab-status-copy", if (fetched) selected_row$prompt_payload_json[[1]] %||% "" else selected_row$marker_prompt_payload_json[[1]] %||% "")
+          ),
+          if (fetched && !is.na(selected_row$evidence_id[[1]])) div(
+            class = "lab-actions",
+            tags$button(type = "button", class = "btn lab-primary", onclick = sprintf("Shiny.setInputValue('research_verify_evidence', %s, {priority:'event'})", selected_row$evidence_id[[1]]), "Verify"),
+            tags$button(type = "button", class = "btn lab-secondary", onclick = sprintf("Shiny.setInputValue('research_reject_evidence', %s, {priority:'event'})", selected_row$evidence_id[[1]]), "Reject")
+          ) else NULL
+        )
+      )
+    }
+    div(
+      class = "lab-card",
+      h4("Summary with claim markers"),
+      p(class = "lab-status-copy", "Markers show detected claim sentences first; source evidence appears after running Find source sentences."),
+      div(class = "lab-status-copy research-inline-summary", block_nodes),
+      if (nrow(selected_row) == 0) div(class = "lab-status-copy", "Hover over a marker for a quick preview. Click a marker to open the evidence drawer.") else NULL,
+      drawer
+    )
+  })
+
+  output$research_summary_evidence_table <- renderUI({
+    summary <- selected_research_source_summary()
+    if (nrow(summary) == 0) return(div(class = "lab-status-copy", "Save or confirm the current summary before generating evidence suggestions."))
+    rows <- load_research_summary_evidence_rows(con, summary$summary_id[[1]])
+    if (nrow(rows) == 0) return(div(class = "lab-status-copy", "No evidence suggestions yet."))
+    tags$details(
+      class = "lab-card",
+      tags$summary("Debug/review claim rows"),
+      lapply(seq_len(nrow(rows)), function(i) {
+      row <- rows[i, , drop = FALSE]
+      status <- row$selection_status[[1]] %||% "suggested"
+      quote_rows <- if (!is.na(row$evidence_id[[1]])) research_quote_rows_for_evidence(con, row$evidence_id[[1]], row$sentence_id[[1]]) else data.frame()
+      div(
+        class = "lab-card",
+        h4(sprintf("Claim %s · %s", row$claim_id[[1]], research_status_label(status))),
+        p(class = "lab-status-copy", row$claim_text[[1]]),
+        if (nrow(quote_rows) > 0) {
+          tagList(
+            tagList(lapply(seq_len(nrow(quote_rows)), function(qi) {
+              quote_page <- if (is.na(quote_rows$page_number[[qi]])) "page unavailable" else paste("page", quote_rows$page_number[[qi]])
+              tagList(
+                div(class = "research-pdf-quote", quote_rows$sentence_text[[qi]]),
+                p(class = "lab-status-copy", quote_page)
+              )
+            })),
+            p(class = "lab-status-copy", sprintf("confidence: %s · model: %s", row$confidence[[1]] %||% "", row$model[[1]] %||% ""))
+          )
+        } else {
+          p(class = "lab-status-copy", "No supporting sentence selected.")
+        },
+        if (!is.na(row$selector_reason[[1]]) && nzchar(row$selector_reason[[1]])) p(class = "lab-status-copy", strong("Reason: "), row$selector_reason[[1]]) else NULL,
+        if (!is.na(row$evidence_id[[1]])) div(
+          class = "lab-actions",
+          tags$button(type = "button", class = "btn lab-primary", onclick = sprintf("Shiny.setInputValue('research_verify_evidence', %s, {priority:'event'})", row$evidence_id[[1]]), "Verify"),
+          tags$button(type = "button", class = "btn lab-secondary", onclick = sprintf("Shiny.setInputValue('research_reject_evidence', %s, {priority:'event'})", row$evidence_id[[1]]), "Reject")
+        ) else NULL
+      )
+      })
+    )
   })
 
   output$article_lab_research_summary_selector <- renderUI({

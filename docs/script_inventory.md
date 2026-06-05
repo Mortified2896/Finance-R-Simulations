@@ -83,6 +83,7 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `writing_api/generate_titles.mjs`: live OpenAI title-generation helper for the Article Lab Generate tab.
 - `writing_api/generate_subtitles.mjs`: live OpenAI subtitle-generation helper for the Article Lab Subtitle Generation tab.
 - `writing_api/summarize_research_pdf.mjs`: live OpenAI PDF summary helper for the Article Lab Summary tab.
+- `writing_api/select_summary_evidence.mjs`: Article Lab evidence helper for claim extraction and source-sentence selection from locally retrieved PDF sentence candidates.
 - `writing_api/score_article_lab_titles.py`: live OpenAI title-only scoring helper for the Article Lab API score tab using the v2_2 rubric.
 - `writing_api/reroll_sentence.mjs`: article sentence/paragraph rewrite helper.
 - `writing_api/langfuse.mjs`: shared Node helper for optional Langfuse tracing around writing API calls.
