@@ -341,7 +341,8 @@ load_article_lab_ready_for_outline_rows <- function(con, batch_id) {
       o.model AS outline_model,
       o.generation_mode AS outline_generation_mode,
       o.updated_at AS outline_updated_at,
-      o.approved_at AS outline_approved_at
+      o.approved_at AS outline_approved_at,
+      t.outline_context_notes AS thumbnail_outline_context_notes
     FROM article_lab_thumbnail_candidates t
     INNER JOIN article_lab_subtitle_candidates s
       ON s.subtitle_id = t.subtitle_id
@@ -374,7 +375,8 @@ load_article_lab_ready_for_outline_rows <- function(con, batch_id) {
       o.model AS outline_model,
       o.generation_mode AS outline_generation_mode,
       o.updated_at AS outline_updated_at,
-      o.approved_at AS outline_approved_at
+      o.approved_at AS outline_approved_at,
+      t.outline_context_notes AS thumbnail_outline_context_notes
     FROM article_lab_thumbnail_candidates t
     INNER JOIN article_lab_subtitle_candidates s
       ON s.subtitle_id = t.subtitle_id
@@ -478,6 +480,7 @@ load_article_lab_review_publish_rows <- function(con, batch_id) {
     LEFT JOIN article_lab_publish_settings ps ON ps.full_text_draft_id = d.full_text_draft_id
     WHERE (d.status = 'approved' OR d.is_approved = 1)
       AND COALESCE(c.archived, 0) = 0
+      AND COALESCE(ps.publish_status, '') != 'archived'
   "
   params <- list()
   if (!all_batches) {
@@ -773,4 +776,3 @@ article_lab_overview <- function(con) {
     FROM article_lab_title_candidates
   ")
 }
-

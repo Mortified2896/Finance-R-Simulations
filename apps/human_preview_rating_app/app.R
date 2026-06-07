@@ -98,9 +98,16 @@ server <- function(input, output, session) {
     is_generating_thumbnails = FALSE,
     thumbnail_generation_started_at = NULL,
     thumbnail_generation_estimate = NULL,
-    notice = NULL
+    notice = NULL,
+    last_outline_generate_error = NULL,
+    last_outline_generate_error_at = NULL,
+    last_full_text_generate_error = NULL,
+    last_full_text_generate_error_at = NULL,
+    last_review_publish_archive_error = NULL,
+    last_review_publish_archive_error_at = NULL
   )
   article_lab_refresh <- reactiveVal(0L)
+  article_lab_active_outline_thumbnail <- reactiveVal(NULL)
 
   observeEvent(input$research_summary_prompt_version, {
     updateTextAreaInput(
@@ -158,6 +165,12 @@ server <- function(input, output, session) {
       class = if (has_changes) "lab-primary" else "lab-secondary",
       disabled = if (has_changes) NULL else "disabled"
     )
+  })
+
+  output$article_lab_outline_context_notes_ui <- renderUI({
+    has_selection <- !is.null(article_lab_active_outline_thumbnail())
+    ta <- textAreaInput("article_lab_outline_context_notes", "Outline context notes (optional, included in prompt)", value = isolate(input$article_lab_outline_context_notes %||% ""), width = "100%", height = "68px")
+    if (has_selection) ta else htmltools::tagAppendAttributes(ta, disabled = "disabled")
   })
 
   observeEvent(input$article_lab_outline_prompt_key_select, {
@@ -657,6 +670,11 @@ server <- function(input, output, session) {
           ),
           div(class = "lab-actions", uiOutput("article_lab_outline_prompt_save_button")),
           div(
+            class = "lab-field",
+            uiOutput("article_lab_outline_context_notes_ui"),
+            div(class = "lab-actions", actionButton("article_lab_save_outline_context_notes", "Save context notes", class = "lab-secondary"))
+          ),
+          div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
             div(class = "lab-field", selectInput("article_lab_outline_model", "Model", choices = article_lab_outline_model_choices, selected = article_lab_default_outline_model, width = "100%")),
@@ -670,6 +688,7 @@ server <- function(input, output, session) {
             actionButton("article_lab_refresh_outlines", "Refresh", class = "lab-secondary")
           ),
           div(class = "lab-status-copy", "Generate an outline from approved packages, edit/review it here, then approve it to move the package to draft-ready."),
+          uiOutput("article_lab_outline_generate_error"),
           uiOutput("article_lab_outline_effective_prompt"),
           uiOutput("article_lab_notice")
         ),
@@ -707,6 +726,7 @@ server <- function(input, output, session) {
             class_name = "lab-actions-full-text"
           ),
           div(class = "lab-status-copy", "Generate drafts from approved outlines, edit the selected draft directly, save revisions, then approve one draft for Review & Publish."),
+          uiOutput("article_lab_full_text_generate_error"),
           uiOutput("article_lab_full_text_effective_prompt"),
           uiOutput("article_lab_notice")
         ),
@@ -1411,6 +1431,7 @@ server <- function(input, output, session) {
 
   collect_selected_ids <- function(rows, prefix, snapshot_ids = NULL, key_col = "candidate_id") {
     if (nrow(rows) == 0) return(character())
+    if (!(key_col %in% names(rows))) return(character())
     snapshot_ids <- clean_text(snapshot_ids)
     snapshot_ids <- unique(snapshot_ids[!is.na(snapshot_ids)])
     if (length(snapshot_ids) > 0) {
@@ -2172,6 +2193,86 @@ server <- function(input, output, session) {
     notice <- article_lab_state$notice
     if (is.null(notice) || !nzchar(notice)) return(NULL)
     div(class = "lab-status-copy", notice)
+  })
+
+  output$article_lab_outline_generate_error <- renderUI({
+    err <- article_lab_state$last_outline_generate_error
+    if (is.null(err)) return(NULL)
+    err_at <- article_lab_state$last_outline_generate_error_at
+    elapsed <- if (is.null(err_at)) "" else format(err_at, "%Y-%m-%d %H:%M:%S")
+    kind_label <- switch(
+      err$kind %||% "unknown",
+      api_failed = "Outline API call failed",
+      no_rows = "Outline API returned no usable rows",
+      exception = "Outline generation crashed",
+      "Outline generation error"
+    )
+    affected_n <- length(err$selected_ids %||% character())
+    div(
+      class = "lab-alert lab-alert-error",
+      role = "alert",
+      div(
+        class = "lab-alert-title",
+        span(class = "lab-alert-icon", HTML("&#9888;")),
+        strong(kind_label),
+        if (nzchar(elapsed)) span(class = "lab-alert-time", sprintf(" at %s", elapsed))
+      ),
+      div(
+        class = "lab-alert-body",
+        p(err$reason %||% "Unknown error."),
+        tags$ul(
+          tags$li(sprintf("Model: %s", err$model %||% "unknown")),
+          tags$li(sprintf("Mode reported by helper: %s", err$mode %||% "unknown")),
+          if (affected_n > 0) tags$li(sprintf("Affected package%s: %s", ifelse(affected_n == 1L, "", "s"), paste(err$selected_ids, collapse = ", "))) else tags$li("No packages were sent to the API."),
+          tags$li("The existing outline text was NOT changed. Regenerate again only after the underlying problem is fixed (e.g., billing/quota, model availability, or local network).")
+        ),
+        p(
+          strong("Debug log: "),
+          code(".local_gitignored/article_lab_debug.log")
+        )
+      )
+    )
+  })
+
+  output$article_lab_full_text_generate_error <- renderUI({
+    err <- article_lab_state$last_full_text_generate_error
+    if (is.null(err)) return(NULL)
+    err_at <- article_lab_state$last_full_text_generate_error_at
+    elapsed <- if (is.null(err_at)) "" else format(err_at, "%Y-%m-%d %H:%M:%S")
+    kind_label <- switch(
+      err$kind %||% "unknown",
+      no_selection = "No approved outline selected",
+      stale_selection = "Selected outline unavailable",
+      api_failed = "Full article API call failed",
+      no_rows = "Full article API returned no usable rows",
+      exception = "Full article generation crashed",
+      "Full article generation error"
+    )
+    affected_n <- length(err$selected_ids %||% character())
+    div(
+      class = "lab-alert lab-alert-error",
+      role = "alert",
+      div(
+        class = "lab-alert-title",
+        span(class = "lab-alert-icon", HTML("&#9888;")),
+        strong(kind_label),
+        if (nzchar(elapsed)) span(class = "lab-alert-time", sprintf(" at %s", elapsed))
+      ),
+      div(
+        class = "lab-alert-body",
+        p(err$reason %||% "Unknown error."),
+        tags$ul(
+          tags$li(sprintf("Model: %s", err$model %||% "unknown")),
+          tags$li(sprintf("Mode reported by helper: %s", err$mode %||% "unknown")),
+          if (affected_n > 0) tags$li(sprintf("Affected outline%s: %s", ifelse(affected_n == 1L, "", "s"), paste(err$selected_ids, collapse = ", "))) else tags$li("No approved outline was sent to the API."),
+          tags$li("No full article draft was saved. Approve an outline first, then select exactly one approved outline in this tab and generate again.")
+        ),
+        p(
+          strong("Debug log: "),
+          code(".local_gitignored/article_lab_debug.log")
+        )
+      )
+    )
   })
 
   output$research_summary_source_selector <- renderUI({
@@ -3471,6 +3572,40 @@ server <- function(input, output, session) {
     )
   })
 
+  output$article_lab_review_publish_archive_error <- renderUI({
+    err <- article_lab_state$last_review_publish_archive_error
+    if (is.null(err)) return(NULL)
+    err_at <- article_lab_state$last_review_publish_archive_error_at
+    elapsed <- if (is.null(err_at)) "" else format(err_at, "%Y-%m-%d %H:%M:%S")
+    kind_label <- switch(
+      err$kind %||% "unknown",
+      no_selection = "No article selected",
+      no_rows = "Article archive did not update any rows",
+      exception = "Article archive failed",
+      "Article archive error"
+    )
+    affected_ids <- err$selected_ids %||% character()
+    div(
+      class = "lab-alert lab-alert-error",
+      role = "alert",
+      div(
+        class = "lab-alert-title",
+        span(class = "lab-alert-icon", HTML("&#9888;")),
+        strong(kind_label),
+        if (nzchar(elapsed)) span(class = "lab-alert-time", sprintf(" at %s", elapsed))
+      ),
+      div(
+        class = "lab-alert-body",
+        p(err$reason %||% "Unknown error."),
+        tags$ul(
+          if (length(affected_ids) > 0) tags$li(sprintf("Affected draft%s: %s", ifelse(length(affected_ids) == 1L, "", "s"), paste(affected_ids, collapse = ", "))) else tags$li("No draft was selected."),
+          tags$li("The approved article was NOT archived or deleted. It remains in Review & Publish until this succeeds."),
+          tags$li("This action is non-destructive: a successful archive sets publish_status to archived; it does not physically delete the draft.")
+        )
+      )
+    )
+  })
+
   observeEvent(input$article_lab_generate, {
     article_lab_state$is_generating <- TRUE
     on.exit({
@@ -4316,6 +4451,8 @@ server <- function(input, output, session) {
     started_at <- Sys.time()
     article_lab_debug_log("outline_generate_clicked", list(model = input$article_lab_outline_model, include_context = isTRUE(input$article_lab_outline_include_context)))
     article_lab_state$notice <- "Generating selected outline draft(s). Waiting for OpenAI; this can take a while."
+    article_lab_state$last_outline_generate_error <- NULL
+    article_lab_state$last_outline_generate_error_at <- NULL
     article_lab_refresh(article_lab_refresh() + 1L)
     if (is.function(session$flushReact)) session$flushReact()
 
@@ -4355,7 +4492,8 @@ server <- function(input, output, session) {
             selected_rows,
             model = input$article_lab_outline_model,
             prompt = input$article_lab_outline_prompt,
-            include_context = isTRUE(input$article_lab_outline_include_context)
+            include_context = isTRUE(input$article_lab_outline_include_context),
+            context_notes = input$article_lab_outline_context_notes
           )
           article_lab_debug_log("outline_generate_drafts_returned", list(
             mode = generated$mode %||% "unknown",
@@ -4366,12 +4504,26 @@ server <- function(input, output, session) {
           if (identical(generated$mode, "failed")) {
             list(
               ok = FALSE,
-              notice = paste("Outline API call failed. No generic stub outline was saved.", generated$fallback_reason %||% "See .local_gitignored/article_lab_debug.log for details.")
+              notice = paste("Outline API call failed. No generic stub outline was saved.", generated$fallback_reason %||% "See .local_gitignored/article_lab_debug.log for details."),
+              error = list(
+                kind = "api_failed",
+                reason = generated$fallback_reason %||% "Unknown API failure (see .local_gitignored/article_lab_debug.log).",
+                mode = generated$mode,
+                model = generated$model %||% article_lab_default_outline_model,
+                selected_ids = selected_ids
+              )
             )
           } else if (nrow(generated$rows) == 0) {
             list(
               ok = FALSE,
-              notice = "Outline API call returned no usable outline rows. No generic stub outline was saved. See .local_gitignored/article_lab_debug.log for details."
+              notice = "Outline API call returned no usable outline rows. No generic stub outline was saved. See .local_gitignored/article_lab_debug.log for details.",
+              error = list(
+                kind = "no_rows",
+                reason = "OpenAI returned an empty or unparseable outline response. The existing outline was left unchanged.",
+                mode = generated$mode %||% "unknown",
+                model = generated$model %||% article_lab_default_outline_model,
+                selected_ids = selected_ids
+              )
             )
           } else {
           inserted_n <- article_lab_insert_outline_drafts(con, generated$rows)
@@ -4395,11 +4547,78 @@ server <- function(input, output, session) {
         call = paste(deparse(conditionCall(e)), collapse = " "),
         elapsed_seconds = as.numeric(difftime(Sys.time(), started_at, units = "secs"))
       ))
-      list(ok = FALSE, notice = paste("Outline generation failed:", conditionMessage(e), "Debug log: .local_gitignored/article_lab_debug.log"))
+      list(
+        ok = FALSE,
+        notice = paste("Outline generation failed:", conditionMessage(e), "Debug log: .local_gitignored/article_lab_debug.log"),
+        error = list(
+          kind = "exception",
+          reason = conditionMessage(e),
+          mode = "exception",
+          model = input$article_lab_outline_model %||% article_lab_default_outline_model,
+          selected_ids = character()
+        )
+      )
     })
 
     article_lab_state$notice <- result$notice
+    if (isTRUE(result$ok) || is.null(result$error)) {
+      article_lab_state$last_outline_generate_error <- NULL
+      article_lab_state$last_outline_generate_error_at <- NULL
+    } else {
+      article_lab_state$last_outline_generate_error <- result$error
+      article_lab_state$last_outline_generate_error_at <- Sys.time()
+    }
     article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observe({
+    rows <- article_lab_ready_for_outline_rows()
+    if (nrow(rows) == 0) {
+      article_lab_active_outline_thumbnail(NULL)
+      return()
+    }
+    checked_ids <- character()
+    for (i in seq_len(nrow(rows))) {
+      tid <- rows$thumbnail_id[[i]]
+      if (isTRUE(input[[article_lab_row_input_id("article_lab_outline_packages", tid)]])) {
+        checked_ids <- c(checked_ids, tid)
+      }
+    }
+    article_lab_active_outline_thumbnail(
+      if (length(checked_ids) == 1) checked_ids[1] else NULL
+    )
+  })
+
+  observeEvent(article_lab_active_outline_thumbnail(), {
+    active_id <- article_lab_active_outline_thumbnail()
+    if (!is.null(active_id)) {
+      saved_notes <- article_lab_load_outline_context_notes(con, active_id)
+      updateTextAreaInput(session, "article_lab_outline_context_notes", value = saved_notes %||% "")
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_save_outline_context_notes, {
+    rows <- article_lab_ready_for_outline_rows()
+    if (nrow(rows) == 0) {
+      article_lab_state$notice <- "No outline packages available to save context notes."
+      return()
+    }
+    checked_ids <- character()
+    for (i in seq_len(nrow(rows))) {
+      tid <- rows$thumbnail_id[[i]]
+      if (isTRUE(input[[article_lab_row_input_id("article_lab_outline_packages", tid)]])) {
+        checked_ids <- c(checked_ids, tid)
+      }
+    }
+    if (length(checked_ids) == 0) {
+      article_lab_state$notice <- "Check at least one package before saving context notes."
+      return()
+    }
+    context_notes <- input$article_lab_outline_context_notes %||% ""
+    for (tid in checked_ids) {
+      article_lab_save_outline_context_notes(con, tid, context_notes)
+    }
+    article_lab_state$notice <- sprintf("Saved context notes for %s package%s.", length(checked_ids), ifelse(length(checked_ids) == 1L, "", "s"))
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_save_outlines, {
@@ -4464,59 +4683,113 @@ server <- function(input, output, session) {
 
   generate_selected_full_text <- function(variant = FALSE, selected_rows = NULL) {
     started_at <- Sys.time()
-    if (is.null(selected_rows)) {
-      rows <- article_lab_full_text_rows()
-      packages <- article_lab_full_text_package_rows(rows)
-      selected_ids <- collect_selected_ids(packages, "article_lab_full_text_packages", snapshot_ids = input$article_lab_full_text_packages_selected_snapshot, key_col = "outline_id")
-      if (length(selected_ids) == 0) {
-        article_lab_state$notice <- "Select one approved outline before generating a full article draft."
-        article_lab_refresh(article_lab_refresh() + 1L)
-        return(invisible(NULL))
-      }
-      if (length(selected_ids) > 1) selected_ids <- selected_ids[[1]]
-      selected_rows <- packages[packages$outline_id %in% selected_ids, , drop = FALSE]
-      if (nrow(selected_rows) == 0) {
-        article_lab_state$notice <- "Selected outlines are no longer available for full article generation."
-        article_lab_refresh(article_lab_refresh() + 1L)
-        return(invisible(NULL))
-      }
-    }
-    summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(selected_rows$batch_id))
-    selected_rows$article_summary <- NA_character_
-    selected_rows$pdf_local_path <- NA_character_
-    selected_rows$summary_id <- NA_integer_
-    if (nrow(summary_contexts) > 0) {
-      matched_summary <- match(selected_rows$batch_id, summary_contexts$batch_id)
-      selected_rows$article_summary <- summary_contexts$article_summary[matched_summary]
-      selected_rows$pdf_local_path <- summary_contexts$pdf_local_path[matched_summary]
-      selected_rows$summary_id <- summary_contexts$summary_id[matched_summary]
-    }
+    article_lab_debug_log("full_text_generate_clicked", list(model = input$article_lab_full_text_model, include_context = isTRUE(input$article_lab_full_text_include_context), variant = isTRUE(variant)))
     article_lab_state$notice <- if (variant) "Generating another full article variant. Waiting for OpenAI." else "Generating full article draft. Waiting for OpenAI."
+    article_lab_state$last_full_text_generate_error <- NULL
+    article_lab_state$last_full_text_generate_error_at <- NULL
     article_lab_refresh(article_lab_refresh() + 1L)
     if (is.function(session$flushReact)) session$flushReact()
-    generated <- generate_full_text_drafts(
-      selected_rows,
-      model = input$article_lab_full_text_model,
-      prompt = input$article_lab_full_text_prompt,
-      prompt_key = input$article_lab_full_text_prompt_key,
-      include_context = isTRUE(input$article_lab_full_text_include_context)
-    )
-    if (identical(generated$mode, "failed")) {
-      article_lab_state$notice <- paste("Full article API call failed. No draft was saved.", generated$fallback_reason %||% "See .local_gitignored/article_lab_debug.log for details.")
-    } else if (nrow(generated$rows) == 0) {
-      article_lab_state$notice <- "Full article API call returned no usable draft rows. No draft was saved."
-    } else {
-      inserted_n <- article_lab_insert_full_text_drafts(con, generated$rows, prompt_key = input$article_lab_full_text_prompt_key, prompt_version = input$article_lab_full_text_prompt_key)
-      warning_copy <- if (length(generated$warnings %||% list()) > 0) paste0(" ", length(generated$warnings), " validation warning(s); see helper stderr for details.") else ""
-      article_lab_state$notice <- sprintf(
-        "Generated %s full article draft%s using model %s in %s mode in %s.%s",
-        inserted_n,
-        ifelse(inserted_n == 1L, "", "s"),
-        generated$model %||% article_lab_default_full_text_model,
-        generated$mode %||% "unknown",
-        article_lab_format_duration(as.numeric(difftime(Sys.time(), started_at, units = "secs"))),
-        warning_copy
+
+    result <- tryCatch({
+      selected_ids <- character()
+      if (is.null(selected_rows)) {
+        rows <- article_lab_full_text_rows()
+        packages <- article_lab_full_text_package_rows(rows)
+        article_lab_debug_log("full_text_generate_rows_loaded", list(full_text_rows = nrow(rows), package_rows = nrow(packages)))
+        selected_ids <- collect_selected_ids(packages, "article_lab_full_text_packages", snapshot_ids = input$article_lab_full_text_packages_selected_snapshot, key_col = "outline_id")
+        article_lab_debug_log("full_text_generate_selection", list(selected_n = length(selected_ids), selected_ids = selected_ids))
+        if (length(selected_ids) == 0) {
+          list(
+            ok = FALSE,
+            notice = "Select one approved outline before generating a full article draft.",
+            error = list(
+              kind = "no_selection",
+              reason = "No approved outline was selected. If the Outline tab still shows the outline as draft, approve it first; only approved outlines appear in Full Text.",
+              mode = "not_started",
+              model = input$article_lab_full_text_model %||% article_lab_default_full_text_model,
+              selected_ids = character()
+            )
+          )
+        } else {
+          if (length(selected_ids) > 1) selected_ids <- selected_ids[[1]]
+          selected_rows <- packages[packages$outline_id %in% selected_ids, , drop = FALSE]
+          if (nrow(selected_rows) == 0) {
+            list(
+              ok = FALSE,
+              notice = "Selected outlines are no longer available for full article generation.",
+              error = list(
+                kind = "stale_selection",
+                reason = "The selected outline is no longer in the approved Full Text package list. Refresh, approve the outline if needed, then select it again.",
+                mode = "not_started",
+                model = input$article_lab_full_text_model %||% article_lab_default_full_text_model,
+                selected_ids = selected_ids
+              )
+            )
+          } else {
+            list(ok = TRUE, selected_rows = selected_rows, selected_ids = selected_ids)
+          }
+        }
+      } else {
+        selected_ids <- unique(selected_rows$outline_id %||% character())
+        list(ok = TRUE, selected_rows = selected_rows, selected_ids = selected_ids)
+      }
+      }, error = function(e) {
+        list(ok = FALSE, notice = paste("Full article generation failed before the API call:", conditionMessage(e), "Debug log: .local_gitignored/article_lab_debug.log"), error = list(kind = "exception", reason = conditionMessage(e), mode = "exception", model = input$article_lab_full_text_model %||% article_lab_default_full_text_model, selected_ids = character()))
+      })
+    if (!isTRUE(result$ok)) {
+      if (!is.null(result$error)) {
+        article_lab_debug_log("full_text_generate_error", list(kind = result$error$kind %||% "unknown", reason = result$error$reason %||% result$notice %||% "unknown", selected_ids = result$error$selected_ids %||% character(), elapsed_seconds = as.numeric(difftime(Sys.time(), started_at, units = "secs"))))
+        article_lab_state$last_full_text_generate_error <- result$error
+        article_lab_state$last_full_text_generate_error_at <- Sys.time()
+      }
+      article_lab_state$notice <- result$notice
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+
+    result <- tryCatch({
+      selected_rows <- result$selected_rows
+      summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(selected_rows$batch_id))
+      selected_rows$article_summary <- NA_character_
+      selected_rows$pdf_local_path <- NA_character_
+      selected_rows$summary_id <- NA_integer_
+      if (nrow(summary_contexts) > 0) {
+        matched_summary <- match(selected_rows$batch_id, summary_contexts$batch_id)
+        selected_rows$article_summary <- summary_contexts$article_summary[matched_summary]
+        selected_rows$pdf_local_path <- summary_contexts$pdf_local_path[matched_summary]
+        selected_rows$summary_id <- summary_contexts$summary_id[matched_summary]
+      }
+      article_lab_debug_log("full_text_generate_context_loaded", list(selected_rows = nrow(selected_rows), summary_context_rows = nrow(summary_contexts), pdf_context_n = sum(!is.na(selected_rows$pdf_local_path) & nzchar(selected_rows$pdf_local_path)), summary_context_n = sum(!is.na(selected_rows$article_summary) & nzchar(selected_rows$article_summary))))
+      generated <- generate_full_text_drafts(
+        con,
+        selected_rows,
+        model = input$article_lab_full_text_model,
+        prompt = input$article_lab_full_text_prompt,
+        prompt_key = input$article_lab_full_text_prompt_key,
+        include_context = isTRUE(input$article_lab_full_text_include_context)
       )
+      article_lab_debug_log("full_text_generate_drafts_returned", list(mode = generated$mode %||% "unknown", model = generated$model %||% article_lab_default_full_text_model, generated_rows = nrow(generated$rows), fallback_reason = generated$fallback_reason %||% NA_character_))
+      if (identical(generated$mode, "failed")) {
+        list(ok = FALSE, notice = paste("Full article API call failed. No draft was saved.", generated$fallback_reason %||% "See .local_gitignored/article_lab_debug.log for details."), error = list(kind = "api_failed", reason = generated$fallback_reason %||% "Unknown API failure (see .local_gitignored/article_lab_debug.log).", mode = generated$mode, model = generated$model %||% article_lab_default_full_text_model, selected_ids = result$selected_ids))
+      } else if (nrow(generated$rows) == 0) {
+        list(ok = FALSE, notice = "Full article API call returned no usable draft rows. No draft was saved.", error = list(kind = "no_rows", reason = "OpenAI returned an empty or unparseable full article response. No full article draft was saved.", mode = generated$mode %||% "unknown", model = generated$model %||% article_lab_default_full_text_model, selected_ids = result$selected_ids))
+      } else {
+        inserted_n <- article_lab_insert_full_text_drafts(con, generated$rows, prompt_key = input$article_lab_full_text_prompt_key, prompt_version = input$article_lab_full_text_prompt_key)
+        article_lab_debug_log("full_text_generate_inserted", list(inserted_n = inserted_n))
+        warning_copy <- if (length(generated$warnings %||% list()) > 0) paste0(" ", length(generated$warnings), " validation warning(s); see helper stderr for details.") else ""
+        list(ok = TRUE, notice = sprintf("Generated %s full article draft%s using model %s in %s mode in %s.%s", inserted_n, ifelse(inserted_n == 1L, "", "s"), generated$model %||% article_lab_default_full_text_model, generated$mode %||% "unknown", article_lab_format_duration(as.numeric(difftime(Sys.time(), started_at, units = "secs"))), warning_copy))
+      }
+    }, error = function(e) {
+      article_lab_debug_log("full_text_generate_error", list(message = conditionMessage(e), call = paste(deparse(conditionCall(e)), collapse = " "), elapsed_seconds = as.numeric(difftime(Sys.time(), started_at, units = "secs"))))
+      list(ok = FALSE, notice = paste("Full article generation failed:", conditionMessage(e), "Debug log: .local_gitignored/article_lab_debug.log"), error = list(kind = "exception", reason = conditionMessage(e), mode = "exception", model = input$article_lab_full_text_model %||% article_lab_default_full_text_model, selected_ids = character()))
+    })
+    article_lab_state$notice <- result$notice
+    if (isTRUE(result$ok) || is.null(result$error)) {
+      article_lab_state$last_full_text_generate_error <- NULL
+      article_lab_state$last_full_text_generate_error_at <- NULL
+    } else {
+      article_lab_state$last_full_text_generate_error <- result$error
+      article_lab_state$last_full_text_generate_error_at <- Sys.time()
     }
     article_lab_refresh(article_lab_refresh() + 1L)
     invisible(NULL)
@@ -4616,8 +4889,59 @@ server <- function(input, output, session) {
     }
     tags <- article_lab_parse_medium_tags(input$article_lab_publish_medium_tags %||% "")
     saved_n <- article_lab_save_publish_settings(con, row, article_lab_current_publish_values())
+    article_lab_state$last_review_publish_archive_error <- NULL
+    article_lab_state$last_review_publish_archive_error_at <- NULL
     tag_note <- if (length(tags) >= 5L) " Medium tags were capped at 5." else ""
     article_lab_state$notice <- sprintf("Saved publish settings for %s approved draft.%s", saved_n, tag_note)
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_archive_review_publish, {
+    row <- article_lab_selected_review_publish_row()
+    if (nrow(row) == 0) {
+      article_lab_state$last_review_publish_archive_error <- list(
+        kind = "no_selection",
+        reason = "Select an approved full article draft before archiving it.",
+        selected_ids = character()
+      )
+      article_lab_state$last_review_publish_archive_error_at <- Sys.time()
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+
+    draft_id <- article_lab_row_value(row, "full_text_draft_id")
+    values <- article_lab_current_publish_values()
+    values$publish_status <- "archived"
+    saved_n <- tryCatch(
+      article_lab_save_publish_settings(con, row, values),
+      error = function(e) {
+        article_lab_state$last_review_publish_archive_error <- list(
+          kind = "exception",
+          reason = conditionMessage(e),
+          selected_ids = draft_id
+        )
+        article_lab_state$last_review_publish_archive_error_at <- Sys.time()
+        NA_integer_
+      }
+    )
+    if (is.na(saved_n)) {
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    if (saved_n < 1L) {
+      article_lab_state$last_review_publish_archive_error <- list(
+        kind = "no_rows",
+        reason = "The archive write completed but did not update or insert a publish settings row.",
+        selected_ids = draft_id
+      )
+      article_lab_state$last_review_publish_archive_error_at <- Sys.time()
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+
+    article_lab_state$last_review_publish_archive_error <- NULL
+    article_lab_state$last_review_publish_archive_error_at <- NULL
+    article_lab_state$notice <- sprintf("Archived approved article draft %s. No rows were deleted.", draft_id)
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 

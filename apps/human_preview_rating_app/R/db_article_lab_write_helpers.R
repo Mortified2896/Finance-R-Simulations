@@ -220,6 +220,29 @@ article_lab_approve_outlines <- function(con, outline_ids) {
   list(approved_n = nrow(rows), candidate_ids = unique(rows$candidate_id))
 }
 
+article_lab_save_outline_context_notes <- function(con, thumbnail_id, context_notes) {
+  if (is.null(thumbnail_id) || is.na(thumbnail_id) || !nzchar(thumbnail_id)) return(invisible(NULL))
+  notes_value <- article_lab_input_multiline(context_notes)
+  if (is.null(notes_value) || is.na(notes_value)) notes_value <- ""
+  dbExecute(
+    con,
+    "UPDATE article_lab_thumbnail_candidates SET outline_context_notes = ? WHERE thumbnail_id = ?",
+    params = list(notes_value, thumbnail_id)
+  )
+  invisible(NULL)
+}
+
+article_lab_load_outline_context_notes <- function(con, thumbnail_id) {
+  if (is.null(thumbnail_id) || is.na(thumbnail_id) || !nzchar(thumbnail_id)) return(NA_character_)
+  result <- dbGetQuery(
+    con,
+    "SELECT outline_context_notes FROM article_lab_thumbnail_candidates WHERE thumbnail_id = ? AND outline_context_notes IS NOT NULL AND outline_context_notes != '' LIMIT 1",
+    params = list(thumbnail_id)
+  )
+  if (nrow(result) > 0) result$outline_context_notes[[1]] else NA_character_
+}
+
+
 article_lab_archive_outlines <- function(con, outline_ids) {
   outline_ids <- clean_text(outline_ids)
   outline_ids <- unique(outline_ids[!is.na(outline_ids)])
@@ -256,7 +279,7 @@ article_lab_archive_outlines <- function(con, outline_ids) {
 }
 
 
-article_lab_full_text_api_request <- function(packages, model = NA_character_, prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
+article_lab_full_text_api_request <- function(con, packages, model = NA_character_, prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
   helper_path <- file.path("scripts", "writing_api", "generate_full_text.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_full_text.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
@@ -337,9 +360,9 @@ article_lab_full_text_api_request <- function(packages, model = NA_character_, p
   )
 }
 
-generate_full_text_drafts <- function(packages, model = NA_character_, prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
+generate_full_text_drafts <- function(con, packages, model = NA_character_, prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
   tryCatch(
-    article_lab_full_text_api_request(packages, model = model, prompt = prompt, prompt_key = prompt_key, include_context = include_context),
+    article_lab_full_text_api_request(con, packages, model = model, prompt = prompt, prompt_key = prompt_key, include_context = include_context),
     error = function(e) list(rows = data.frame(), model = article_lab_input_string(model) %||% article_lab_default_full_text_model, mode = "failed", fallback_reason = conditionMessage(e))
   )
 }
@@ -1748,4 +1771,3 @@ article_lab_update_candidate_notes <- function(con, notes_updates) {
   })
   updated_n
 }
-

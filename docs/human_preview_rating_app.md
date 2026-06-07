@@ -43,17 +43,44 @@ Required R packages:
 install.packages(c("shiny", "DBI", "RSQLite"))
 ```
 
-Article Lab API scoring uses a separate Python helper. By default the app uses the first available `python3`/`python` on `PATH`. If that is not the interpreter where `openai` is installed, start the app with an explicit override such as:
+## Fail Loud: The Most Important Design Rule
 
-```sh
-ARTICLE_LAB_PYTHON="/opt/homebrew/bin/python3" HUMAN_RATING_MODE=dimensions_v2 MEDIUM_PROJECT_ROOT="$PWD" Rscript -e 'shiny::runApp("apps/human_preview_rating_app", launch.browser = TRUE, host = "127.0.0.1", port = 3838)'
-```
+**Every process in this app that can fail, must fail loud, clear, and visible.** This is one of the most important design rules for this app. It applies to API calls, database writes, file I/O, prompt construction, selection sync, validation, and any other user-triggered workflow step.
 
-Install the package into that interpreter with:
+The reason: a "silent" failure is the most dangerous kind of failure. If the user clicks a button and the UI looks unchanged, they have no way to know whether:
 
-```sh
-"/opt/homebrew/bin/python3" -m pip install openai
-```
+- The work happened but produced identical-looking output (true success, harmless)
+- The work never happened at all (silent failure — the dangerous case)
+- The work happened but was wrong in a way that's hard to notice (silent partial failure)
+
+In all three cases the UI looks the same, so the user cannot distinguish them and may move on believing the click was a no-op when in fact it failed in a way that needs attention.
+
+### What "fail loud" means in practice
+
+1. **Never rely on a muted text notice alone.** A one-line grey `lab-status-copy` paragraph at the top of a long page is too easy to miss, especially when the user is looking at a textarea or button further down. Use a prominent, persistent, visually distinct alert box (`role="alert"`, red background, border, icon) for any failure, with `aria` markup so it is announced to assistive tech.
+
+2. **Show the actual reason, not a generic "failed" string.** Include the model used, the helper-reported mode, the affected row IDs, the underlying error message, and the path to the relevant debug log. The user must be able to diagnose the problem without opening another tool first.
+
+3. **Make it clear that nothing was changed.** If a failure means the existing record was left in place, say so explicitly. Never let the user wonder whether the old text on screen is "the old text because nothing happened" or "the new text because the click succeeded and produced similar output."
+
+4. **Do not dismiss or auto-clear the alert on the next action.** The alert must stay visible until the next *successful* attempt, or until the user explicitly dismisses it. The next click of the same button may fail for the same reason, and the user must see that history.
+
+5. **Use a distinct error state, not a string-suffix hack.** Do not detect failures by searching the notice text for the word "failed" or "error". Track a dedicated reactive error state per workflow step (kind, reason, model, mode, affected IDs, timestamp) and render it from that state. This makes the alert consistent, testable, and impossible to misclassify.
+
+6. **Cover every failure path.** API call failed, no rows returned, unparseable response, exception thrown, validation rejected, network timeout, quota exceeded, billing problem, missing env var, missing helper script, broken selection snapshot, missing file attachment — every one of these branches must render the same loud alert, not a single grey line of `lab-status-copy`.
+
+7. **Log enough to debug, but never log secrets.** When a workflow step can fail, log a structured debug entry with the inputs, mode, and reason (for example `outline_generate_drafts_returned`, `outline_generate_inserted`, `outline_generate_error` in `.local_gitignored/article_lab_debug.log`). The error alert surfaces a clear summary; the debug log gives the full context for investigation.
+
+### The reference implementation: Outline tab regeneration
+
+The Outline tab's "Regenerate outline" button is the canonical example. When the user clicks it, the app sends the selected package to the OpenAI helper. If the helper returns mode `failed` (for example a 429 quota error), or returns zero usable rows, or throws, the app now:
+
+- Sets `article_lab_state$last_outline_generate_error` with `kind`, `reason`, `mode`, `model`, `selected_ids`, and timestamp.
+- Renders a red `.lab-alert-error` banner at the top of the Outline controls card with a warning icon, the failure title, timestamp, the real error reason (e.g. `OpenAI API failure: 429 You exceeded your current quota...`), the model, helper mode, affected package IDs, an explicit note that the existing outline text was NOT changed, and a pointer to `.local_gitignored/article_lab_debug.log`.
+- Clears the error state on the next *successful* generate.
+- Still bumps the refresh counter so the rest of the UI re-renders normally; the alert is layered on top, not instead of, the normal flow.
+
+Apply the same pattern to every other long-running workflow step in the app: title generation, subtitle generation, thumbnail generation, full article generation, Medium tag generation, API scoring, evidence fetch, summary confirmation, and any other action that can silently fail today. When in doubt, do not ship a feature without a loud, persistent, dedicated error alert wired to a dedicated error state.
 
 ## Article Lab Subtitle Stage
 
@@ -101,7 +128,7 @@ Publish settings are stored in `article_lab_publish_settings`. This table record
 
 Saved Medium publications are stored in `article_lab_publications`. This table records publication ID, publication name, platform, optional submission notes/URL, active flag, and created/updated timestamps. The Review & Publish tab shows saved active Medium publications when the target is `Submit to Medium publication`, and can add a missing publication name locally.
 
-Supported publish statuses are `ready_for_review_publish`, `ready_to_publish`, `submitted`, `published`, `needs_changes`, `rejected`, and `archived`. The status is selected manually in the tab and saved with the rest of the publish settings. When status first becomes `submitted` or `published`, the app records `submitted_at` or `published_at` locally.
+Supported publish statuses are `ready_for_review_publish`, `ready_to_publish`, `submitted`, `published`, `needs_changes`, `rejected`, and `archived`. The status is selected manually in the tab and saved with the rest of the publish settings. The Review & Publish tab also includes an `Archive article` action for approved drafts that should not be published; it sets `publish_status = archived` and hides the draft from the Review & Publish picker without deleting the draft. When status first becomes `submitted` or `published`, the app records `submitted_at` or `published_at` locally.
 
 The tab can optionally generate Medium tags through `scripts/writing_api/generate_medium_tags.mjs`. The UI shows the editable tag prompt, selected model, response schema, and the exact selected article context that will be sent to the API before generation. Generated tags populate the local tags field; they are persisted only after saving publish settings.
 

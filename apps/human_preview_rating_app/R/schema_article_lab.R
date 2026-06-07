@@ -171,6 +171,8 @@ ensure_article_lab_schema <- function(con) {
   db_add_column_if_missing(con, "article_lab_outlines", "archived", "INTEGER NOT NULL DEFAULT 0")
   db_add_column_if_missing(con, "article_lab_outlines", "archived_at", "TEXT")
 
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "outline_context_notes", "TEXT")
+
   dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_lab_full_text_drafts (
       full_text_draft_id TEXT PRIMARY KEY,

@@ -745,15 +745,17 @@ stub_outline_for_package <- function(title, subtitle, thumbnail_label = NA_chara
   )
 }
 
-article_lab_outline_api_request <- function(packages, model = NA_character_, prompt = NA_character_, include_context = TRUE) {
+article_lab_outline_api_request <- function(packages, model = NA_character_, prompt = NA_character_, include_context = TRUE, context_notes = NULL) {
   helper_path <- file.path("scripts", "writing_api", "generate_outlines.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_outlines.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
   if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_outline_model, mode = "api", raw_json = NULL))
 
+  context_notes_clean <- article_lab_input_multiline(context_notes)
   request_payload <- list(
     model = article_lab_input_string(model) %||% article_lab_default_outline_model,
     prompt = article_lab_input_multiline(prompt) %||% article_lab_default_outline_prompt,
+    context_notes = if (is.null(context_notes_clean) || is.na(context_notes_clean) || !nzchar(context_notes_clean)) NULL else context_notes_clean,
     packages = unname(lapply(seq_len(nrow(packages)), function(i) {
       pdf_path <- if ("pdf_local_path" %in% names(packages) && isTRUE(include_context)) research_resolve_local_pdf_path(packages$pdf_local_path[[i]]) else NA_character_
       list(
@@ -815,9 +817,9 @@ article_lab_outline_api_request <- function(packages, model = NA_character_, pro
   )
 }
 
-generate_outline_drafts <- function(packages, model = NA_character_, prompt = NA_character_, include_context = TRUE) {
+generate_outline_drafts <- function(packages, model = NA_character_, prompt = NA_character_, include_context = TRUE, context_notes = NULL) {
   tryCatch(
-    article_lab_outline_api_request(packages, model = model, prompt = prompt, include_context = include_context),
+    article_lab_outline_api_request(packages, model = model, prompt = prompt, include_context = include_context, context_notes = context_notes),
     error = function(e) {
       list(
         rows = data.frame(),

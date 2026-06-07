@@ -383,6 +383,24 @@ article_lab_thumbnail_candidate_grid_ui <- function(rows) {
   )
 }
 
+article_lab_outline_context_notes_display <- function(row) {
+  saved_notes <- article_lab_row_value(row, "thumbnail_outline_context_notes", "")
+  if (nzchar(saved_notes)) {
+    div(
+      class = "lab-field",
+      style = "margin-top: 8px;",
+      tags$label("Saved context notes", class = "control-label"),
+      div(
+        class = "well",
+        style = "font-size: 0.85em; padding: 6px 10px; margin-top: 2px; white-space: pre-wrap; background: #f8f9fa; border-radius: 4px; border: 1px solid #dee2e6;",
+        htmltools::htmlEscape(saved_notes)
+      )
+    )
+  } else {
+    NULL
+  }
+}
+
 article_lab_ready_for_outline_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
     return(article_lab_empty_state(
@@ -450,10 +468,15 @@ article_lab_ready_for_outline_table_ui <- function(rows) {
               "Review notes",
               value = article_lab_row_value(row, "outline_notes", ""),
               width = "100%"
-            )
+            ),
+            article_lab_outline_context_notes_display(row)
           )
         } else {
-          div(class = "lab-status-copy", "No outline draft yet. Select this package and generate an outline.")
+          div(
+            class = "lab-outline-editor",
+            div(class = "lab-status-copy", "No outline draft yet. Select this package and generate an outline."),
+            article_lab_outline_context_notes_display(row)
+          )
         }
       )
     })
@@ -662,6 +685,7 @@ article_lab_review_publish_workspace_ui <- function(row, publications) {
       div(
         class = "lab-card lab-publish-metadata",
         h2("Publishing metadata"),
+        uiOutput("article_lab_review_publish_archive_error"),
         div(
           class = "lab-grid",
           div(class = "lab-field", textInput("article_lab_publish_medium_tags", "Medium tags (max 5, comma or line separated)", value = article_lab_tags_display(article_lab_row_value(row, "medium_tags_json", "")), width = "100%")),
@@ -697,6 +721,7 @@ article_lab_review_publish_workspace_ui <- function(row, publications) {
           actionButton("article_lab_generate_medium_tags", "Generate Medium tags", class = "lab-secondary"),
           tags$button(type = "button", class = "btn lab-secondary", onclick = sprintf("window.articleLabCopyTextFromElement('%s', this, 'Copied article');", markdown_id), "Copy Medium-ready article"),
           downloadButton("article_lab_export_markdown", "Export Markdown", class = "lab-secondary"),
+          actionButton("article_lab_archive_review_publish", "Archive article", class = "lab-secondary"),
           actionButton("article_lab_refresh_publish", "Refresh", class = "lab-secondary")
         ),
         tags$details(

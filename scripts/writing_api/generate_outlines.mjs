@@ -59,7 +59,10 @@ function parseResults(rawText, packages = []) {
   })).filter((entry) => entry.thumbnail_id && entry.subtitle_id && entry.candidate_id && entry.batch_id && entry.outline_text);
 }
 
-function buildPrompt({ prompt, packages }) {
+function buildPrompt({ prompt, packages, contextNotes }) {
+  const parts = [];
+  const contextNote = cleanText(contextNotes);
+  if (contextNote) parts.push(`Author comment:\n${contextNote}`);
   const basePrompt = cleanText(prompt) || [
     "Generate practical Medium article outlines for approved title/subtitle/thumbnail packages.",
     "Return valid JSON only.",
@@ -86,15 +89,16 @@ function buildPrompt({ prompt, packages }) {
     return lines.join("\n");
   }).join("\n\n");
 
-  return [
+  parts.push(...[
     basePrompt,
     "Return one outline per package, preserving all ids exactly.",
     "Packages:",
     packageList
-  ].join("\n\n");
+  ].join("\n\n"));
+  return parts.join("\n\n");
 }
 
-async function buildResponsesInput({ client, prompt, packages }) {
+async function buildResponsesInput({ client, prompt, packages, contextNotes }) {
   const fileIds = [];
   const seenPaths = new Set();
   for (const entry of packages) {
@@ -104,7 +108,7 @@ async function buildResponsesInput({ client, prompt, packages }) {
     fileIds.push(file.id);
   }
 
-  const content = [{ type: "input_text", text: buildPrompt({ prompt, packages }) }];
+  const content = [{ type: "input_text", text: buildPrompt({ prompt, packages, contextNotes }) }];
   for (const fileId of fileIds) {
     content.push({ type: "input_file", file_id: fileId });
   }
@@ -129,6 +133,7 @@ async function main() {
   const payload = JSON.parse(await fs.readFile(requestPath, "utf8"));
   const model = cleanText(payload.model) ?? "gpt-5-mini";
   const prompt = cleanText(payload.prompt);
+  const contextNotes = cleanText(payload.context_notes);
   const packages = Array.isArray(payload.packages)
     ? payload.packages.map((entry) => ({
         thumbnail_id: cleanText(entry.thumbnail_id),
@@ -168,7 +173,7 @@ async function main() {
             tags: ["writing-api", "outline-generation"],
             sessionId: requestPath
           });
-          response = await client.responses.create({ model, input: await buildResponsesInput({ client, prompt, packages }) });
+          response = await client.responses.create({ model, input: await buildResponsesInput({ client, prompt, packages, contextNotes }) });
         } catch (error) {
           console.error(`OpenAI API failure: ${error.message}`);
           process.exitCode = 1;

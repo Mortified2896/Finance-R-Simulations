@@ -25,6 +25,12 @@ Use `README.md` for the high-level map, `docs/script_inventory.md` to find the r
 - If adding or renaming a script, update `docs/script_inventory.md`.
 - If moving a manual tool, update `01_manual_tools/manual_tools_index.md` and any hard-coded references in docs, launchers, tests, and scripts.
 
+## Fail Loud
+
+**Every process in the Shiny app that can fail must fail loud, clear, and visible.** This is one of the most important design rules for this app, on par with the local-only policy and the no-secrets policy. A muted grey `lab-status-copy` line is not an acceptable failure surface; use a dedicated, persistent, prominent `.lab-alert-error` (or equivalent) banner driven by a dedicated reactive error state, never by string-matching the notice text.
+
+Before adding or changing any user-triggered workflow step in `apps/human_preview_rating_app`, read the **Fail Loud** section in `docs/human_preview_rating_app.md` and apply the same pattern. The Outline tab's "Regenerate outline" button is the reference implementation. Any new API call, DB write, file operation, validation step, or selection-sync step must wire up the same kind of dedicated error state and loud alert. When in doubt, do not ship a feature without it.
+
 ## Useful Checks
 
 Run focused checks that match the files changed. Useful lightweight checks include:
