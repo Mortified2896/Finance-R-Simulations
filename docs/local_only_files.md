@@ -15,6 +15,7 @@ Ignored local-only categories include:
 - Local Research Library CSV imports, PDFs, parsed text, generated research analysis outputs under `data/research/` and `data/analysis/research_library/`, and Article Lab PDFs under `data/research_pdfs/`.
 - Saved website reference exports under `debug_samples/` and copied Medium homepage references under `design_refs/medium_homepage/`.
 - Generated analysis outputs under `data/analysis/medium_analysis_v1/` and `data/analysis/medium_analysis_v2/`.
+- PaperQA2 chunk retrieval output JSON under `data/research_paperqa_chunks/`.
 - Generated scoring and analysis folders such as `data/analysis/title_api_scores_v2/`, `data/analysis/thumbnail_api_scores_v1/`, `data/analysis/title_api_score_samples/`, `data/analysis/title_baseline/`, `data/analysis/title_followup/`, `data/analysis/subtitle_analysis/`, and related output folders.
 - Active/private article project work under `article_projects/active/` and per-project `article_projects/*/api_outputs/`.
 - Dependency/cache artifacts such as `node_modules/`, `__pycache__/`, `*.pyc`, `cache/`, `tmp/`, `temp/`, `generated/`, and `outputs/`.

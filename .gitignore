@@ -51,6 +51,7 @@ node_modules/
 
 # Project-specific private/generated data
 data/
+data/research_paperqa_chunks/
 article_projects/active/
 article_projects/*/api_outputs/
 apps/human_preview_rating_app/data/

@@ -85,6 +85,7 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `writing_api/summarize_research_pdf.mjs`: live OpenAI PDF summary helper for the Article Lab Summary tab.
 - `writing_api/select_summary_evidence.mjs`: Article Lab evidence helper for claim extraction and source-sentence selection from locally retrieved PDF sentence candidates.
 - `writing_api/score_article_lab_titles.py`: live OpenAI title-only scoring helper for the Article Lab API score tab using the v2_2 rubric.
+- `writing_api/paperqa_chunks.py`: Stage 1 PaperQA2 retrieval runner for the Article Lab Summary tab. Runs query-based retrieval against one selected local PDF and returns PaperQA answer/context candidates as JSON. Called from R via `research_paperqa_chunks_request()` in `apps/human_preview_rating_app/R/research_helpers.R`. Respects `ARTICLE_LAB_PAPERQA_PYTHON` env var. Writes generated JSON or diagnostics to `data/research_paperqa_chunks/`.
 - `writing_api/reroll_sentence.mjs`: article sentence/paragraph rewrite helper.
 - `writing_api/langfuse.mjs`: shared Node helper for optional Langfuse tracing around writing API calls.
 - `writing_api/draft_section.mjs` and `writing_api/critique_draft.mjs`: intentionally reserved placeholders for future draft-stage helpers; they are not referenced by the app or launchers yet.

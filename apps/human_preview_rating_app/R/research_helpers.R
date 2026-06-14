@@ -414,6 +414,164 @@ research_summary_api_request <- function(source, asset, model = NA_character_, p
   )
 }
 
+research_paperqa_resolve_python <- function() {
+  env_candidates <- clean_text(c(
+    Sys.getenv("ARTICLE_LAB_PAPERQA_PYTHON", unset = ""),
+    Sys.getenv("ARTICLE_LAB_PYTHON", unset = ""),
+    Sys.getenv("WRITING_API_PYTHON", unset = "")
+  ))
+  path_candidates <- clean_text(c(Sys.which("python3"), Sys.which("python")))
+  candidates <- unique(c(
+    env_candidates[!is.na(env_candidates)],
+    path_candidates[!is.na(path_candidates)]
+  ))
+  if (length(candidates) == 0) {
+    return(list(
+      ok = FALSE,
+      error = "No Python interpreter found for PaperQA2 chunk retrieval. Set ARTICLE_LAB_PAPERQA_PYTHON.",
+      python_bin = NA_character_
+    ))
+  }
+  for (candidate in candidates) {
+    if (!file.exists(candidate)) next
+    stdout_file <- tempfile(pattern = "paperqa_check_stdout_", fileext = ".log")
+    stderr_file <- tempfile(pattern = "paperqa_check_stderr_", fileext = ".log")
+    on.exit(unlink(c(stdout_file, stderr_file), force = TRUE), add = TRUE)
+    check_code <- "import sys; print(sys.version)"
+    status <- suppressWarnings(system2(
+      candidate,
+      args = c("-c", shQuote(check_code)),
+      stdout = stdout_file,
+      stderr = stderr_file
+    ))
+    if (is.numeric(status) && length(status) == 1 && !is.na(status) && status == 0) {
+      return(list(ok = TRUE, python_bin = candidate))
+    }
+  }
+  list(
+    ok = FALSE,
+    error = "No working Python interpreter found. Set ARTICLE_LAB_PAPERQA_PYTHON to a valid Python 3 binary.",
+    python_bin = candidates[[1]] %||% NA_character_
+  )
+}
+
+research_paperqa_chunks_request <- function(source, asset, query = NULL, chunk_chars = 1500L, chunk_overlap = 100L) {
+  helper_path <- file.path("scripts", "writing_api", "paperqa_chunks.py")
+  if (!file.exists(file.path(project_root, helper_path))) {
+    stop("Missing helper script: scripts/writing_api/paperqa_chunks.py", call. = FALSE)
+  }
+  if (nrow(source) == 0) stop("Select a source before retrieving PaperQA2 chunks.", call. = FALSE)
+  if (nrow(asset) == 0 || !(asset$status[[1]] %in% c("downloaded", "uploaded"))) {
+    stop("Download or upload a PDF before retrieving PaperQA2 chunks.", call. = FALSE)
+  }
+  local_pdf_path <- research_resolve_local_pdf_path(asset$local_path[[1]])
+  if (is.na(local_pdf_path) || !file.exists(local_pdf_path)) {
+    stop("The selected PDF asset does not exist on disk.", call. = FALSE)
+  }
+
+  python_resolved <- research_paperqa_resolve_python()
+  if (!isTRUE(python_resolved$ok)) {
+    stop(python_resolved$error, call. = FALSE)
+  }
+  python_bin <- python_resolved$python_bin
+
+  output_dir <- file.path(project_root, "data", "research_paperqa_chunks")
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+  query_text <- if (is.null(query) || !nzchar(trimws(query))) NULL else query
+
+  request_payload <- list(
+    local_pdf_path = local_pdf_path,
+    research_source_id = source$research_source_id[[1]],
+    source_title = article_lab_input_string(source$source_title[[1]]) %||% "untitled",
+    query = query_text,
+    output_dir = output_dir,
+    chunk_chars = as.integer(chunk_chars),
+    chunk_overlap = as.integer(chunk_overlap)
+  )
+
+  request_file <- tempfile(pattern = "paperqa_request_", fileext = ".json")
+  stdout_file <- tempfile(pattern = "paperqa_stdout_", fileext = ".json")
+  stderr_file <- tempfile(pattern = "paperqa_stderr_", fileext = ".log")
+  on.exit(unlink(c(request_file, stdout_file, stderr_file), force = TRUE), add = TRUE)
+
+  write_json(request_payload, request_file, auto_unbox = TRUE, pretty = FALSE, null = "null")
+  original_wd <- getwd()
+  on.exit(setwd(original_wd), add = TRUE)
+  setwd(project_root)
+  status <- system2(python_bin, args = c(helper_path, request_file), stdout = stdout_file, stderr = stderr_file)
+  stdout_text <- if (file.exists(stdout_file)) paste(readLines(stdout_file, warn = FALSE), collapse = "\n") else ""
+  stderr_text <- if (file.exists(stderr_file)) paste(readLines(stderr_file, warn = FALSE), collapse = "\n") else ""
+
+  if (!nzchar(trimws(stdout_text))) {
+    clean_msg <- clean_text(stderr_text) %||% "PaperQA2 helper returned no output."
+    stop(clean_msg, call. = FALSE)
+  }
+
+  parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+
+  if (identical(parsed$mode, "paperqa_missing")) {
+    detail <- parsed$detail %||% "unknown"
+    hint <- parsed$hint %||% "pip install paper-qa (requires Python >= 3.11)"
+    warning_msg <- sprintf(
+      "PaperQA2 not available (%s). %s. Set ARTICLE_LAB_PAPERQA_PYTHON to a Python 3.11+ environment with paper-qa installed.",
+      detail, hint
+    )
+    warning(warning_msg)
+    return(list(
+      mode = "paperqa_missing",
+      query = parsed$query %||% NULL,
+      contexts = parsed$contexts %||% list(),
+      chunks = parsed$chunks %||% list(),
+      chunk_count = parsed$chunk_count %||% 0L,
+      diagnostics = list(
+        detail = detail,
+        python_version = parsed$python_version %||% "unknown",
+        python_executable = parsed$python_executable %||% "unknown",
+        hint = hint
+      ),
+      warning = warning_msg,
+      raw_json = stdout_text
+    ))
+  }
+
+  if (!(identical(parsed$mode, "paperqa") || identical(parsed$mode, "paperqa_query")) || !is.numeric(status) || length(status) != 1 || is.na(status) || status != 0) {
+    err_msg <- clean_text(parsed$error) %||% clean_text(stderr_text) %||% clean_text(stdout_text) %||% "PaperQA2 helper failed."
+    stop(err_msg, call. = FALSE)
+  }
+
+  is_query_mode <- identical(parsed$mode, "paperqa_query")
+  if (is_query_mode) {
+    contexts <- parsed$contexts %||% list()
+    if (!is.list(contexts)) contexts <- list()
+    list(
+      mode = parsed$mode,
+      query = parsed$query,
+      answer = parsed$answer %||% NULL,
+      contexts = contexts,
+      context_count = parsed$context_count %||% length(contexts),
+      chunks_dir = parsed$chunks_dir %||% paste0(output_dir, "/"),
+      chunks_file = parsed$chunks_file %||% NA_character_,
+      paperqa_version = parsed$paperqa_version %||% "unknown",
+      diagnostics = parsed$diagnostics %||% list(),
+      raw_json = stdout_text
+    )
+  } else {
+    chunks <- parsed$chunks %||% list()
+    if (!is.list(chunks)) chunks <- list()
+    list(
+      mode = parsed$mode %||% "paperqa",
+      chunks = chunks,
+      chunk_count = parsed$chunk_count %||% length(chunks),
+      chunks_dir = parsed$chunks_dir %||% paste0(output_dir, "/"),
+      chunks_file = parsed$chunks_file %||% NA_character_,
+      paperqa_version = parsed$paperqa_version %||% "unknown",
+      diagnostics = parsed$diagnostics %||% list(),
+      raw_json = stdout_text
+    )
+  }
+}
+
 research_evidence_render_template <- function(template, variables) {
   out <- article_lab_input_multiline(template) %||% ""
   for (name in names(variables)) {

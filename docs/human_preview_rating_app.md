@@ -80,7 +80,20 @@ The Outline tab's "Regenerate outline" button is the canonical example. When the
 - Clears the error state on the next *successful* generate.
 - Still bumps the refresh counter so the rest of the UI re-renders normally; the alert is layered on top, not instead of, the normal flow.
 
-Apply the same pattern to every other long-running workflow step in the app: title generation, subtitle generation, thumbnail generation, full article generation, Medium tag generation, API scoring, evidence fetch, summary confirmation, and any other action that can silently fail today. When in doubt, do not ship a feature without a loud, persistent, dedicated error alert wired to a dedicated error state.
+Apply the same pattern to every other long-running workflow step in the app: title generation, subtitle generation, thumbnail generation, full article generation, Medium tag generation, API scoring, evidence fetch, summary confirmation, PaperQA2 chunk retrieval, and any other action that can silently fail today. When in doubt, do not ship a feature without a loud, persistent, dedicated error alert wired to a dedicated error state.
+
+## Summary Tab PaperQA2 Retrieval
+
+The Summary tab includes a "PaperQA2 retrieval" card below the evidence markers. It is a Stage 1, one-PDF experiment: the user selects a research source with a downloaded/uploaded PDF, enters a claim or question, and clicks "Run PaperQA2 retrieval".
+
+1. `research_paperqa_chunks_request()` in `R/research_helpers.R` resolves a Python interpreter via `ARTICLE_LAB_PAPERQA_PYTHON` (falling back to `ARTICLE_LAB_PYTHON`, `WRITING_API_PYTHON`, then PATH).
+2. The resolved Python runs `scripts/writing_api/paperqa_chunks.py` with the local PDF path, source metadata, and query.
+3. If PaperQA2 is installed, the helper uses `paperqa.Docs()` and query-based retrieval to return the PaperQA answer plus retrieved contexts/chunks. Generated JSON is written to `data/research_paperqa_chunks/`.
+4. If PaperQA2 is missing, the Python script returns structured diagnostics (`mode=paperqa_missing`) and still writes the JSON diagnostics file. It does not perform fallback text extraction or whole-PDF chunking.
+5. On any failure, the app sets `article_lab_state$last_research_paperqa_chunks_error` with `kind`, `reason`, `python_bin`, `pdf_ok`, `detail`, and `hint`, then renders a red `.lab-alert-error` banner in the PaperQA2 card.
+6. Retrieved contexts are displayed reviewably in the card with context/chunk id, page hint when available, relevance score when available, char count, citation metadata, and a scrollable raw-text preview.
+
+This feature does not write to the database, does not integrate with Full Text or Review & Publish, does not change existing citation formatting, and generates output only to the gitignored `data/research_paperqa_chunks/` directory.
 
 ## Article Lab Subtitle Stage
 

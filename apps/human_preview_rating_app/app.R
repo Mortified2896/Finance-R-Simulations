@@ -104,7 +104,13 @@ server <- function(input, output, session) {
     last_full_text_generate_error = NULL,
     last_full_text_generate_error_at = NULL,
     last_review_publish_archive_error = NULL,
-    last_review_publish_archive_error_at = NULL
+    last_review_publish_archive_error_at = NULL,
+    last_research_paperqa_chunks_error = NULL,
+    last_research_paperqa_chunks_error_at = NULL,
+    last_research_paperqa_chunks = NULL,
+    last_research_paperqa_chunks_mode = NULL,
+    last_research_paperqa_answer = NULL,
+    last_research_paperqa_chunks_file = NULL
   )
   article_lab_refresh <- reactiveVal(0L)
   article_lab_active_outline_thumbnail <- reactiveVal(NULL)
@@ -855,6 +861,23 @@ server <- function(input, output, session) {
               actionButton("research_find_source_sentences", "Find source sentences", class = "lab-primary"),
               actionButton("research_rerun_weak_evidence", "Rerun weak/no-match with fallback", class = "lab-secondary")
             )
+          ),
+          div(
+            class = "lab-card",
+            h3("PaperQA2 retrieval"),
+            div(class = "lab-status-copy", "Enter a claim or question to retrieve relevant evidence candidates from the selected PDF."),
+            uiOutput("research_paperqa_chunks_error"),
+            div(class = "lab-field lab-editor-textarea", textAreaInput("research_paperqa_query", "Claim / question", value = "", width = "100%", height = "100px", placeholder = "e.g. What is the main contribution of this paper?")),
+            div(
+              class = "lab-grid",
+              div(class = "lab-field", numericInput("research_paperqa_chunk_chars", "Chunk target chars", value = 1500L, min = 500L, max = 5000L, step = 100L, width = "100%")),
+              div(class = "lab-field", numericInput("research_paperqa_chunk_overlap", "Chunk overlap", value = 100L, min = 0L, max = 500L, step = 50L, width = "100%"))
+            ),
+            div(
+              class = "lab-actions",
+              actionButton("research_run_paperqa_chunks", "Run PaperQA2 retrieval", class = "lab-primary")
+            ),
+            uiOutput("research_paperqa_chunks_display")
           )
         ),
         uiOutput("research_summary_inline_evidence"),
@@ -2093,6 +2116,197 @@ server <- function(input, output, session) {
     dbExecute(con, "UPDATE research_summary_claim_evidence SET selection_status = 'rejected', updated_at = ? WHERE evidence_id = ?", params = list(now_utc(), evidence_id))
     article_lab_state$notice <- sprintf("Rejected evidence %s.", evidence_id)
     research_refresh(research_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  output$research_paperqa_chunks_error <- renderUI({
+    err <- article_lab_state$last_research_paperqa_chunks_error
+    if (is.null(err)) return(NULL)
+    err_at <- article_lab_state$last_research_paperqa_chunks_error_at
+    elapsed <- if (is.null(err_at)) "" else format(err_at, "%Y-%m-%d %H:%M:%S")
+    kind_label <- switch(
+      err$kind %||% "unknown",
+      api_failed = "PaperQA2 API call failed",
+      paperqa_missing = "PaperQA2 package missing",
+      exception = "PaperQA2 chunk retrieval crashed",
+      "PaperQA2 chunk retrieval error"
+    )
+    pdf_available <- if (isTRUE(err$pdf_ok)) "Yes" else if (identical(err$pdf_ok, FALSE)) "No (missing file)" else "Unknown"
+    div(
+      class = "lab-alert lab-alert-error",
+      role = "alert",
+      div(
+        class = "lab-alert-title",
+        span(class = "lab-alert-icon", HTML("&#9888;")),
+        strong(kind_label),
+        if (nzchar(elapsed)) span(class = "lab-alert-time", sprintf(" at %s", elapsed))
+      ),
+      div(
+        class = "lab-alert-body",
+        p(err$reason %||% "Unknown error."),
+        tags$ul(
+          tags$li(sprintf("Python binary: %s", err$python_bin %||% "unknown")),
+          tags$li(sprintf("PDF local path OK: %s", pdf_available)),
+          if (nzchar(err$detail %||% "")) tags$li(sprintf("Detail: %s", err$detail)),
+          if (nzchar(err$hint %||% "")) tags$li(sprintf("Hint: %s", err$hint)),
+          tags$li("No evidence contexts were returned. Check the saved JSON diagnostics, fix the issue, and run PaperQA2 again.")
+        ),
+        if (nzchar(err$traceback %||% "")) p(code(err$traceback))
+      )
+    )
+  })
+
+  output$research_paperqa_chunks_display <- renderUI({
+    chunks <- article_lab_state$last_research_paperqa_chunks
+    if (is.null(chunks) || length(chunks) == 0) return(NULL)
+    mode <- article_lab_state$last_research_paperqa_chunks_mode %||% "paperqa"
+    is_query_mode <- identical(mode, "paperqa_query")
+    label <- if (is_query_mode) "contexts" else "chunks"
+    header <- h4(sprintf("PaperQA2 %s (%s - %s %s)", label, mode, length(chunks), label))
+    answer_text <- article_lab_state$last_research_paperqa_answer
+    answer_block <- if (is.null(answer_text) || !nzchar(answer_text)) NULL else div(
+      class = "lab-status-copy",
+      strong("PaperQA2 answer: "),
+      span(answer_text)
+    )
+    file_path <- article_lab_state$last_research_paperqa_chunks_file
+    file_block <- if (is.null(file_path) || !nzchar(file_path)) NULL else div(
+      class = "lab-status-copy",
+      sprintf("JSON saved to: %s", file_path)
+    )
+    items <- lapply(seq_along(chunks), function(i) {
+      ch <- chunks[[i]]
+      if (is.null(ch) || length(ch) == 0) return(NULL)
+      preview <- substr(ch$text %||% ch$preview %||% "", 1, 500)
+      if (nchar(preview) >= 500) preview <- paste0(preview, "...")
+      score <- suppressWarnings(as.numeric(ch$relevance_score %||% NA_real_))
+      score_tag <- if (!is.na(score)) span(sprintf("Score: %.3f", score)) else NULL
+      page_hint <- ch$page_hint %||% ch$page_number %||% "?"
+      chunk_id <- ch$chunk_id %||% ch$chunk_index %||% (i - 1)
+      div(
+        class = "lab-card",
+        style = "margin-bottom: 8px; padding: 8px 12px;",
+        div(
+          style = "display: flex; gap: 16px; font-size: 0.85em; color: #555; margin-bottom: 6px;",
+          span(sprintf("%s %s", if (is_query_mode) "Context" else "Chunk", chunk_id)),
+          span(sprintf("Page %s", page_hint)),
+          span(sprintf("%s characters", ch$char_count %||% nchar(ch$text %||% ""))),
+          score_tag
+        ),
+        if (!is.null(ch$citation) && nzchar(ch$citation)) div(style = "font-size: 0.8em; color: #666; margin-bottom: 4px;", sprintf("Citation: %s", ch$citation)),
+        pre(sprintf("%s", htmltools::htmlEscape(preview)), style = "white-space: pre-wrap; font-size: 0.82em; background: #f8f8f8; padding: 8px; border-radius: 4px; margin: 0; max-height: 120px; overflow-y: auto;")
+      )
+    })
+    items <- Filter(Negate(is.null), items)
+    if (length(items) == 0) return(NULL)
+    tagList(header, answer_block, file_block, div(style = "max-height: 480px; overflow-y: auto;", items))
+  })
+
+  observeEvent(input$research_run_paperqa_chunks, {
+    query_text <- article_lab_input_multiline(input$research_paperqa_query) %||% ""
+    if (!nzchar(trimws(query_text))) query_text <- NULL
+    if (is.null(query_text)) {
+      article_lab_state$last_research_paperqa_chunks <- NULL
+      article_lab_state$last_research_paperqa_chunks_mode <- NULL
+      article_lab_state$last_research_paperqa_answer <- NULL
+      article_lab_state$last_research_paperqa_chunks_file <- NULL
+      article_lab_state$last_research_paperqa_chunks_error <- list(
+        kind = "validation",
+        reason = "Enter a claim or question before running PaperQA2 retrieval.",
+        python_bin = "not used",
+        pdf_ok = NA,
+        detail = "",
+        hint = "Stage 1 PaperQA2 retrieval is query/claim-based; blank whole-PDF chunking is intentionally disabled.",
+        traceback = ""
+      )
+      article_lab_state$last_research_paperqa_chunks_error_at <- Sys.time()
+      article_lab_state$notice <- "PaperQA2 retrieval needs a claim or question."
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+    article_lab_state$notice <- "Running PaperQA2 evidence retrieval..."
+    article_lab_state$last_research_paperqa_chunks_error <- NULL
+    article_lab_state$last_research_paperqa_chunks_error_at <- NULL
+    article_lab_state$last_research_paperqa_chunks <- NULL
+    article_lab_state$last_research_paperqa_chunks_mode <- NULL
+    article_lab_state$last_research_paperqa_answer <- NULL
+    article_lab_state$last_research_paperqa_chunks_file <- NULL
+    article_lab_refresh(article_lab_refresh() + 1L)
+    if (is.function(session$flushReact)) session$flushReact()
+
+    source <- selected_research_source()
+    asset <- selected_research_pdf_asset()
+
+    result <- tryCatch(
+      research_paperqa_chunks_request(
+        source = source,
+        asset = asset,
+        query = query_text,
+        chunk_chars = input$research_paperqa_chunk_chars %||% 1500L,
+        chunk_overlap = input$research_paperqa_chunk_overlap %||% 100L
+      ),
+      error = function(e) e
+    )
+
+    if (inherits(result, "error")) {
+      pdf_ok <- FALSE
+      if (nrow(source) > 0 && nrow(asset) > 0) {
+        local_path <- research_resolve_local_pdf_path(asset$local_path[[1]])
+        pdf_ok <- !is.na(local_path) && file.exists(local_path)
+      }
+      python_bin <- tryCatch(research_paperqa_resolve_python()$python_bin %||% "unknown", error = function(e) "unknown")
+      article_lab_state$last_research_paperqa_chunks_error <- list(
+        kind = "exception",
+        reason = conditionMessage(result),
+        python_bin = python_bin,
+        pdf_ok = pdf_ok,
+        detail = "",
+        hint = "Check debug log and verify Python/PaperQA2 setup.",
+        traceback = ""
+      )
+      article_lab_state$last_research_paperqa_chunks_error_at <- Sys.time()
+      article_lab_state$notice <- paste("PaperQA2 retrieval failed:", conditionMessage(result))
+      article_lab_refresh(article_lab_refresh() + 1L)
+      return(invisible(NULL))
+    }
+
+    mode <- result$mode %||% "paperqa"
+    is_query_mode <- identical(mode, "paperqa_query")
+    chunks <- if (is_query_mode) result$contexts %||% list() else result$chunks %||% list()
+
+    if (identical(mode, "paperqa_missing")) {
+      warn_msg <- result$warning %||% ""
+      diagnostics <- result$diagnostics %||% list()
+      article_lab_state$last_research_paperqa_chunks_error <- list(
+        kind = "paperqa_missing",
+        reason = warn_msg,
+        python_bin = diagnostics$python_executable %||% "unknown",
+        pdf_ok = {
+          local_path <- if (nrow(asset) > 0) research_resolve_local_pdf_path(asset$local_path[[1]]) else NA_character_
+          !is.na(local_path) && file.exists(local_path)
+        },
+        detail = diagnostics$detail %||% "",
+        hint = diagnostics$hint %||% "",
+        traceback = ""
+      )
+      article_lab_state$last_research_paperqa_chunks_error_at <- Sys.time()
+    } else {
+      article_lab_state$last_research_paperqa_chunks_error <- NULL
+      article_lab_state$last_research_paperqa_chunks_error_at <- NULL
+    }
+
+    article_lab_state$last_research_paperqa_chunks <- chunks
+    article_lab_state$last_research_paperqa_chunks_mode <- mode
+    article_lab_state$last_research_paperqa_answer <- result$answer %||% NULL
+    article_lab_state$last_research_paperqa_chunks_file <- result$chunks_file %||% NULL
+
+    count_label <- if (is_query_mode) result$context_count %||% length(chunks) else result$chunk_count %||% length(chunks)
+    article_lab_state$notice <- sprintf(
+      "PaperQA2 retrieval complete: %s %s (%s).",
+      count_label,
+      if (is_query_mode) "contexts" else "chunks",
+      mode
+    )
+    article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 
   observeEvent(input$research_generate_summary_draft, {
