@@ -1,6 +1,6 @@
 # Research Workflow
 
-The research workspace is a lightweight writing-oriented layer inside the unified Article Inbox in the local SQLite database.
+The research workspace is a lightweight writing-oriented layer currently rendered inside the Article Inbox screen and stored in the local SQLite database. This UI colocation does not replace the planned central Idea Inbox; see [`article_lab_inbox_architecture.md`](article_lab_inbox_architecture.md).
 
 - `research_sources` is the curated writing inbox for papers and articles worth considering.
 - Raw imported paper data remains separate, including the existing `research_papers` table.

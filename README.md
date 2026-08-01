@@ -53,6 +53,8 @@ Install the root Node dependencies used by writing and browser helpers:
 npm install
 ```
 
+The repository has one Node dependency scope at the root. Browser collectors that use CommonJS have a `.cjs` extension; writing helpers and tests use the root package's ES-module configuration.
+
 Run focused stable/default local app regression checks:
 
 ```sh

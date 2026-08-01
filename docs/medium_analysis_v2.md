@@ -358,7 +358,3 @@ Double-clickable helpers live in `01_manual_tools/analysis`:
 ## Later Comparison
 
 After enough API scores and human ratings exist, compare them against the V2 dataset labels and outcome fields from `v_medium_title_prediction_dataset_v2`. Keep model/human inputs blind. Join by `canonical_article_key`, `title_hash`, `subtitle_hash`, prompt/rating version, and model/rater metadata.
-
-## Thumbnail V3 TODO
-
-`medium_article_image_assets` exists so future thumbnail collection can attach image URLs and local paths to canonical articles. Existing image downloader scripts have not been deeply refactored in this pass.

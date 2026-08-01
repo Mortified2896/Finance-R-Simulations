@@ -7,8 +7,16 @@ if (!(requested_rating_mode %in% supported_rating_modes)) {
     call. = FALSE
   )
 }
-article_lab_ui_version <- Sys.getenv("ARTICLE_LAB_UI_VERSION", unset = "v1")
-article_lab_design_v2 <- identical(tolower(article_lab_ui_version), "v2")
+article_lab_ui_version <- tolower(trimws(Sys.getenv("ARTICLE_LAB_UI_VERSION", unset = "")))
+supported_article_lab_ui_versions <- c("", "v1", "v2")
+if (!(article_lab_ui_version %in% supported_article_lab_ui_versions)) {
+  stop(
+    "Invalid ARTICLE_LAB_UI_VERSION: '", article_lab_ui_version, "'. ",
+    "Supported values are an empty/unset value or 'v1' for the stable UI, and 'v2' for Design v2.",
+    call. = FALSE
+  )
+}
+article_lab_design_v2 <- identical(article_lab_ui_version, "v2")
 is_dimension_v2_mode <- identical(requested_rating_mode, "dimensions_v2")
 is_dimension_mode <- is_dimension_v2_mode
 interface_version <- if (is_dimension_mode) {
@@ -71,7 +79,27 @@ title_only_placeholder_subtitle <- "[Subtitle hidden for title-only rating]"
 title_only_placeholder_thumbnail_label <- "Placeholder image\nThumbnail hidden for title-only rating"
 target_n_env <- Sys.getenv("HUMAN_RATING_TARGET_N", unset = "")
 default_target_n <- suppressWarnings(as.integer(target_n_env))
-if (!nzchar(target_n_env) || is.na(default_target_n) || default_target_n < 1L) default_target_n <- Inf
+if (!nzchar(target_n_env)) {
+  default_target_n <- Inf
+} else if (is.na(default_target_n) || default_target_n < 1L) {
+  stop(
+    "Invalid HUMAN_RATING_TARGET_N: '", target_n_env, "'. Expected a positive integer or an empty/unset value.",
+    call. = FALSE
+  )
+}
+
+article_lab_positive_integer_env <- function(name, default, minimum) {
+  raw_value <- trimws(Sys.getenv(name, unset = ""))
+  if (!nzchar(raw_value)) return(as.integer(default))
+  parsed <- suppressWarnings(as.integer(raw_value))
+  if (is.na(parsed) || parsed < minimum) {
+    stop(
+      "Invalid ", name, ": '", raw_value, "'. Expected an integer greater than or equal to ", minimum, ".",
+      call. = FALSE
+    )
+  }
+  parsed
+}
 
 if (!exists("find_project_root", mode = "function")) {
   find_project_root <- function() {

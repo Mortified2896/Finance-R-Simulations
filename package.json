@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Small writing helpers for Medium article projects.",
   "scripts": {
+    "collect:medium-public-stats:pw": "node scripts/collect_medium_public_stats_pw.cjs",
     "reroll:sp500": "node scripts/writing_api/reroll_sentence.mjs",
+    "test:app-config": "Rscript scripts/test_app_configuration.R",
     "test:search-tags": "node scripts/test_medium_search_tags_parser.mjs",
     "test:tag-bookmarklet": "node scripts/test_medium_tag_bookmarklet_extraction.js",
     "test:tag-watcher": "node scripts/test_medium_tag_snapshot_watcher_helpers.mjs",
@@ -18,9 +20,9 @@
     "@langfuse/otel": "^5.3.0",
     "@langfuse/tracing": "^5.3.0",
     "@opentelemetry/sdk-node": "^0.218.0",
+    "better-sqlite3": "12.9.0",
     "dotenv": "^16.4.7",
     "openai": "^6.10.0",
-    "opencode-plugin-langfuse": "^0.1.8",
     "pdf-parse": "^2.4.5",
     "playwright": "^1.60.0"
   }

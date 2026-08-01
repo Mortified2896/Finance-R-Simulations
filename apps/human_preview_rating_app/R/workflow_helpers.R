@@ -81,10 +81,6 @@ article_lab_page_meta <- list(
     nav_subtitle = "Prepare publishing",
     title = "Article Lab – Review & Publish",
     subtitle = "Set publishing metadata, export/copy the approved draft, and track publishing status."
-  ),
-  settings = list(
-    nav_title = "Settings",
-    nav_subtitle = "App settings"
   )
 )
 

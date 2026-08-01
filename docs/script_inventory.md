@@ -6,7 +6,7 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 
 - `collect_medium_rss.R`: collect Medium RSS feed metadata.
 - `collect_medium_public_stats.R`: collect public Medium stats from stored/imported article metadata.
-- `collect_medium_public_stats_pw.js`: Playwright-based public stats collection helper.
+- `collect_medium_public_stats_pw.cjs`: Playwright-based public stats collection helper.
 - `watch_medium_tag_page_pw.cjs`: visible/attached browser watcher for Medium tag, search, publication, and article pages.
 - `manual_tools/start_medium_tag_page_watcher_attached_chrome.zsh`: macOS/manual attached-Chrome watcher workflow; the matching `.command` launcher is only a thin wrapper.
 - `medium_tag_snapshot_watcher_helpers.mjs`: helper functions used by the tag watcher and tests.
@@ -48,7 +48,7 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `validate_dimension_v2_thumbnail_queue_mapping.R`: read-only v2 rating integrity check for validated cohort file/hash state and one-to-one queue-to-cohort key mapping.
 - `audit_dimension_v2_thumbnail_provenance_row.R`: read-only row-level provenance trace across cohort CSV, source sample CSVs, DB/article/view rows, queue rows, observation tables, and local file identity.
 - `rate_medium_titles_terminal.R`: blind terminal human-rating workflow.
-- `score_medium_headlines_openai.py`, `analyze_openai_headline_scores.R`, and `analyze_openai_headline_scores_regularized.R`: older headline scoring workflow.
+- `score_medium_headlines_openai.py`, `analyze_openai_headline_scores.R`, and `analyze_openai_headline_scores_regularized.R`: historical reproducibility workflow for the original headline-scoring analysis; not a current Article Lab scoring entry point.
 - `langfuse_python.py`: shared Python helper for optional Langfuse tracing and OpenAI client setup across scoring scripts.
 
 ## Image Queues And Downloads
@@ -72,16 +72,15 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `test_medium_search_tags_parser.mjs`: parser test for Medium search/tag snapshots.
 - `test_medium_tag_bookmarklet_extraction.js`: bookmarklet extraction test.
 - `test_medium_tag_snapshot_watcher_helpers.mjs`: watcher helper test.
-- `test_article_inbox_workflow.R`: in-memory SQLite integration coverage for Quick Ideas, research-angle promotion, the unified candidate lifecycle, Article Evidence handoff, provenance, migration, and the legacy route redirect.
+- `test_article_inbox_workflow.R`: in-memory SQLite integration coverage for Quick Ideas, research-angle promotion, the unified candidate lifecycle, Article Evidence handoff, provenance, and current promoted-angle recovery.
 - `print_medium_search_tags_fixture.mjs`: prints search/tag fixture diagnostics.
 
 ## Writing Helpers
 
-- `writing_setup/apply_article_lab_schema.R`: creates or updates the Article Lab title-generation and title-scoring tables and indexes with a database backup first.
-- `writing_setup/apply_writing_lab_schema.R`: creates or updates the broader writing-lab schema objects.
 - `writing_setup/apply_research_workflow_schema.R`: creates or updates the lightweight Research Inbox tables for curated sources and article angles, with a database backup first.
-- `writing_setup/apply_article_inbox_schema.R`: creates or updates the unified Article Inbox candidate/project tables, migrates compatible legacy Idea Inbox rows and already-promoted research angles, and backs up the database first.
+- `writing_setup/apply_article_inbox_schema.R`: creates or updates the unified Article Inbox candidate/project tables, recovers already-promoted research angles, and backs up the database first.
 - `test_article_production_regression.R`: isolated SQLite regression coverage for canonical project-to-production-batch ownership, downstream artifact isolation, reload persistence, migration compatibility, and explicit provider failures without stub persistence.
+- `test_app_configuration.R`: startup configuration coverage for stable/Design v2 selection, supported rating modes, queue targets, helper timeouts, and evidence reasoning values.
 - `writing_setup/import_vanguard_papers_to_research_sources.R`: idempotently copies Vanguard rows from `research_papers` into the curated `research_sources` inbox; supports `--dry-run` and backs up before writing by default.
 - `writing_api/generate_titles.mjs`: live OpenAI title-generation helper for the Article Lab Generate tab.
 - `writing_api/generate_subtitles.mjs`: live OpenAI subtitle-generation helper for the Article Lab Subtitle Generation tab.
@@ -91,4 +90,3 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `writing_api/paperqa_chunks.py`: Stage 1 PaperQA2 retrieval runner for the Article Lab Summary tab. Runs query-based retrieval against one selected local PDF and returns PaperQA answer/context candidates as JSON. Called from R via `research_paperqa_chunks_request()` in `apps/human_preview_rating_app/R/research_helpers.R`. Respects `ARTICLE_LAB_PAPERQA_PYTHON` env var. Writes generated JSON or diagnostics to `data/research_paperqa_chunks/`.
 - `writing_api/reroll_sentence.mjs`: article sentence/paragraph rewrite helper.
 - `writing_api/langfuse.mjs`: shared Node helper for optional Langfuse tracing around writing API calls.
-- `writing_api/draft_section.mjs` and `writing_api/critique_draft.mjs`: intentionally reserved placeholders for future draft-stage helpers; they are not referenced by the app or launchers yet.

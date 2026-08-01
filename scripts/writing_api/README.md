@@ -12,8 +12,6 @@ This folder contains small writing helpers for article projects.
 - `generate_medium_tags.mjs`: implemented for Review & Publish Medium tag generation from approved article drafts.
 - `score_article_lab_titles.py`: implemented for Article Lab title-only API scoring with the v2_2 rubric.
 - `reroll_sentence.mjs`: implemented for rewriting one selected sentence or paragraph.
-- `draft_section.mjs`: placeholder only.
-- `critique_draft.mjs`: placeholder only.
 
 ## Installation
 
@@ -151,7 +149,7 @@ The helper uses `client.responses.create()` with the Responses API built-in `ima
 
 The Shiny thumbnail tab selects from a curated Responses generation model list and defaults to `OPENAI_THUMBNAIL_GENERATION_MODEL` when set. `OPENAI_THUMBNAIL_RESPONSES_MODEL` is also accepted as a secondary fallback, followed by the app default.
 
-If live API generation fails in the Shiny app, the app keeps the existing local SVG stub fallback. The generated rows are marked `generation_mode = "stub"`, and the UI notice includes `stub mode` plus the fallback reason so API failures are visible.
+If live API generation fails in the Shiny app, no substitute row is saved. The app retains the existing candidates and shows a persistent error alert with the model, failure mode, affected IDs, and diagnostic-log location.
 
 ## Generate Article Lab outlines
 

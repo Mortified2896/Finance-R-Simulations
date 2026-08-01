@@ -64,7 +64,7 @@ article_lab_default_outline_model <- local({
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
-article_lab_outline_helper_timeout_seconds <- max(30L, suppressWarnings(as.integer(Sys.getenv("OPENAI_OUTLINE_GENERATION_TIMEOUT_SECONDS", unset = "180"))) %||% 180L)
+article_lab_outline_helper_timeout_seconds <- article_lab_positive_integer_env("OPENAI_OUTLINE_GENERATION_TIMEOUT_SECONDS", 180L, 30L)
 article_lab_outline_model_choices <- article_lab_model_choices_with_default(article_lab_default_outline_model)
 article_lab_default_full_text_model <- local({
   configured <- Sys.getenv("OPENAI_FULL_TEXT_GENERATION_MODEL", unset = "")
@@ -73,7 +73,7 @@ article_lab_default_full_text_model <- local({
   if (!nzchar(configured)) configured <- "gpt-5-mini"
   configured
 })
-article_lab_full_text_helper_timeout_seconds <- max(60L, suppressWarnings(as.integer(Sys.getenv("OPENAI_FULL_TEXT_GENERATION_TIMEOUT_SECONDS", unset = "300"))) %||% 300L)
+article_lab_full_text_helper_timeout_seconds <- article_lab_positive_integer_env("OPENAI_FULL_TEXT_GENERATION_TIMEOUT_SECONDS", 300L, 60L)
 article_lab_full_text_model_choices <- article_lab_model_choices_with_default(article_lab_default_full_text_model)
 article_lab_default_research_summary_model <- local({
   configured <- Sys.getenv("OPENAI_RESEARCH_SUMMARY_MODEL", unset = "")
@@ -142,7 +142,11 @@ article_lab_evidence_fallback_model_choices <- article_lab_model_choices_with_de
 article_lab_evidence_reasoning_choices <- c("minimal", "low", "medium")
 article_lab_default_evidence_reasoning_effort <- Sys.getenv("OPENAI_EVIDENCE_REASONING_EFFORT", unset = "low")
 if (!article_lab_default_evidence_reasoning_effort %in% article_lab_evidence_reasoning_choices) {
-  article_lab_default_evidence_reasoning_effort <- "low"
+  stop(
+    "Invalid OPENAI_EVIDENCE_REASONING_EFFORT: '", article_lab_default_evidence_reasoning_effort, "'. ",
+    "Supported values are: ", paste(article_lab_evidence_reasoning_choices, collapse = ", "), ".",
+    call. = FALSE
+  )
 }
 article_lab_default_claim_extraction_prompt <- paste(
   "Identify atomic factual claims in the numbered summary sentences that should eventually be supported by the source paper.",

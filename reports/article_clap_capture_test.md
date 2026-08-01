@@ -1,4 +1,4 @@
-# Medium Article Clap Capture Test
+# Historical: Medium Article Clap Capture Test
 
 Date checked: 2026-05-15
 

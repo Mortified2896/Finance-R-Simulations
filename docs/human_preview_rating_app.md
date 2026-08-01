@@ -31,6 +31,35 @@ Required R packages:
 install.packages(c("shiny", "DBI", "RSQLite"))
 ```
 
+## Runtime configuration
+
+The canonical launchers set only the project root and, for Design v2, the UI version. Optional application configuration is read at startup:
+
+| Variable | Purpose and accepted values |
+| --- | --- |
+| `MEDIUM_PROJECT_ROOT` | Repository root used to resolve local scripts and data. The canonical launchers set it to the current repository. |
+| `MEDIUM_RATING_DB` | Optional database override. Unset uses `data/db/medium_articles.sqlite`. |
+| `ARTICLE_LAB_UI_VERSION` | Empty/unset or `v1` selects stable UI; `v2` selects Design v2. Other values stop startup with an error. |
+| `HUMAN_RATING_MODE` | Empty/unset selects normal rating; `dimensions_v2` selects the validated dimension workflow. Other nonempty values stop startup with an error. |
+| `HUMAN_RATING_TARGET_N` | Optional positive integer queue target. Invalid nonempty values stop startup with an error. |
+| `ARTICLE_LAB_PYTHON` | Preferred Python interpreter for Article Lab scoring helpers. `WRITING_API_PYTHON` remains the secondary shared-helper fallback. |
+| `ARTICLE_LAB_PAPERQA_PYTHON` | Preferred Python interpreter for PaperQA2; falls back to `ARTICLE_LAB_PYTHON`, `WRITING_API_PYTHON`, then Python on `PATH`. |
+| `OPENAI_API_KEY` | Required for live OpenAI generation and scoring. It belongs only in the environment or ignored local `.env`. |
+| `OPENAI_*_MODEL` | Optional stage-specific model overrides for title generation/scoring, subtitles, thumbnails, outlines, full text, research summaries, claim/evidence selection, and Medium tags. Model identifiers are free-form and become visible in the relevant model selector. |
+| `OPENAI_OUTLINE_GENERATION_TIMEOUT_SECONDS` | Optional integer of at least 30; default `180`. Invalid values stop startup. |
+| `OPENAI_FULL_TEXT_GENERATION_TIMEOUT_SECONDS` | Optional integer of at least 60; default `300`. Invalid values stop startup. |
+| `OPENAI_EVIDENCE_REASONING_EFFORT` | `minimal`, `low`, or `medium`; default `low`. Invalid values stop startup. |
+
+Optional Langfuse variables and helper-specific model aliases are documented in [`scripts/writing_api/README.md`](../scripts/writing_api/README.md). Script-only variables such as `MEDIUM_DB_PATH`, `MEDIUM_OBSERVED_AT`, `MEDIUM_TITLE_RATING_TERMINAL`, and `OPENAI_THUMBNAIL_SCORING_MODEL` configure their named import, rating, or scoring scripts rather than the Shiny launch mode.
+
+## Current traceability and error-handling boundary
+
+Title batches persist their effective prompt, selected model, seed/topic, inspiration source, requested size, project context, and raw response. Research claim/evidence rows persist prompt templates, payloads, model, reasoning effort, response, and error state. Generated subtitle, thumbnail, outline, and full-text rows persist model/mode plus raw provider output, and full-text rows also retain prompt key/version, source-context mode, and citation mapping.
+
+The remaining provenance gap is that subtitle, thumbnail, outline, and full-text rows do not all persist an immutable copy of the exact effective request prompt, supporting context, and generation settings beside each output. Saved prompt keys can be edited later, so they are not a complete historical record. Closing that gap requires a focused schema/write-path change and is not part of repository cleanup.
+
+Dedicated persistent error alerts currently cover Article Inbox mutations, title/subtitle/thumbnail/outline/full-text generation, PaperQA2 retrieval, and Review & Publish archive writes. Several other save, scoring, research-summary/evidence, and Medium-tag actions still share the general notice channel or rely on Shiny error propagation. Those actions need a separate fail-loud pass with per-action error state; do not use the general notice as evidence that every failure path is covered.
+
 ## Fail Loud: The Most Important Design Rule
 
 **Every process in this app that can fail, must fail loud, clear, and visible.** This is one of the most important design rules for this app. It applies to API calls, database writes, file I/O, prompt construction, selection sync, validation, and any other user-triggered workflow step.
@@ -70,15 +99,17 @@ The Outline tab's "Regenerate outline" button is the canonical example. When the
 
 Apply the same pattern to every other long-running workflow step in the app: title generation, subtitle generation, thumbnail generation, full article generation, Medium tag generation, API scoring, evidence fetch, summary confirmation, PaperQA2 chunk retrieval, and any other action that can silently fail today. When in doubt, do not ship a feature without a loud, persistent, dedicated error alert wired to a dedicated error state.
 
-## Unified Article Inbox
+## Current Article Inbox and planned Idea Inbox
 
-The former Idea Inbox and Research Inbox now share one top-level `Article Inbox`. Quick Idea capture writes directly to the canonical `article_candidates` table; a research source or unselected research angle remains research-only until the user explicitly chooses `Add to Article Candidates`.
+The intended architecture still includes a central Idea Inbox for idea-first and paper-first development. It is not yet implemented as a distinct current route or persistence layer, and Article Inbox has not been accepted as its product replacement. See [`article_lab_inbox_architecture.md`](article_lab_inbox_architecture.md) for the decision boundary and removal audit.
+
+In the current interim UI, quick capture, research sources, and article candidates share one top-level `Article Inbox`. Quick Idea capture writes directly to the canonical `article_candidates` table; a research source or unselected research angle remains research-only until the user explicitly chooses `Add to Article Candidates`. These direct-to-candidate paths are current shortcuts around the planned Idea Inbox stage.
 
 Candidate origins are controlled as `quick_idea` or `research_angle`. Candidate progress is controlled as `captured`, `refining`, `ready_for_evidence`, `in_article_evidence`, or `archived`; archived rows are hidden by default and can be restored. Promotion is unique by `research_angle_id`, so repeated clicks open the same candidate.
 
 `Develop Article` creates or opens one `article_projects` row per candidate and navigates to the separate Article Evidence stage. The project stores a one-way provenance snapshot. For research-derived candidates it also snapshots the chosen angle/source summary and adds the origin research source to `article_project_evidence_sources`. Downstream edits never overwrite the original research angle.
 
-The app initializer applies the schema idempotently. `scripts/writing_setup/apply_article_inbox_schema.R` is the backup-first manual migration. It preserves all research records, imports compatible rows from legacy `article_ideas` or `idea_inbox_items` tables when present, and maps research angles previously sent to Title Lab via `article_lab_batch_id` without duplicates. The obsolete `idea_inbox` section/query URL redirects to `research_inbox`, whose visible title is Article Inbox.
+The app initializer applies the current schema idempotently. `scripts/writing_setup/apply_article_inbox_schema.R` is the backup-first manual initializer. It preserves all research records and maps research angles already linked to Title Lab through `article_lab_batch_id` into the canonical candidate/project workflow without duplicates.
 
 ## Summary Tab PaperQA2 Retrieval
 
