@@ -10,6 +10,7 @@
     "test:tag-bookmarklet": "node scripts/test_medium_tag_bookmarklet_extraction.js",
     "test:tag-watcher": "node scripts/test_medium_tag_snapshot_watcher_helpers.mjs",
     "test:article-inbox": "Rscript scripts/test_article_inbox_workflow.R",
+    "test:article-production": "Rscript scripts/test_article_production_regression.R",
     "validate:medium-v2": "Rscript scripts/validate_medium_analysis_v2.R"
   },
   "dependencies": {

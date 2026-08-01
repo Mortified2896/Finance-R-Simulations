@@ -163,11 +163,7 @@ mark_duplicate_pending_queue_items <- function(con) {
 
 load_candidates <- function(con, exclude_rated = TRUE) {
   objects <- dbGetQuery(con, "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
-  if (!("v_medium_title_prediction_dataset_v2" %in% objects$name)) {
-    stop("Missing v_medium_title_prediction_dataset_v2. Run the Medium Analysis V2 schema setup first.", call. = FALSE)
-  }
-
-  rows <- dbGetQuery(con, "
+  rows <- if ("v_medium_title_prediction_dataset_v2" %in% objects$name) dbGetQuery(con, "
     SELECT
       canonical_article_key,
       article_id,
@@ -178,7 +174,11 @@ load_candidates <- function(con, exclude_rated = TRUE) {
       thumbnail_url
     FROM v_medium_title_prediction_dataset_v2
     WHERE NULLIF(TRIM(title), '') IS NOT NULL
-  ")
+  ") else data.frame(
+    canonical_article_key = character(), article_id = integer(), medium_post_id = character(),
+    url = character(), title = character(), subtitle = character(), thumbnail_url = character(),
+    stringsAsFactors = FALSE, check.names = FALSE
+  )
   rows$title <- clean_text(rows$title)
   rows$subtitle <- clean_text(rows$subtitle)
 
@@ -188,9 +188,10 @@ load_candidates <- function(con, exclude_rated = TRUE) {
   }, character(1))
   rows$has_local_thumbnail <- !is.na(rows$local_thumbnail_path) & file.exists(rows$local_thumbnail_path)
   rows <- rows[rows$has_local_thumbnail, , drop = FALSE]
-  rows$source_type <- "dataset"
-  rows$article_lab_candidate_id <- NA_character_
-  rows$candidate_created_at <- NA_character_
+  row_n <- nrow(rows)
+  rows$source_type <- rep("dataset", row_n)
+  rows$article_lab_candidate_id <- rep(NA_character_, row_n)
+  rows$candidate_created_at <- rep(NA_character_, row_n)
 
   rated_keys <- get_rated_keys(con)
   article_keys <- clean_text(rows$article_id)

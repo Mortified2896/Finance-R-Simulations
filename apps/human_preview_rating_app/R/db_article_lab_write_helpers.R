@@ -174,7 +174,7 @@ article_lab_update_outlines <- function(con, outline_updates) {
       if (length(outline_text) == 0 || is.na(outline_text[[1]])) next
       dbExecute(
         con,
-        "UPDATE article_lab_outlines SET outline_text = ?, notes = ?, updated_at = ? WHERE outline_id = ? AND status = 'draft'",
+        "UPDATE article_lab_outlines SET outline_text = ?, notes = ?, updated_at = ? WHERE outline_id = ? AND status IN ('draft', 'approved')",
         params = list(outline_text[[1]], article_lab_input_string(entry$notes) %||% NA_character_, timestamp, outline_id[[1]])
       )
       updated_n <- updated_n + 1L
@@ -1669,7 +1669,7 @@ article_lab_archive_api_scored_candidates <- function(con, candidate_ids) {
   list(archived_n = length(eligible_ids), skipped_n = skipped_n, batch_ids = batch_ids)
 }
 
-save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, raw_json = NA_character_, generation_mode = "generated", enforce_max_chars = TRUE, notes_extra = NULL, article_context_notes = NULL) {
+save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, raw_json = NA_character_, generation_mode = "generated", enforce_max_chars = TRUE, notes_extra = NULL, article_context_notes = NULL, article_project_id = NULL) {
   if (length(titles) == 0) return(invisible(NULL))
   validated <- article_lab_validate_titles(titles, max_chars = article_lab_title_max_chars)
   title_values <- validated$titles
@@ -1686,16 +1686,22 @@ save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, 
   if (length(model_value) == 0 || is.na(model_value[[1]])) model_value <- article_lab_default_model
   requested_size <- suppressWarnings(as.integer(requested_batch_size))
   if (is.na(requested_size) || requested_size < 1L) requested_size <- length(title_values)
+  project_id <- article_lab_input_string(article_project_id)
+  if (is.null(project_id) || !nzchar(project_id)) stop("Select an article project before saving a production title batch.", call. = FALSE)
+  if (!dbExistsTable(con, "article_projects") || dbGetQuery(con, "SELECT COUNT(*) AS n FROM article_projects WHERE article_project_id = ?", params = list(project_id))$n[[1]] != 1L) {
+    stop("The selected article project no longer exists. No title batch was saved.", call. = FALSE)
+  }
 
   dbBegin(con)
   tryCatch({
     dbExecute(
       con,
       "INSERT INTO article_lab_title_batches
-       (batch_id, created_at, prompt, seed_topic, inspiration_source, requested_batch_size, model, status, notes, article_context_notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+       (batch_id, article_project_id, created_at, prompt, seed_topic, inspiration_source, requested_batch_size, model, status, notes, article_context_notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       params = list(
         batch_id,
+        project_id,
         created_at,
         prompt_value[[1]],
         if (length(seed_topic_value) == 0) NA_character_ else seed_topic_value[[1]],

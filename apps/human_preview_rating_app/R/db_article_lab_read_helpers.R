@@ -569,10 +569,20 @@ article_lab_unscored_candidates <- function(con, batch_id, model, prompt_version
 }
 
 
-load_latest_article_lab_batch <- function(con) {
+load_latest_article_lab_batch <- function(con, article_project_id = NULL) {
   if (!dbExistsTable(con, "article_lab_title_batches")) return(NULL)
-  batch <- dbGetQuery(con, "
-    SELECT batch_id, created_at, prompt, seed_topic, inspiration_source,
+  project_filter_supplied <- !missing(article_project_id)
+  project_id <- article_lab_input_string(article_project_id)
+  if (project_filter_supplied && is.null(project_id)) return(NULL)
+  batch <- if (!is.null(project_id) && nzchar(project_id)) dbGetQuery(con, "
+    SELECT batch_id, article_project_id, created_at, prompt, seed_topic, inspiration_source,
+      requested_batch_size, model, status, notes, article_context_notes
+    FROM article_lab_title_batches
+    WHERE article_project_id = ?
+    ORDER BY created_at DESC, batch_id DESC
+    LIMIT 1
+  ", params = list(project_id)) else dbGetQuery(con, "
+    SELECT batch_id, article_project_id, created_at, prompt, seed_topic, inspiration_source,
       requested_batch_size, model, status, notes, article_context_notes
     FROM article_lab_title_batches
     ORDER BY created_at DESC, batch_id DESC
@@ -605,10 +615,19 @@ load_article_lab_candidates_for_batch <- function(con, batch_id) {
   )
 }
 
-load_article_lab_batches <- function(con) {
+load_article_lab_batches <- function(con, article_project_id = NULL) {
   if (!dbExistsTable(con, "article_lab_title_batches")) return(data.frame())
+  project_filter_supplied <- !missing(article_project_id)
+  project_id <- article_lab_input_string(article_project_id)
+  if (project_filter_supplied && is.null(project_id)) return(data.frame())
+  if (!is.null(project_id) && nzchar(project_id)) return(dbGetQuery(con, "
+    SELECT batch_id, article_project_id, created_at, requested_batch_size, model, status, seed_topic, inspiration_source, article_context_notes
+    FROM article_lab_title_batches
+    WHERE article_project_id = ?
+    ORDER BY created_at DESC, batch_id DESC
+  ", params = list(project_id)))
   dbGetQuery(con, "
-    SELECT batch_id, created_at, requested_batch_size, model, status, seed_topic, inspiration_source, article_context_notes
+    SELECT batch_id, article_project_id, created_at, requested_batch_size, model, status, seed_topic, inspiration_source, article_context_notes
     FROM article_lab_title_batches
     ORDER BY created_at DESC, batch_id DESC
   ")

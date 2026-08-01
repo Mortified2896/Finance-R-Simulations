@@ -291,16 +291,9 @@ generate_title_candidates <- function(con, prompt, batch_size, seed_topic = NA_c
     if (is.null(api_result$dropped_n) || is.na(api_result$dropped_n)) api_result$dropped_n <- api_result$validated$dropped_n
     api_result
   }, error = function(e) {
-    stub_rows <- stub_title_candidates(
-      prompt = prompt,
-      batch_size = batch_size,
-      seed_topic = seed_topic,
-      inspiration_source = inspiration_source,
-      model = model
-    )
     list(
-      titles = stub_rows,
-      mode = "stub",
+      titles = data.frame(row_number = integer(), title = character(), stringsAsFactors = FALSE),
+      mode = "failed",
       model = article_lab_input_string(model) %||% article_lab_default_model,
       raw_json = NULL,
       example_titles_used = as.integer(length(example_titles)),
@@ -681,35 +674,10 @@ generate_thumbnail_candidates <- function(packages, variants_per_package = artic
   tryCatch(
     article_lab_thumbnail_api_request(packages, variants_per_package = variants_per_package, model = model, prompt = prompt),
     error = function(e) {
-      rows <- lapply(seq_len(nrow(packages)), function(i) {
-        variants <- stub_thumbnail_candidates_for_package(
-          title = packages$title[[i]],
-          subtitle = packages$subtitle[[i]],
-          prompt = prompt,
-          count = variants_per_package
-        )
-        if (nrow(variants) == 0) return(NULL)
-        data.frame(
-          subtitle_id = rep(packages$subtitle_id[[i]], nrow(variants)),
-          candidate_id = rep(packages$candidate_id[[i]], nrow(variants)),
-          batch_id = rep(packages$batch_id[[i]], nrow(variants)),
-          title = rep(packages$title[[i]], nrow(variants)),
-          subtitle = rep(packages$subtitle[[i]], nrow(variants)),
-          thumbnail_label = variants$thumbnail_label,
-          thumbnail_data_uri = variants$thumbnail_data_uri,
-          created_at = variants$created_at,
-          model = rep(article_lab_input_string(model) %||% article_lab_default_thumbnail_model, nrow(variants)),
-          generation_mode = variants$generation_mode,
-          raw_json = variants$raw_json,
-          stringsAsFactors = FALSE,
-          check.names = FALSE
-        )
-      })
-      rows <- Filter(Negate(is.null), rows)
       list(
-        rows = if (length(rows) == 0) data.frame() else do.call(rbind, rows),
+        rows = data.frame(),
         model = article_lab_input_string(model) %||% article_lab_default_thumbnail_model,
-        mode = "stub",
+        mode = "failed",
         raw_json = article_lab_input_string(prompt) %||% article_lab_default_thumbnail_prompt,
         fallback_reason = conditionMessage(e)
       )
@@ -937,40 +905,13 @@ generate_subtitle_candidates <- function(candidates, variants_per_title = 4L, mo
   tryCatch(
     article_lab_subtitle_api_request(candidates, variants_per_title = variants_per_title, model = model, prompt = prompt),
     error = function(e) {
-      rows <- lapply(seq_len(nrow(candidates)), function(i) {
-        subtitles <- stub_subtitle_candidates_for_title(candidates$title[[i]], count = variants_per_title)
-        if (length(subtitles) == 0) return(NULL)
-        data.frame(
-          candidate_id = rep(candidates$candidate_id[[i]], length(subtitles)),
-          batch_id = rep(candidates$batch_id[[i]], length(subtitles)),
-          subtitle = subtitles,
-          created_at = rep(now_utc(), length(subtitles)),
-          model = rep(article_lab_input_string(model) %||% article_lab_default_subtitle_model, length(subtitles)),
-          generation_mode = rep("stub", length(subtitles)),
-          raw_json = rep(
-            toJSON(
-              list(
-                prompt = article_lab_input_string(prompt) %||% article_lab_default_subtitle_prompt,
-                mode = "stub"
-              ),
-              auto_unbox = TRUE,
-              null = "null"
-            ),
-            length(subtitles)
-          ),
-          stringsAsFactors = FALSE,
-          check.names = FALSE
-        )
-      })
-      rows <- Filter(Negate(is.null), rows)
       list(
-        rows = if (length(rows) == 0) data.frame() else do.call(rbind, rows),
+        rows = data.frame(),
         model = article_lab_input_string(model) %||% article_lab_default_subtitle_model,
-        mode = "stub",
+        mode = "failed",
         raw_json = article_lab_input_string(prompt) %||% article_lab_default_subtitle_prompt,
         fallback_reason = conditionMessage(e)
       )
     }
   )
 }
-

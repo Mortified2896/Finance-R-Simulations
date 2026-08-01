@@ -11,6 +11,7 @@ ensure_article_lab_schema <- function(con) {
   dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_lab_title_batches (
       batch_id TEXT PRIMARY KEY,
+      article_project_id TEXT,
       created_at TEXT NOT NULL,
       prompt TEXT NOT NULL,
       seed_topic TEXT,
@@ -18,9 +19,13 @@ ensure_article_lab_schema <- function(con) {
       requested_batch_size INTEGER,
       model TEXT,
       status TEXT NOT NULL DEFAULT 'generated',
-      notes TEXT
+      notes TEXT,
+      FOREIGN KEY(article_project_id) REFERENCES article_projects(article_project_id)
     )
   ")
+
+  db_add_column_if_missing(con, "article_lab_title_batches", "article_project_id", "TEXT")
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_article_lab_title_batches_project ON article_lab_title_batches (article_project_id, created_at DESC)")
 
   dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_lab_title_candidates (

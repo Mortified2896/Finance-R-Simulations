@@ -148,7 +148,14 @@ develop_article_candidate <- function(con, candidate_id, timestamp = now_utc()) 
     dbExecute(con, "UPDATE article_candidates SET status = 'in_article_evidence', updated_at = ? WHERE candidate_id = ?", params = list(timestamp, id))
   })
   result <- dbGetQuery(con, "SELECT article_project_id FROM article_projects WHERE article_candidate_id = ? LIMIT 1", params = list(id))
-  result$article_project_id[[1]]
+  project_id <- result$article_project_id[[1]]
+  if (!is.na(candidate$research_angle_id[[1]]) && dbExistsTable(con, "article_lab_title_batches")) {
+    angle_batch <- dbGetQuery(con, "SELECT article_lab_batch_id FROM research_article_angles WHERE research_angle_id = ? LIMIT 1", params = list(candidate$research_angle_id[[1]]))
+    if (nrow(angle_batch) > 0 && !is.na(angle_batch$article_lab_batch_id[[1]]) && nzchar(trimws(angle_batch$article_lab_batch_id[[1]]))) {
+      dbExecute(con, "UPDATE article_lab_title_batches SET article_project_id = ? WHERE batch_id = ? AND article_project_id IS NULL", params = list(project_id, angle_batch$article_lab_batch_id[[1]]))
+    }
+  }
+  project_id
 }
 
 load_article_project <- function(con, article_project_id = NULL, candidate_id = NULL) {

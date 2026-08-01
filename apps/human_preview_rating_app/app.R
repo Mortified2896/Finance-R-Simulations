@@ -79,10 +79,15 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   con <- connect_db()
   onStop(function() dbDisconnect(con))
-  rating_session_id <- if (is_dimension_mode) NULL else resume_or_create_session(con, target_n = default_target_n)
+  rating_session_id <- if (is_dimension_mode) NULL else tryCatch(
+    resume_or_create_session(con, target_n = default_target_n),
+    error = function(err) NULL
+  )
   active_section <- reactiveVal("home")
   selected_article_candidate_id <- reactiveVal(NA_character_)
   selected_article_project_id <- reactiveVal(NA_character_)
+  initial_article_project <- dbGetQuery(con, "SELECT article_project_id FROM article_projects ORDER BY updated_at DESC, article_project_id DESC LIMIT 1")
+  if (nrow(initial_article_project) > 0) selected_article_project_id(initial_article_project$article_project_id[[1]])
   active_dimension <- reactiveVal(if (is_dimension_mode) first_incomplete_dimension(con) else NA_character_)
   current <- reactiveVal(NULL)
   shown_started_at <- reactiveVal(Sys.time())
@@ -103,6 +108,12 @@ server <- function(input, output, session) {
     thumbnail_generation_started_at = NULL,
     thumbnail_generation_estimate = NULL,
     notice = NULL,
+    last_title_generate_error = NULL,
+    last_title_generate_error_at = NULL,
+    last_subtitle_generate_error = NULL,
+    last_subtitle_generate_error_at = NULL,
+    last_thumbnail_generate_error = NULL,
+    last_thumbnail_generate_error_at = NULL,
     last_outline_generate_error = NULL,
     last_outline_generate_error_at = NULL,
     last_full_text_generate_error = NULL,
@@ -120,6 +131,34 @@ server <- function(input, output, session) {
   )
   article_lab_refresh <- reactiveVal(0L)
   article_lab_active_outline_thumbnail <- reactiveVal(NULL)
+
+  selected_article_project <- reactive({
+    article_lab_refresh()
+    load_article_project(con, article_project_id = selected_article_project_id())
+  })
+
+  output$article_lab_project_selector <- renderUI({
+    article_lab_refresh()
+    projects <- dbGetQuery(con, "SELECT article_project_id, working_title, updated_at FROM article_projects ORDER BY updated_at DESC, article_project_id DESC")
+    if (nrow(projects) == 0) return(div(class = "lab-alert lab-alert-error", role = "alert", strong("No article project selected"), p("Create or open an Article Inbox candidate, then choose Develop Article before using production workspaces.")))
+    choices <- setNames(projects$article_project_id, paste(projects$working_title, "·", projects$updated_at))
+    selected <- article_inbox_clean_optional(selected_article_project_id())
+    if (is.na(selected) || !(selected %in% projects$article_project_id)) selected <- projects$article_project_id[[1]]
+    div(class = "lab-card", div(class = "lab-section-header", div(h3("Canonical article project"), p(class = "lab-section-copy", "All production artifacts below are isolated to this project."))), div(class = "lab-field", selectInput("article_lab_project_select", "Article project", choices = choices, selected = selected, width = "100%")))
+  })
+
+  observeEvent(input$article_lab_project_select, {
+    project_id <- article_inbox_clean_optional(input$article_lab_project_select)
+    if (is.na(project_id)) return()
+    if (!identical(project_id, selected_article_project_id())) {
+      selected_article_project_id(project_id)
+      article_lab_state$draft <- NULL
+      article_lab_state$draft_meta <- NULL
+      article_lab_state$draft_created_at <- NULL
+      article_lab_state$notice <- "Switched article project. Unsaved title drafts were cleared to prevent cross-project leakage."
+      article_lab_refresh(article_lab_refresh() + 1L)
+    }
+  }, ignoreInit = TRUE)
 
   observeEvent(input$research_summary_prompt_version, {
     updateTextAreaInput(
@@ -249,6 +288,10 @@ server <- function(input, output, session) {
     active_section("research_inbox")
   }, ignoreInit = TRUE)
 
+  observeEvent(input$article_evidence_open_title_lab, {
+    if (nrow(selected_article_project()) > 0) active_section("generate")
+  }, ignoreInit = TRUE)
+
   observeEvent(input$article_evidence_project_select, {
     value <- article_inbox_clean_optional(input$article_evidence_project_select)
     if (!is.na(value)) selected_article_project_id(value)
@@ -275,6 +318,7 @@ server <- function(input, output, session) {
         loaded_item
       }
     } else {
+      if (is.null(rating_session_id)) return(invisible(NULL))
       prune_article_lab_candidates_from_session(con, rating_session_id)
       append_article_lab_candidates_to_session(con, rating_session_id)
       load_current_item(con, rating_session_id)
@@ -301,7 +345,7 @@ server <- function(input, output, session) {
         dimension_queue_counts(con, field)
       }
     } else {
-      queue_counts(con, rating_session_id)
+      if (is.null(rating_session_id)) data.frame(total = 0L, completed = 0L, pending = 0L, skipped = 0L) else queue_counts(con, rating_session_id)
     }
   })
 
@@ -1002,6 +1046,10 @@ server <- function(input, output, session) {
           ),
           if (article_lab_design_v2) div(class = "page-version-badge", "UI v2 experiment") else NULL
         ),
+        if (current_section %in% c("generate", "api_scoring", "subtitle_generation", "thumbnails", "outline", "full_text", "review_publish")) uiOutput("article_lab_project_selector") else NULL,
+        if (identical(current_section, "generate")) uiOutput("article_lab_title_generate_error") else NULL,
+        if (identical(current_section, "subtitle_generation")) uiOutput("article_lab_subtitle_generate_error") else NULL,
+        if (identical(current_section, "thumbnails")) uiOutput("article_lab_thumbnail_generate_error") else NULL,
         page_body,
         if (identical(current_section, "summary")) uiOutput("research_summary_evidence_overlay") else NULL
       ))
@@ -1174,12 +1222,12 @@ server <- function(input, output, session) {
 
   article_lab_saved_batch <- reactive({
     article_lab_refresh()
-    load_latest_article_lab_batch(con)
+    load_latest_article_lab_batch(con, selected_article_project_id())
   })
 
   article_lab_batches <- reactive({
     article_lab_refresh()
-    load_article_lab_batches(con)
+    load_article_lab_batches(con, selected_article_project_id())
   })
 
   observe({
@@ -1188,18 +1236,19 @@ server <- function(input, output, session) {
       batches$batch_id,
       sprintf("%s · %s", batches$batch_id, batches$created_at)
     )
-    choices <- c("All batches" = article_lab_all_batches_value, batch_choices)
+    choices <- batch_choices
     selected <- isolate(input$article_lab_selected_batch)
-    valid_values <- c(article_lab_all_batches_value, batches$batch_id)
+    valid_values <- batches$batch_id
     if (is.null(selected) || !nzchar(selected) || !(selected %in% valid_values)) {
-      selected <- article_lab_all_batches_value
+      selected <- if (nrow(batches) == 0) character() else batches$batch_id[[1]]
     }
     updateSelectInput(session, "article_lab_selected_batch", choices = choices, selected = selected)
   })
 
   article_lab_selected_batch_id <- reactive({
     selected <- clean_text(input$article_lab_selected_batch)
-    if (length(selected) > 0 && !is.na(selected[[1]])) return(selected[[1]])
+    project_batches <- article_lab_batches()
+    if (length(selected) > 0 && !is.na(selected[[1]]) && selected[[1]] %in% project_batches$batch_id) return(selected[[1]])
     batch <- article_lab_saved_batch()
     if (is.null(batch)) return(NA_character_)
     batch$batch_id[[1]]
@@ -1444,6 +1493,17 @@ server <- function(input, output, session) {
 
   article_lab_effective_generation_inputs <- reactive({
     selected_summary <- selected_generate_summary()
+    project <- selected_article_project()
+    project_context <- if (nrow(project) == 0) "" else paste(
+      sprintf("Canonical article project: %s", project$article_project_id[[1]]),
+      sprintf("Working title: %s", project$working_title[[1]] %||% ""),
+      sprintf("Core idea / angle: %s", project$core_idea[[1]] %||% ""),
+      sprintf("Project notes: %s", project$notes[[1]] %||% ""),
+      sprintf("Evidence summary snapshot: %s", project$source_summary_snapshot[[1]] %||% ""),
+      sep = "\n"
+    )
+    user_context <- input$article_lab_context_notes %||% ""
+    combined_context <- paste(c(project_context, user_context)[nzchar(trimws(c(project_context, user_context)))], collapse = "\n\nAdditional user context:\n")
     if (nrow(selected_summary) > 0) {
       return(list(
         mode = "research_summary",
@@ -1453,18 +1513,18 @@ server <- function(input, output, session) {
         inspiration_source = paste0("research_summary:", selected_summary$summary_id[[1]]),
         summary_id = selected_summary$summary_id[[1]],
         source_title = selected_summary$source_title[[1]] %||% "",
-        context_notes = input$article_lab_context_notes %||% ""
+        context_notes = combined_context
       ))
     }
     list(
       mode = "manual",
       prompt = input$article_lab_prompt %||% article_lab_default_prompt,
       manual_prompt = "",
-      seed_topic = input$article_lab_seed_topic %||% "",
+      seed_topic = article_lab_input_string(input$article_lab_seed_topic) %||% if (nrow(project) > 0) project$working_title[[1]] else "",
       inspiration_source = input$article_lab_inspiration_source %||% "",
       summary_id = NA_integer_,
       source_title = "",
-      context_notes = input$article_lab_context_notes %||% ""
+      context_notes = combined_context
     )
   })
 
@@ -1619,7 +1679,7 @@ server <- function(input, output, session) {
 
   collect_outline_updates <- function(rows) {
     if (nrow(rows) == 0 || !("outline_id" %in% names(rows))) return(list())
-    rows <- rows[!is.na(rows$outline_id) & nzchar(rows$outline_id) & rows$outline_status == "draft", , drop = FALSE]
+    rows <- rows[!is.na(rows$outline_id) & nzchar(rows$outline_id) & rows$outline_status %in% c("draft", "approved"), , drop = FALSE]
     if (nrow(rows) == 0) return(list())
     lapply(seq_len(nrow(rows)), function(i) {
       outline_id <- rows$outline_id[[i]]
@@ -1633,7 +1693,7 @@ server <- function(input, output, session) {
 
   collect_full_text_updates <- function(rows) {
     if (nrow(rows) == 0 || !("full_text_draft_id" %in% names(rows))) return(list())
-    rows <- rows[!is.na(rows$full_text_draft_id) & nzchar(rows$full_text_draft_id) & rows$draft_status == "draft", , drop = FALSE]
+    rows <- rows[!is.na(rows$full_text_draft_id) & nzchar(rows$full_text_draft_id) & rows$draft_status %in% c("draft", "approved"), , drop = FALSE]
     if (nrow(rows) == 0) return(list())
     lapply(seq_len(nrow(rows)), function(i) {
       draft_id <- rows$full_text_draft_id[[i]]
@@ -2585,7 +2645,15 @@ server <- function(input, output, session) {
     prompt <- research_title_prompt(source, angle)
     inspiration <- paste0("research_angle:", angle_id)
     generated <- generate_title_candidates(con, prompt, batch_size = input$article_lab_batch_size %||% 12L, seed_topic = angle$angle_title[[1]], inspiration_source = inspiration, model = input$article_lab_model %||% article_lab_default_model)
-    batch_id <- save_article_lab_batch(con, prompt, angle$angle_title[[1]], inspiration, input$article_lab_batch_size %||% 12L, generated$model %||% input$article_lab_model %||% article_lab_default_model, generated$titles$title, raw_json = generated$raw_json, generation_mode = generated$mode %||% "research_inbox")
+    if (identical(generated$mode, "failed") || nrow(generated$titles) == 0) {
+      article_lab_state$last_title_generate_error <- list(kind = "api_failed", reason = generated$fallback_reason %||% "Title generation returned no usable rows.", mode = generated$mode %||% "failed", model = generated$model %||% article_lab_default_model, selected_ids = as.character(angle_id))
+      article_lab_state$last_title_generate_error_at <- Sys.time()
+      return(invisible(NULL))
+    }
+    candidate_id <- promote_research_angle_candidate(con, angle_id)
+    project_id <- develop_article_candidate(con, candidate_id)
+    selected_article_project_id(project_id)
+    batch_id <- save_article_lab_batch(con, prompt, angle$angle_title[[1]], inspiration, input$article_lab_batch_size %||% 12L, generated$model %||% input$article_lab_model %||% article_lab_default_model, generated$titles$title, raw_json = generated$raw_json, generation_mode = generated$mode %||% "research_inbox", article_project_id = project_id)
     dbExecute(con, "UPDATE research_article_angles SET updated_at = ?, status = 'sent_to_title_lab', article_lab_batch_id = ? WHERE research_angle_id = ?", params = list(now_utc(), batch_id, angle_id))
     updateTextAreaInput(session, "article_lab_prompt", value = prompt)
     updateTextInput(session, "article_lab_seed_topic", value = angle$angle_title[[1]])
@@ -2601,6 +2669,26 @@ server <- function(input, output, session) {
     if (is.null(notice) || !nzchar(notice)) return(NULL)
     div(class = "lab-status-copy", notice)
   })
+
+  article_lab_generation_error_alert <- function(err, err_at, action, unchanged_copy) {
+    if (is.null(err)) return(NULL)
+    elapsed <- if (is.null(err_at)) "" else format(err_at, "%Y-%m-%d %H:%M:%S")
+    affected_ids <- err$selected_ids %||% character()
+    div(
+      class = "lab-alert lab-alert-error", role = "alert",
+      div(class = "lab-alert-title", span(class = "lab-alert-icon", HTML("&#9888;")), strong(paste(action, "failed")), if (nzchar(elapsed)) span(class = "lab-alert-time", sprintf(" at %s", elapsed))),
+      div(class = "lab-alert-body", p(err$reason %||% "Unknown provider error."), tags$ul(
+        tags$li(sprintf("Model: %s · mode: %s", err$model %||% "unknown", err$mode %||% "failed")),
+        if (length(affected_ids) > 0) tags$li(sprintf("Affected project/row IDs: %s", paste(affected_ids, collapse = ", "))) else NULL,
+        tags$li(unchanged_copy),
+        tags$li("No local stub output was substituted. See .local_gitignored/article_lab_debug.log for diagnostics when available.")
+      ))
+    )
+  }
+
+  output$article_lab_title_generate_error <- renderUI(article_lab_generation_error_alert(article_lab_state$last_title_generate_error, article_lab_state$last_title_generate_error_at, "Title generation", "The current saved title batches and approved titles were not changed."))
+  output$article_lab_subtitle_generate_error <- renderUI(article_lab_generation_error_alert(article_lab_state$last_subtitle_generate_error, article_lab_state$last_subtitle_generate_error_at, "Subtitle generation", "Existing subtitle candidates and the approved title were not changed."))
+  output$article_lab_thumbnail_generate_error <- renderUI(article_lab_generation_error_alert(article_lab_state$last_thumbnail_generate_error, article_lab_state$last_thumbnail_generate_error_at, "Thumbnail generation", "Existing thumbnail candidates and metadata were not changed."))
 
   output$article_lab_outline_generate_error <- renderUI({
     err <- article_lab_state$last_outline_generate_error
@@ -3751,7 +3839,7 @@ server <- function(input, output, session) {
     project <- load_article_project(con, article_project_id = project_id)
     evidence_sources <- dbGetQuery(con, "SELECT * FROM article_project_evidence_sources WHERE article_project_id = ? ORDER BY created_at", params = list(project_id))
     div(
-      div(class = "lab-card", div(class = "lab-field", selectInput("article_evidence_project_select", "Article project", choices = choices, selected = project_id, width = "100%")), div(class = "evidence-idea-header", div(div(class = "stage-one-kicker", "Article candidate provenance"), h2(project$working_title[[1]]), p(if (is.na(project$core_idea[[1]])) "No core idea recorded." else project$core_idea[[1]])), div(class = "evidence-readiness", span("Evidence workspace"), strong("Active"))), div(class = "lab-actions", actionButton("article_evidence_back_to_inbox", "Back to Article Inbox", class = "lab-secondary"))),
+      div(class = "lab-card", div(class = "lab-field", selectInput("article_evidence_project_select", "Article project", choices = choices, selected = project_id, width = "100%")), div(class = "evidence-idea-header", div(div(class = "stage-one-kicker", "Article candidate provenance"), h2(project$working_title[[1]]), p(if (is.na(project$core_idea[[1]])) "No core idea recorded." else project$core_idea[[1]])), div(class = "evidence-readiness", span("Evidence workspace"), strong("Active"))), div(class = "lab-actions", actionButton("article_evidence_back_to_inbox", "Back to Article Inbox", class = "lab-secondary"), actionButton("article_evidence_open_title_lab", "Continue to Title Lab", class = "lab-primary"))),
       div(class = "evidence-grid", div(class = "lab-card evidence-section", h3("Linked sources"), if (nrow(evidence_sources) == 0) div(class = "evidence-empty-line", "No sources attached") else lapply(seq_len(nrow(evidence_sources)), function(i) div(class = "evidence-source-row", strong(evidence_sources$source_title_snapshot[[i]] %||% paste("Research source", evidence_sources$research_source_id[[i]])), span("Origin source")))), div(class = "lab-card evidence-section", h3("Claims and evidence"), div(class = "evidence-empty-line", "No claims mapped")), div(class = "lab-card evidence-section", h3("Counterarguments"), div(class = "evidence-empty-line", "No counterarguments captured")), div(class = "lab-card evidence-section", h3("Research gaps / open questions"), div(class = "evidence-empty-line", "No research gaps recorded"))),
       if (!is.na(project$source_summary_snapshot[[1]]) && nzchar(project$source_summary_snapshot[[1]])) div(class = "lab-card evidence-section", h3("Origin source summary snapshot"), p(class = "research-inline-summary", project$source_summary_snapshot[[1]])) else NULL
     )
@@ -3830,18 +3918,18 @@ server <- function(input, output, session) {
 
   output$article_lab_batch_selector <- renderUI({
     batches <- article_lab_batches()
+    if (nrow(batches) == 0) return(div(class = "lab-field", div(class = "lab-status-copy", "No saved title batch exists for this article project yet.")))
     batch_choices <- if (nrow(batches) == 0) character() else setNames(
       batches$batch_id,
       sprintf("%s · %s", batches$batch_id, batches$created_at)
     )
-    choices <- c("All batches" = article_lab_all_batches_value, batch_choices)
     div(
       class = "lab-field",
       selectInput(
         "article_lab_selected_batch",
         "Batch selector",
-        choices = choices,
-        selected = article_lab_all_batches_value,
+        choices = batch_choices,
+        selected = batches$batch_id[[1]],
         width = "100%"
       )
     )
@@ -4134,7 +4222,7 @@ server <- function(input, output, session) {
     seed_topic_value <- effective_inputs$seed_topic
     inspiration_value <- effective_inputs$inspiration_source
 
-    context_notes_value <- article_lab_input_multiline(input$article_lab_context_notes) %||% ""
+    context_notes_value <- article_lab_input_multiline(effective_inputs$context_notes) %||% ""
 
     generated <- generate_title_candidates(
       con = con,
@@ -4146,6 +4234,14 @@ server <- function(input, output, session) {
       manual_prompt = manual_prompt_value,
       context_notes = context_notes_value
     )
+    if (identical(generated$mode, "failed") || nrow(generated$titles) == 0) {
+      article_lab_state$last_title_generate_error <- list(kind = "api_failed", reason = generated$fallback_reason %||% "Title generation returned no usable rows.", mode = generated$mode %||% "failed", model = generated$model %||% article_lab_default_model, selected_ids = selected_article_project_id())
+      article_lab_state$last_title_generate_error_at <- Sys.time()
+      article_lab_state$notice <- "Title generation failed. No draft titles were created or saved."
+      return(invisible(NULL))
+    }
+    article_lab_state$last_title_generate_error <- NULL
+    article_lab_state$last_title_generate_error_at <- NULL
     article_lab_state$draft <- generated$titles
     article_lab_state$draft_created_at <- now_utc()
     article_lab_state$draft_meta <- modifyList(generated, list(
@@ -4185,18 +4281,6 @@ server <- function(input, output, session) {
         example_copy,
         retry_copy,
         dropped_copy
-      )
-    } else {
-      dropped_copy <- if (isTRUE(generated$dropped_n > 0)) {
-        sprintf(" Dropped %s title%s over %s characters after strict validation.", generated$dropped_n, ifelse(generated$dropped_n == 1, "", "s"), article_lab_title_max_chars)
-      } else {
-        ""
-      }
-      article_lab_state$notice <- sprintf(
-        "API generation was unavailable, so the local stub helper generated %s draft titles instead.%s Reason: %s",
-        nrow(generated$titles),
-        dropped_copy,
-        generated$fallback_reason %||% "unknown error"
       )
     }
   }, ignoreInit = TRUE)
@@ -4339,7 +4423,8 @@ server <- function(input, output, session) {
       generation_mode = draft_meta$mode %||% "generated",
       enforce_max_chars = !((draft_meta$mode %||% "") %in% c("manual", "mixed")),
       notes_extra = draft_meta$notes_extra,
-      article_context_notes = draft_meta$context_notes %||% NA_character_
+      article_context_notes = draft_meta$context_notes %||% NA_character_,
+      article_project_id = selected_article_project_id()
     )
     saved_mode <- draft_meta$mode %||% "generated"
     article_lab_state$draft <- NULL
@@ -4655,23 +4740,24 @@ server <- function(input, output, session) {
     )
     if (inherits(result, "error")) {
       article_lab_state$notice <- paste("Subtitle generation failed:", conditionMessage(result))
+      article_lab_state$last_subtitle_generate_error <- list(kind = "exception", reason = conditionMessage(result), mode = "failed", model = input$article_lab_subtitle_model %||% article_lab_default_subtitle_model, selected_ids = selected_ids)
+      article_lab_state$last_subtitle_generate_error_at <- Sys.time()
+    } else if (identical(result$mode, "failed") || (!is.null(result$fallback_reason) && result$generated_n == 0L)) {
+      article_lab_state$notice <- "Subtitle generation failed. No subtitle candidates were saved."
+      article_lab_state$last_subtitle_generate_error <- list(kind = "api_failed", reason = result$fallback_reason %||% "Subtitle generation returned no usable rows.", mode = result$mode %||% "failed", model = result$model %||% article_lab_default_subtitle_model, selected_ids = selected_ids)
+      article_lab_state$last_subtitle_generate_error_at <- Sys.time()
     } else {
-      fallback_copy <- if (!is.null(result$fallback_reason) && nzchar(result$fallback_reason)) {
-        sprintf(" Stub fallback was used because: %s", result$fallback_reason)
-      } else {
-        ""
-      }
+      article_lab_state$last_subtitle_generate_error <- NULL
+      article_lab_state$last_subtitle_generate_error_at <- NULL
       article_lab_state$notice <- sprintf(
-        "Generated %s subtitle candidate%s for %s selected title%s using model %s.%s %s selected title%s were skipped because they were not eligible or already had active subtitle candidates.%s",
+        "Generated %s subtitle candidate%s for %s selected title%s using model %s. %s selected title%s were skipped because they were not eligible or already had active subtitle candidates.",
         result$generated_n,
         ifelse(result$generated_n == 1, "", "s"),
         result$title_n,
         ifelse(result$title_n == 1, "", "s"),
         result$model %||% article_lab_default_subtitle_model,
-        if (identical(result$mode, "stub")) " The stub helper was used." else "",
         result$skipped_n,
-        ifelse(result$skipped_n == 1, "", "s"),
-        fallback_copy
+        ifelse(result$skipped_n == 1, "", "s")
       )
       article_lab_refresh(article_lab_refresh() + 1L)
     }
@@ -4844,18 +4930,20 @@ server <- function(input, output, session) {
     )
     if (inherits(result, "error")) {
       article_lab_state$notice <- paste(timing_copy, "Thumbnail generation failed:", conditionMessage(result))
+      article_lab_state$last_thumbnail_generate_error <- list(kind = "exception", reason = conditionMessage(result), mode = "failed", model = input$article_lab_thumbnail_model %||% article_lab_default_thumbnail_model, selected_ids = selected_ids)
+      article_lab_state$last_thumbnail_generate_error_at <- Sys.time()
+      session$sendCustomMessage("articleLabStopThumbnailTimer", list(message = article_lab_state$notice))
+    } else if (identical(result$mode, "failed") || (!is.null(result$fallback_reason) && result$generated_n == 0L)) {
+      article_lab_state$notice <- paste(timing_copy, "Thumbnail generation failed. No thumbnail candidates were saved.")
+      article_lab_state$last_thumbnail_generate_error <- list(kind = "api_failed", reason = result$fallback_reason %||% "Thumbnail generation returned no usable rows.", mode = result$mode %||% "failed", model = result$model %||% article_lab_default_thumbnail_model, selected_ids = selected_ids)
+      article_lab_state$last_thumbnail_generate_error_at <- Sys.time()
       session$sendCustomMessage("articleLabStopThumbnailTimer", list(message = article_lab_state$notice))
     } else {
+      article_lab_state$last_thumbnail_generate_error <- NULL
+      article_lab_state$last_thumbnail_generate_error_at <- NULL
       mode_label <- result$mode %||% "unknown"
-      fallback_count <- if (identical(mode_label, "stub")) result$generated_n else 0L
-      failure_count <- 0L
-      fallback_copy <- if (identical(mode_label, "stub") && !is.null(result$fallback_reason) && nzchar(result$fallback_reason)) {
-        sprintf(" Stub fallback reason: %s", result$fallback_reason)
-      } else {
-        ""
-      }
       article_lab_state$notice <- sprintf(
-        "%s Generated %s thumbnail candidate%s for %s selected package%s using model %s in %s mode. Fallback count: %s. Failure count: %s. %s selected package%s were skipped because they were not eligible or already had active thumbnail candidates.%s",
+        "%s Generated %s thumbnail candidate%s for %s selected package%s using model %s in %s mode. %s selected package%s were skipped because they were not eligible or already had active thumbnail candidates.",
         timing_copy,
         result$generated_n,
         ifelse(result$generated_n == 1, "", "s"),
@@ -4863,11 +4951,8 @@ server <- function(input, output, session) {
         ifelse(result$package_n == 1, "", "s"),
         result$model %||% article_lab_default_thumbnail_model,
         mode_label,
-        fallback_count,
-        failure_count,
         result$skipped_n,
-        ifelse(result$skipped_n == 1, "", "s"),
-        fallback_copy
+        ifelse(result$skipped_n == 1, "", "s")
       )
       session$sendCustomMessage("articleLabStopThumbnailTimer", list(message = article_lab_state$notice))
       article_lab_refresh(article_lab_refresh() + 1L)
