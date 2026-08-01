@@ -847,7 +847,8 @@ server <- function(input, output, session) {
       subtitle_generation_panel <- tagList(
         div(
           class = "lab-card",
-          h2("Controls"),
+          h2("Subtitle generation settings"),
+          p(class = "lab-section-copy", "Configure the prompt and model here. Then check one or more titles in Step 1 below; only checked titles are included in the exact prompt and generated request."),
           div(
             class = "lab-field",
             textAreaInput(
@@ -866,30 +867,32 @@ server <- function(input, output, session) {
             div(class = "lab-field", numericInput("article_lab_subtitle_variants_per_title", "Subtitle candidates per title", value = 4L, min = 1L, max = 8L, width = "100%"))
           ),
           article_lab_action_bar(
-            uiOutput("article_lab_subtitle_generate_button"),
             actionButton("article_lab_refresh_subtitles", "Refresh", class = "lab-secondary")
           ),
-          uiOutput("article_lab_subtitle_effective_prompt"),
           tags$hr(class = "lab-divider"),
-          div(
-            class = "lab-grid",
-            div(class = "lab-field", selectizeInput("article_lab_manual_subtitle_candidate_id", "Add manual subtitle for title", choices = character(), selected = NULL, width = "100%")),
+          tags$details(
+            class = "lab-manual-subtitle",
+            tags$summary("Add a subtitle without AI (optional)"),
+            p(class = "lab-section-copy", "Choose which existing title should receive your subtitle, then enter one or more subtitle ideas. This form is separate from AI generation in Step 1."),
             div(
-              class = "lab-field",
-              textAreaInput(
-                "article_lab_manual_subtitle_text",
-                "Manual subtitle idea(s)",
-                value = "",
-                width = "100%",
-                height = "110px",
-                placeholder = "Enter one subtitle idea per line"
+              class = "lab-grid lab-manual-subtitle-grid",
+              div(class = "lab-field", selectizeInput("article_lab_manual_subtitle_candidate_id", "Title to receive this subtitle", choices = character(), selected = NULL, width = "100%")),
+              div(
+                class = "lab-field",
+                textAreaInput(
+                  "article_lab_manual_subtitle_text",
+                  "Your subtitle idea(s)",
+                  value = "",
+                  width = "100%",
+                  height = "150px",
+                  placeholder = "Enter one subtitle idea per line"
+                )
               )
+            ),
+            article_lab_action_bar(
+              actionButton("article_lab_add_manual_subtitles", "Add subtitle idea(s)", class = "lab-secondary")
             )
           ),
-          article_lab_action_bar(
-            actionButton("article_lab_add_manual_subtitles", "Add manual subtitle idea(s)", class = "lab-secondary")
-          ),
-          div(class = "lab-status-copy", "Generate subtitle variants for approved titles, then approve or reject candidates manually."),
           uiOutput("article_lab_notice")
         ),
         uiOutput("article_lab_subtitle_sections")
@@ -3498,7 +3501,9 @@ server <- function(input, output, session) {
 
   output$article_lab_subtitle_effective_prompt <- renderUI({
     targets <- article_lab_subtitle_target_rows()
-    summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(targets$batch_id))
+    selected_ids <- collect_selected_ids(targets, "article_lab_subtitle_title_select")
+    selected_targets <- targets[targets$candidate_id %in% selected_ids, , drop = FALSE]
+    summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(selected_targets$batch_id))
     has_summary <- nrow(summary_contexts) > 0
     variants_per_title <- max(1L, min(8L, suppressWarnings(as.integer(input$article_lab_subtitle_variants_per_title)) %||% 4L))
     base_prompt <- article_lab_input_multiline(input$article_lab_subtitle_prompt) %||% article_lab_default_subtitle_prompt
@@ -3508,11 +3513,14 @@ server <- function(input, output, session) {
       sprintf("Max subtitle characters: %s", article_lab_subtitle_max_chars),
       sep = "\n"
     )
-    title_list <- if (nrow(targets) == 0) {
-      "(No eligible approved titles in the current batch filter.)"
+    title_list <- if (nrow(selected_targets) == 0) {
+      "(No titles selected. Check one or more titles in Step 1 to preview the exact prompt.)"
     } else {
-      paste(vapply(seq_len(nrow(targets)), function(i) {
-        sprintf("%s. candidate_id=%s | batch_id=%s | title=%s", i, targets$candidate_id[[i]], targets$batch_id[[i]], targets$title[[i]])
+      paste(vapply(seq_len(nrow(selected_targets)), function(i) {
+        title_line <- sprintf("%s. candidate_id=%s | batch_id=%s | title=%s", i, selected_targets$candidate_id[[i]], selected_targets$batch_id[[i]], selected_targets$title[[i]])
+        summary_index <- match(selected_targets$batch_id[[i]], summary_contexts$batch_id)
+        if (is.na(summary_index)) return(title_line)
+        paste(title_line, sprintf("Attached article summary:\n%s", summary_contexts$article_summary[[summary_index]]), sep = "\n")
       }, character(1)), collapse = "\n")
     }
     exact_prompt <- tryCatch(
@@ -3526,11 +3534,12 @@ server <- function(input, output, session) {
     }
 
     div(
-      class = "lab-card",
-      h3("Prompt that will be sent to the API"),
+      class = "lab-prompt-preview",
+      h3("Exact prompt for checked titles"),
+      p(class = "lab-selection-summary", if (nrow(selected_targets) == 0) "No titles checked" else sprintf("%s title%s checked and included", nrow(selected_targets), ifelse(nrow(selected_targets) == 1, "", "s"))),
       p(class = "lab-status-copy", summary_copy),
       tags$details(
-        open = if (has_summary) "open" else NULL,
+        open = if (nrow(selected_targets) > 0) "open" else NULL,
         tags$summary("Show exact effective prompt"),
         h4("Exact input_text sent to the API"),
         tags$pre(class = "lab-status-copy", exact_prompt),
@@ -4271,7 +4280,7 @@ server <- function(input, output, session) {
     tagList(
       article_lab_section_card(
         "1. Titles awaiting subtitle generation",
-        "These approved titles do not have active subtitle candidates yet.",
+        "Check every title you want to include. Only checked titles are inserted into the prompt and sent for generation.",
         tagList(
           div(
             class = "lab-actions",
@@ -4279,8 +4288,11 @@ server <- function(input, output, session) {
           ),
           article_lab_subtitle_target_table_ui(target_rows),
           article_lab_action_bar(
+            uiOutput("article_lab_subtitle_generate_button"),
             article_lab_button("article_lab_archive_subtitle_titles", "Delete selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_subtitle_titles');", disabled = nrow(target_rows) == 0)
-          )
+          ),
+          div(class = "lab-status-copy lab-selection-help", "The title text itself is not a control. Use the checkbox in the Select column, then review the exact prompt below."),
+          uiOutput("article_lab_subtitle_effective_prompt")
         ),
         count = nrow(target_rows)
       ),
