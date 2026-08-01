@@ -215,9 +215,19 @@ server <- function(input, output, session) {
   observeEvent(input$sidebar_nav, {
     valid_sections <- c("home", article_lab_workflow_sections, "settings")
     if (is.character(input$sidebar_nav) && input$sidebar_nav %in% valid_sections) {
-      active_section(input$sidebar_nav)
+      active_section(if (identical(input$sidebar_nav, "title_lab")) "generate" else input$sidebar_nav)
       if (identical(input$sidebar_nav, "home")) refresh_current()
     }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$title_lab_nav, {
+    if (is.character(input$title_lab_nav) && input$title_lab_nav %in% c("generate", "api_scoring")) {
+      active_section(input$title_lab_nav)
+    }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_open_summary, {
+    if (nrow(selected_research_source()) > 0) active_section("summary")
   }, ignoreInit = TRUE)
 
   observe({
@@ -278,10 +288,10 @@ server <- function(input, output, session) {
 
   output$sidebar_nav <- renderUI({
     current_section <- active_section()
-    nav_button <- function(section, icon, label, subtitle, enabled = TRUE) {
+    nav_button <- function(section, icon, label, subtitle, enabled = TRUE, active_when = section) {
       tags$button(
         type = "button",
-        class = paste("nav-item", if (identical(current_section, section)) "active" else ""),
+        class = paste("nav-item", if (current_section %in% active_when) "active" else ""),
         onclick = if (enabled) sprintf("Shiny.setInputValue('sidebar_nav', '%s', {priority: 'event'})", section) else NULL,
         disabled = if (!enabled) "disabled" else NULL,
         span(class = "nav-icon", icon),
@@ -300,11 +310,19 @@ server <- function(input, output, session) {
       ),
       div(
         class = "sidebar-nav-group",
-        div(class = "sidebar-nav-label", "Article Lab"),
-        nav_button("research_inbox", "R", "Research Inbox", "Track papers and article angles"),
-        nav_button("summary", "S", "Summary", "Check paper summary"),
-        nav_button("generate", "\u21bb", "Generate", "Generate & triage titles"),
-        nav_button("api_scoring", "\u2699", "API Scoring", "Score with API & approve"),
+        div(class = "sidebar-nav-label", "Article Inputs"),
+        nav_button("idea_inbox", "I", "Idea Inbox", "Capture and develop ideas"),
+        nav_button("research_inbox", "R", "Research Inbox", "Explore sources and angles", active_when = c("research_inbox", "summary"))
+      ),
+      div(
+        class = "sidebar-nav-group",
+        div(class = "sidebar-nav-label", "Article Development"),
+        nav_button("article_evidence", "E", "Article Evidence", "Build the evidence base")
+      ),
+      div(
+        class = "sidebar-nav-group",
+        div(class = "sidebar-nav-label", "Article Production"),
+        nav_button("title_lab", "T", "Title Lab", "Generate, score, and shortlist", active_when = c("title_lab", "generate", "api_scoring")),
         nav_button("subtitle_generation", "\u270d", "Subtitle Generation", "Generate subtitles"),
         nav_button("thumbnails", "\u25a7", "Thumbnails", "Generate thumbnails"),
         nav_button("outline", "\u2263", "Outline", "Create article outline"),
@@ -325,8 +343,8 @@ server <- function(input, output, session) {
         div(
           class = "article-lab-helper",
           strong("Article Lab helper"),
-          p("Follow each step in order."),
-          p(class = "shortcut-copy", "Manually approve at key stages.")
+          p("Start with an idea or a research source."),
+          p(class = "shortcut-copy", "Both routes meet in Article Evidence before production.")
         )
       ))
     }
@@ -344,6 +362,7 @@ server <- function(input, output, session) {
     current_section <- active_section()
     if (article_lab_is_workflow_section(current_section) || identical(current_section, "settings")) {
       page_meta <- article_lab_nav_meta(current_section)
+      if (current_section %in% c("generate", "api_scoring")) page_meta <- article_lab_nav_meta("title_lab")
       generate_has_rows <- {
         saved_rows <- article_lab_generate_candidates()
         draft_rows <- article_lab_state$draft
@@ -758,6 +777,93 @@ server <- function(input, output, session) {
         )
       }
 
+      disabled_placeholder_button <- function(label, primary = FALSE) {
+        tags$button(
+          type = "button",
+          class = paste("btn btn-default action-button", if (primary) "lab-primary" else "lab-secondary", "placeholder-action"),
+          disabled = "disabled",
+          title = "Available in a later implementation stage",
+          label
+        )
+      }
+
+      idea_inbox_panel <- tagList(
+        div(
+          class = "lab-card stage-one-hero",
+          div(
+            div(class = "stage-one-kicker", "Idea-first entry point"),
+            h2("Turn a thought into an evidence-ready article"),
+            p("Capture spontaneous article ideas and manage ideas created from research sources.")
+          ),
+          disabled_placeholder_button("+ Quick Idea", primary = TRUE)
+        ),
+        div(
+          class = "lab-card placeholder-list",
+          div(
+            class = "lab-section-header",
+            div(h3("Article ideas"), p(class = "lab-section-copy", "Ideas will appear here after persistence is introduced in a later stage.")),
+            span(class = "stage-one-count", "0 ideas")
+          ),
+          div(
+            class = "stage-one-empty",
+            div(class = "stage-one-empty-icon", "I"),
+            h3("No article ideas yet"),
+            p("Quick Idea will eventually create an idea here without requiring a research source first."),
+            div(
+              class = "placeholder-record",
+              div(class = "placeholder-record-title", "Future idea card metadata"),
+              div(
+                class = "placeholder-meta-grid",
+                div(span("Origin"), strong("Spontaneous or research-created")),
+                div(span("Linked sources"), strong("0 sources")),
+                div(span("Evidence status"), strong("Not started")),
+                div(span("Production stage"), strong("Idea"))
+              )
+            )
+          )
+        )
+      )
+
+      article_evidence_panel <- tagList(
+        div(
+          class = "lab-card evidence-idea-header",
+          div(
+            div(class = "stage-one-kicker", "Selected article idea"),
+            h2("No article idea selected"),
+            p("Choose an idea from Idea Inbox to build its evidence package. Idea selection is deferred to a later stage.")
+          ),
+          div(class = "evidence-readiness", span("Evidence readiness"), strong("Not started"))
+        ),
+        div(
+          class = "evidence-action-bar",
+          disabled_placeholder_button("Attach existing source", primary = TRUE),
+          disabled_placeholder_button("Add source"),
+          disabled_placeholder_button("Find supporting research"),
+          disabled_placeholder_button("Find counterarguments")
+        ),
+        div(
+          class = "evidence-grid",
+          div(class = "lab-card evidence-section", h3("Linked sources"), p("Research sources attached to the selected idea will appear here."), div(class = "evidence-empty-line", "No sources attached")),
+          div(class = "lab-card evidence-section", h3("Claims and evidence"), p("Map draft claims to supporting evidence and assess evidence quality."), div(class = "evidence-empty-line", "No claims mapped")),
+          div(class = "lab-card evidence-section", h3("Counterarguments"), p("Track credible challenges, alternative explanations, and responses."), div(class = "evidence-empty-line", "No counterarguments captured")),
+          div(class = "lab-card evidence-section", h3("Research gaps / open questions"), p("Record what still needs to be verified before article production."), div(class = "evidence-empty-line", "No research gaps recorded"))
+        ),
+        div(class = "stage-one-note", strong("Stage 1 placeholder"), " These controls are intentionally disabled. No source linking, claim persistence, or readiness state is written yet.")
+      )
+
+      title_lab_tabs <- div(
+        class = "title-lab-shell",
+        div(
+          class = "title-lab-flow",
+          span("Generate"), span("Edit / review"), span("Score"), span("Compare"), span("Shortlist"), span("Approve")
+        ),
+        div(
+          class = "title-lab-tabs",
+          tags$button(type = "button", role = "tab", `aria-selected` = if (identical(current_section, "generate")) "true" else "false", class = paste("title-lab-tab", if (identical(current_section, "generate")) "active" else ""), onclick = "Shiny.setInputValue('title_lab_nav', 'generate', {priority: 'event'})", "Generate Titles"),
+          tags$button(type = "button", role = "tab", `aria-selected` = if (identical(current_section, "api_scoring")) "true" else "false", class = paste("title-lab-tab", if (identical(current_section, "api_scoring")) "active" else ""), onclick = "Shiny.setInputValue('title_lab_nav', 'api_scoring', {priority: 'event'})", "Score & Compare")
+        )
+      )
+
       research_inbox_panel <- tagList(
         div(
           class = "lab-card",
@@ -771,6 +877,7 @@ server <- function(input, output, session) {
           class = "lab-card",
           h2("Selected Source / Angle Workspace"),
           uiOutput("research_selected_source_summary"),
+          uiOutput("research_open_summary_action"),
           uiOutput("research_angle_workspace")
         ),
         div(
@@ -887,8 +994,11 @@ server <- function(input, output, session) {
 
       page_body <- switch(
         current_section,
+        idea_inbox = idea_inbox_panel,
         research_inbox = research_inbox_panel,
         summary = summary_panel,
+        article_evidence = article_evidence_panel,
+        title_lab = tagList(title_lab_tabs, generate_panel),
         generate = generate_panel,
         api_scoring = api_score_panel,
         subtitle_generation = subtitle_generation_panel,
@@ -899,6 +1009,10 @@ server <- function(input, output, session) {
         settings = placeholder_panel("Settings remain available from the sidebar."),
         generate_panel
       )
+
+      if (current_section %in% c("generate", "api_scoring")) {
+        page_body <- tagList(title_lab_tabs, page_body)
+      }
 
       return(tagList(
         div(
@@ -3438,6 +3552,20 @@ server <- function(input, output, session) {
       div(class = "lab-status-copy", if (nzchar(main_idea)) main_idea else "No main idea saved yet."),
       div(class = "lab-status-copy", sprintf("Status: %s · %s%s", row$status[[1]], rank_label, if (!is.na(row$finished_at[[1]]) && nzchar(row$finished_at[[1]])) paste0(" · Finished ", row$finished_at[[1]]) else "")),
       if (!is.na(row$used_articles[[1]]) && nzchar(row$used_articles[[1]])) div(class = "lab-status-copy", strong("Used for: "), row$used_articles[[1]]) else NULL
+    )
+  })
+
+  output$research_open_summary_action <- renderUI({
+    has_source <- nrow(selected_research_source()) > 0
+    div(
+      class = "lab-actions research-summary-entry",
+      article_lab_button(
+        "research_open_summary",
+        if (has_source) "Open source summary" else "Select a source to open summary",
+        class = "lab-secondary",
+        disabled = !has_source
+      ),
+      span(class = "lab-status-copy", "Summary remains part of the selected research source workflow.")
     )
   })
 

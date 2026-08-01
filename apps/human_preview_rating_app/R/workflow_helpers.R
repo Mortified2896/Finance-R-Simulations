@@ -1,6 +1,9 @@
 article_lab_workflow_sections <- c(
+  "idea_inbox",
   "research_inbox",
   "summary",
+  "article_evidence",
+  "title_lab",
   "generate",
   "api_scoring",
   "subtitle_generation",
@@ -14,6 +17,12 @@ article_lab_page_meta <- list(
     nav_title = "Home",
     nav_subtitle = "Current rating workflow"
   ),
+  idea_inbox = list(
+    nav_title = "Idea Inbox",
+    nav_subtitle = "Capture and develop ideas",
+    title = "Idea Inbox",
+    subtitle = "Capture spontaneous article ideas and manage ideas created from research sources."
+  ),
   research_inbox = list(
     nav_title = "Research Inbox",
     nav_subtitle = "Track papers and article angles",
@@ -25,6 +34,18 @@ article_lab_page_meta <- list(
     nav_subtitle = "Check paper summary",
     title = "Article Lab - Summary",
     subtitle = "Check paper summary."
+  ),
+  article_evidence = list(
+    nav_title = "Article Evidence",
+    nav_subtitle = "Build the evidence base",
+    title = "Article Evidence",
+    subtitle = "Connect an article idea to sources, claims, counterarguments, and open research questions."
+  ),
+  title_lab = list(
+    nav_title = "Title Lab",
+    nav_subtitle = "Generate, score, and shortlist",
+    title = "Title Lab",
+    subtitle = "Generate, review, score, compare, shortlist, and approve article titles."
   ),
   generate = list(
     nav_title = "Generate",
