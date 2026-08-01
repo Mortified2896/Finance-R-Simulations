@@ -154,6 +154,31 @@ article_lab_effective_title_prompt_text <- function(prompt, batch_size, seed_top
   examples <- clean_text(example_titles)
   examples <- unique(examples[!is.na(examples)])
 
+  template <- if (!is.na(manual) && grepl("\\{\\{[a-z_]+\\}\\}", manual)) manual else if (grepl("\\{\\{[a-z_]+\\}\\}", article_summary)) article_summary else NA_character_
+  if (!is.na(template)) {
+    summary_value <- if (identical(template, manual)) article_summary else ""
+    values <- c(
+      idea_context = if (is.na(context)) "" else context,
+      article_summary = if (is.na(summary_value)) "" else summary_value,
+      batch_size = as.character(requested_n),
+      seed_topic = if (is.na(seed)) "" else seed,
+      inspiration_source = if (is.na(inspiration)) "" else inspiration,
+      example_titles = if (length(examples) == 0L) "" else paste(sprintf("%s. %s", seq_along(examples), examples), collapse = "\n"),
+      max_title_chars = as.character(article_lab_title_max_chars),
+      preferred_title_length = sprintf("%s-%s", article_lab_title_preferred_min_chars, article_lab_title_preferred_max_chars)
+    )
+    rendered <- template
+    for (key in names(values)) {
+      if (!nzchar(values[[key]])) rendered <- gsub(sprintf("(?m)^[^\\n]*\\{\\{%s\\}\\}[^\\n]*\\n?", key), "", rendered, perl = TRUE)
+      rendered <- gsub(sprintf("{{%s}}", key), values[[key]], rendered, fixed = TRUE)
+    }
+    unresolved <- unique(regmatches(rendered, gregexpr("\\{\\{[a-z_]+\\}\\}", rendered, perl = TRUE))[[1]])
+    unresolved <- unresolved[nzchar(unresolved) & unresolved != "-1"]
+    if (length(unresolved) > 0L) stop(sprintf("Unknown title-prompt variable%s: %s", ifelse(length(unresolved) == 1L, "", "s"), paste(unresolved, collapse = ", ")), call. = FALSE)
+    rendered <- gsub("\\n{3,}", "\n\n", rendered, perl = TRUE)
+    return(trimws(rendered))
+  }
+
   if (!is.na(seed)) sections <- c(sections, sprintf("Seed topic: %s", seed))
   if (!is.na(inspiration)) sections <- c(sections, sprintf("Inspiration source: %s", inspiration))
   if (length(examples) > 0L) sections <- c(

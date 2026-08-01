@@ -1,10 +1,39 @@
-article_lab_default_prompt <- paste(
+article_lab_legacy_default_prompt <- paste(
   "Generate Medium-style article titles for personal finance and investing readers.",
   "The titles should be science-based, beginner-friendly, credible, and clearly useful.",
   "Avoid clickbait, overclaiming, and hype.",
   "Lean into strong emotional tension or curiosity without sounding manipulative.",
   "Prefer specific, human, readable titles that feel plausible on Medium.",
   sep = "\n"
+)
+
+article_lab_default_prompt <- paste(
+  "You generate Medium-style article title candidates for personal finance and investing.",
+  "",
+  "Article idea and supporting context:",
+  "{{idea_context}}",
+  "",
+  "Article/research summary (when selected): {{article_summary}}",
+  "",
+  "Optional seed topic: {{seed_topic}}",
+  "Optional inspiration source: {{inspiration_source}}",
+  "",
+  "Reference title examples (when selected): {{example_titles}}",
+  "",
+  "Generate exactly {{batch_size}} titles as valid JSON in the shape {\"titles\": [\"...\", \"...\"]}.",
+  "Every title must be at most {{max_title_chars}} characters, including spaces.",
+  "Prefer {{preferred_title_length}} characters when possible.",
+  "The titles should be science-based, beginner-friendly, credible, and clearly useful.",
+  "Avoid clickbait, overclaiming, hype, explanations, numbering, markdown, and code fences.",
+  "Do not copy reference titles verbatim. Rewrite any title that exceeds the limit instead of truncating it.",
+  "Lean into strong emotional tension or curiosity without sounding manipulative.",
+  "Prefer specific, human, readable titles that feel plausible on Medium.",
+  sep = "\n"
+)
+
+article_lab_title_prompt_variables <- c(
+  "idea_context", "article_summary", "batch_size", "seed_topic",
+  "inspiration_source", "example_titles", "max_title_chars", "preferred_title_length"
 )
 
 article_lab_manual_prompt_key <- "manual_default"
@@ -345,7 +374,8 @@ load_article_lab_prompt <- function(con, prompt_key = article_lab_manual_prompt_
     LIMIT 1
   ", params = list(key))
   if (nrow(rows) == 0) return(fallback)
-  article_lab_input_multiline(rows$prompt_text[[1]]) %||% fallback
+  stored <- article_lab_input_multiline(rows$prompt_text[[1]]) %||% fallback
+  if (identical(key, article_lab_manual_prompt_key) && identical(stored, article_lab_legacy_default_prompt)) fallback else stored
 }
 
 save_article_lab_prompt <- function(con, prompt_text, prompt_key = article_lab_manual_prompt_key, default_prompt = article_lab_default_prompt) {

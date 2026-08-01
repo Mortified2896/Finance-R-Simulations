@@ -58,9 +58,13 @@ expect(!grepl("Core idea / angle:", subset_context, fixed = TRUE) && !grepl("Pro
 expect(sum(gregexpr("One extra direction", subset_context, fixed = TRUE)[[1]] > 0L) == 1L, "Additional context was duplicated in the composed prompt.")
 
 exact_prompt <- article_lab_effective_title_prompt_text(article_lab_default_prompt, 3L, seed_topic = "Test seed", context_notes = subset_context)
-expect(startsWith(exact_prompt, paste0("Article context:\n", subset_context)), "The effective API prompt does not lead with the selected article context.")
+expect(grepl("Article idea and supporting context:\nWorking title:", exact_prompt, fixed = TRUE), "The effective API prompt did not resolve the idea-context variable.")
 expect(sum(gregexpr("One extra direction", exact_prompt, fixed = TRUE)[[1]] > 0L) == 1L, "Additional context was duplicated in the effective API prompt.")
-expect(grepl("Return exactly 3 titles.", exact_prompt, fixed = TRUE), "The exact prompt preview omitted the requested batch size.")
+expect(grepl("Generate exactly 3 titles", exact_prompt, fixed = TRUE), "The exact prompt preview omitted the requested batch size.")
+expect(!grepl("{{", exact_prompt, fixed = TRUE), "The exact prompt preview retained an unresolved known variable.")
+
+legacy_prompt <- article_lab_effective_title_prompt_text(article_lab_legacy_default_prompt, 3L, seed_topic = "Legacy seed", context_notes = subset_context)
+expect(startsWith(legacy_prompt, paste0("Article context:\n", subset_context)), "A saved legacy prompt no longer receives article context.")
 
 batch_a <- save_article_lab_batch(con, article_lab_default_prompt, "Project A", "manual", 1L, "fixture-model", "Project A approved title", generation_mode = "fixture", article_context_notes = all_context, article_project_id = project_a)
 batch_b <- save_article_lab_batch(con, article_lab_default_prompt, "Project B", "manual", 1L, "fixture-model", "Project B private title", generation_mode = "fixture", article_context_notes = "Project B context", article_project_id = project_b)

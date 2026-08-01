@@ -208,9 +208,6 @@ server <- function(input, output, session) {
   }
 
   article_lab_reset_title_context_controls <- function() {
-    for (key in article_project_title_context_keys) {
-      updateCheckboxInput(session, paste0("article_lab_context_include_", key), value = TRUE)
-    }
     updateTextAreaInput(session, "article_lab_context_notes", value = "")
   }
 
@@ -252,16 +249,6 @@ server <- function(input, output, session) {
     is_title_workspace <- active_section() %in% c("title_lab", "generate")
     if (!is_title_workspace) return(div(class = "lab-card", div(class = "lab-section-header", div(h3("Canonical article project"), p(class = "lab-section-copy", "All production artifacts below are isolated to this project."))), div(class = "lab-field", selectInput("article_lab_project_select", "Article project", choices = choices, selected = selected, width = "100%")), div(class = "lab-actions", actionButton("article_lab_delete_project", "Delete project", class = "lab-danger"))))
 
-    fields <- article_project_title_context_fields(project)
-    checkbox_ui <- lapply(article_project_title_context_keys, function(key) {
-      field <- fields[[key]]
-      value <- article_inbox_clean_optional(field$value)
-      div(
-        class = paste("title-context-choice", if (is.na(value)) "is-empty" else ""),
-        checkboxInput(paste0("article_lab_context_include_", key), field$label, value = TRUE),
-        p(if (is.na(value)) "Not recorded for this project." else research_truncate(value, max_chars = 180L))
-      )
-    })
     div(
       class = "lab-card title-project-card",
       div(
@@ -272,12 +259,7 @@ server <- function(input, output, session) {
       div(class = "lab-field", selectInput("article_lab_project_select", "Article project", choices = choices, selected = selected, width = "100%")),
       div(class = "lab-actions", actionButton("article_lab_delete_project", "Delete project", class = "lab-danger")),
       div(class = "title-project-summary", h4(project$working_title[[1]]), if (!is.na(article_inbox_clean_optional(project$core_idea[[1]]))) p(project$core_idea[[1]]) else p(class = "lab-status-copy", "No core idea recorded.")),
-      tags$fieldset(
-        class = "title-context-fieldset",
-        tags$legend("Include in title prompt"),
-        p(class = "lab-section-copy", "All available idea fields are included by default. Uncheck anything the model should ignore for this run."),
-        div(class = "title-context-choice-grid", checkbox_ui)
-      )
+      p(class = "lab-status-copy", "All populated project fields are available through {{idea_context}} in the editable generation prompt template.")
     )
   })
 
@@ -647,12 +629,13 @@ server <- function(input, output, session) {
           class = "lab-field",
           textAreaInput(
             "article_lab_prompt",
-            label = "Manual/default prompt",
+            label = "Editable prompt template",
             value = saved_article_lab_prompt(),
             width = "100%",
             height = if (article_lab_design_v2) "170px" else "230px"
           )
         ),
+        p(class = "lab-status-copy", "Available variables: {{idea_context}}, {{article_summary}}, {{batch_size}}, {{seed_topic}}, {{inspiration_source}}, {{example_titles}}, {{max_title_chars}}, {{preferred_title_length}}. Empty optional variables are removed from the resolved prompt."),
         div(class = "lab-actions", uiOutput("article_lab_prompt_save_button")),
         div(
           class = "lab-grid",
@@ -763,12 +746,13 @@ server <- function(input, output, session) {
             class = "lab-field",
             textAreaInput(
               "article_lab_prompt",
-              label = "Manual/default prompt",
+              label = "Editable prompt template",
               value = saved_article_lab_prompt(),
               width = "100%",
               height = "230px"
             )
           ),
+          p(class = "lab-status-copy", "Available variables: {{idea_context}}, {{article_summary}}, {{batch_size}}, {{seed_topic}}, {{inspiration_source}}, {{example_titles}}, {{max_title_chars}}, {{preferred_title_length}}. Empty optional variables are removed from the resolved prompt."),
           div(class = "lab-actions", uiOutput("article_lab_prompt_save_button")),
           div(
             class = "lab-grid",
@@ -1692,13 +1676,6 @@ server <- function(input, output, session) {
     rows[match(selected_summary_id, rows$summary_id), , drop = FALSE]
   })
 
-  article_lab_selected_context_keys <- reactive({
-    article_project_title_context_keys[vapply(article_project_title_context_keys, function(key) {
-      value <- input[[paste0("article_lab_context_include_", key)]]
-      if (is.null(value)) TRUE else isTRUE(value)
-    }, logical(1))]
-  })
-
   article_lab_effective_generation_inputs <- reactive({
     selected_summary <- selected_generate_summary()
     project <- selected_article_project()
@@ -1707,7 +1684,7 @@ server <- function(input, output, session) {
         valid = TRUE,
         text = article_project_build_title_context(
           project,
-          included_keys = article_lab_selected_context_keys(),
+          included_keys = article_project_title_context_keys,
           additional_context = input$article_lab_context_notes
         ),
         error = NULL
