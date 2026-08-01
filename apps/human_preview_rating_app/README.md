@@ -16,3 +16,19 @@ Key helper groups:
 - `R/table_helpers.R`: Article Lab table/card rendering helpers extracted from `app.R`.
 
 Keep `app.R` as the workflow orchestrator unless a focused refactor has tests for the shared reactive state and cross-stage transitions. Persisted IDs and status values are data contracts and should not be renamed casually.
+
+## OpenAI generation controls
+
+Every model-selectable workflow uses the shared three-control group defined by the Article Lab configuration and UI helpers:
+
+1. Model
+2. Reasoning level
+3. Execution mode (`Standard` or `Pro`)
+
+The controls are capability-aware. Unsupported reasoning or Pro-mode controls remain visible and disabled as `Not supported`, and unsupported fields are omitted from API requests. GPT-5.6 Sol, Terra, and Luna expose the full reasoning range and Standard/Pro execution modes.
+
+Selections are stored in the local `article_lab_generation_preferences` table under a stable workflow key. Saved selections take precedence over environment defaults and code defaults, and are restored after browser, app, or server restarts. Generated artifacts separately record `model`, `reasoning_effort`, and `reasoning_mode`; `reasoning_mode` must not be conflated with existing workflow `generation_mode` fields.
+
+Defaults are configured with each workflow's existing `OPENAI_*_MODEL` variable plus matching `OPENAI_*_REASONING_EFFORT` and `OPENAI_*_REASONING_MODE` variables. Title generation defaults to `gpt-5.6-terra`, `low`, and `standard`; short generation/scoring workflows otherwise default to low reasoning, while research and long-form workflows default to medium reasoning.
+
+New workflows must use `article_lab_generation_control_ui()` and the centralized capability validation rather than introducing a standalone model selector or constructing unvalidated reasoning parameters.

@@ -29,6 +29,10 @@ Do not create opaque generation workflows that show only the final output.
 
 Never expose credentials, secrets, private identifiers, or unrestricted raw context merely for traceability.
 
+## Keep AI Generation Controls Complete
+
+Every user-selectable OpenAI model control must use the complete, capability-aware Model / Reasoning / Execution-mode control group. Persist all three settings per workflow and record them with generated outputs; keep unsupported controls visible and disabled rather than sending invalid API parameters. Follow the implementation conventions in `apps/human_preview_rating_app/README.md`.
+
 ## Fail Loud
 
 User-triggered failures must be clear, prominent, and persistent.
