@@ -5,6 +5,12 @@ article_lab_prompt_workflows <- c(
   research_evidence = "Research evidence selection", medium_tags = "Medium tag generation"
 )
 
+article_lab_prompt_text_value <- function(value) {
+  if (is.null(value) || length(value) == 0L || is.na(value[[1]])) return(NULL)
+  text <- as.character(value[[1]])
+  if (!nzchar(trimws(text))) NULL else text
+}
+
 article_lab_prompt_template_rows <- function(con, workflow_key) {
   dbGetQuery(con, "
     SELECT template_id, workflow_key, template_name, prompt_text, created_at, updated_at
@@ -32,7 +38,7 @@ article_lab_set_active_prompt_template <- function(con, workflow_key, template_i
 article_lab_create_prompt_template <- function(con, workflow_key, template_name, prompt_text) {
   workflow <- article_lab_input_string(workflow_key)
   name <- article_lab_input_string(template_name)
-  text <- article_lab_input_multiline(prompt_text)
+  text <- article_lab_prompt_text_value(prompt_text)
   if (is.null(workflow) || !workflow %in% names(article_lab_prompt_workflows)) stop("Unknown prompt workflow.", call. = FALSE)
   if (is.null(name)) stop("Template name is required.", call. = FALSE)
   if (is.null(text)) stop("Prompt template cannot be blank.", call. = FALSE)
@@ -48,7 +54,7 @@ article_lab_create_prompt_template <- function(con, workflow_key, template_name,
 article_lab_update_prompt_template <- function(con, template_id, template_name, prompt_text) {
   id <- article_lab_input_string(template_id)
   name <- article_lab_input_string(template_name)
-  text <- article_lab_input_multiline(prompt_text)
+  text <- article_lab_prompt_text_value(prompt_text)
   if (is.null(id)) stop("Select a template first.", call. = FALSE)
   if (is.null(name)) stop("Template name is required.", call. = FALSE)
   if (is.null(text)) stop("Prompt template cannot be blank.", call. = FALSE)
@@ -76,13 +82,9 @@ article_lab_delete_prompt_template <- function(con, template_id) {
 }
 
 article_lab_validate_prompt_variables <- function(prompt_text, allowed_variables) {
-  text <- article_lab_input_multiline(prompt_text)
+  text <- article_lab_prompt_text_value(prompt_text)
   if (is.null(text)) stop("Prompt template cannot be blank.", call. = FALSE)
-  found <- unique(regmatches(text, gregexpr("\\{\\{[a-z_]+\\}\\}", text, perl = TRUE))[[1]])
-  found <- found[nzchar(found) & found != "-1"]
-  allowed <- sprintf("{{%s}}", allowed_variables)
-  unknown <- setdiff(found, allowed)
-  if (length(unknown) > 0) stop(sprintf("Unknown prompt variable%s: %s", ifelse(length(unknown) == 1, "", "s"), paste(unknown, collapse = ", ")), call. = FALSE)
+  article_lab_parse_prompt_template(text, allowed_variables)
   invisible(TRUE)
 }
 
@@ -94,12 +96,15 @@ article_lab_prompt_manager_ui <- function(id, label = "Editable prompt template"
       div(class = "lab-field", textInput(ns("name"), "Template name", value = "", width = "100%"))
     ),
     div(class = "lab-field", textAreaInput(ns("prompt"), label, value = "", width = "100%", height = height)),
-    if (length(variables) > 0) p(class = "lab-status-copy", article_lab_prompt_variable_help(variables)) else NULL,
+    if (length(variables) > 0) tagList(
+      p(class = "lab-status-copy", article_lab_prompt_variable_help(variables)),
+      p(class = "lab-status-copy", sprintf("Optional section: {{#%s}}…{{/%s}}. It is omitted when %s is empty; conditional blocks cannot be nested.", variables[[1]], variables[[1]], sprintf("{{%s}}", variables[[1]])))
+    ) else NULL,
     div(class = "lab-actions",
       actionButton(ns("save"), "Save changes", class = "lab-primary"),
       actionButton(ns("save_as"), "Save as new", class = "lab-secondary"),
       actionButton(ns("rename"), "Rename", class = "lab-secondary"),
-      actionButton(ns("delete"), "Delete", class = "lab-danger")
+      actionButton(ns("delete_template"), "Delete", class = "lab-danger")
     ),
     uiOutput(ns("status"))
   )
@@ -141,7 +146,7 @@ article_lab_prompt_manager_server <- function(id, con, workflow_key, allowed_var
       rows <- article_lab_prompt_template_rows(con, workflow_key)
       if (!is.null(err)) return(div(class = "lab-error-box", strong("Prompt template error"), p(err)))
       if (nrow(rows) == 0) return(div(class = "lab-error-box", strong("No prompt template configured"), p("Create and save a valid template before running this workflow.")))
-      dirty <- !identical(article_lab_input_string(input$name) %||% "", saved_name()) || !identical(article_lab_input_multiline(input$prompt) %||% "", saved_prompt())
+      dirty <- !identical(article_lab_input_string(input$name) %||% "", saved_name()) || !identical(article_lab_prompt_text_value(input$prompt) %||% "", saved_prompt())
       p(class = "lab-status-copy", if (dirty) "Unsaved template changes." else "Template saved.")
     })
     observeEvent(input$template, {
@@ -158,7 +163,7 @@ article_lab_prompt_manager_server <- function(id, con, workflow_key, allowed_var
     persist <- function(create = FALSE, rename_only = FALSE) {
       tryCatch({
         name <- article_lab_input_string(input$name)
-        text <- if (rename_only) saved_prompt() else article_lab_input_multiline(input$prompt)
+        text <- if (rename_only) saved_prompt() else article_lab_prompt_text_value(input$prompt)
         article_lab_validate_prompt_variables(text, allowed_variables)
         id_value <- if (create) article_lab_create_prompt_template(con, workflow_key, name, text) else article_lab_update_prompt_template(con, selected_id(), name, text)
         error_message(NULL); refresh(id_value)
@@ -167,8 +172,8 @@ article_lab_prompt_manager_server <- function(id, con, workflow_key, allowed_var
     observeEvent(input$save, persist(FALSE, FALSE))
     observeEvent(input$save_as, persist(TRUE, FALSE))
     observeEvent(input$rename, persist(FALSE, TRUE))
-    observeEvent(input$delete, {
-      if (is.na(selected_id())) return()
+    observeEvent(input$delete_template, {
+      if (is.null(selected_id()) || is.na(selected_id())) return()
       showModal(modalDialog(
         title = "Delete prompt template?",
         sprintf("Delete '%s'? This cannot be undone.", saved_name()),
@@ -182,11 +187,11 @@ article_lab_prompt_manager_server <- function(id, con, workflow_key, allowed_var
     observeEvent(TRUE, refresh(), once = TRUE)
 
     list(
-      prompt = reactive(article_lab_input_multiline(input$prompt) %||% ""),
+      prompt = reactive(article_lab_prompt_text_value(input$prompt) %||% ""),
       template_id = reactive(article_lab_input_string(selected_id())),
       template_name = reactive(article_lab_input_string(input$name)),
       valid = reactive({
-        if (is.na(selected_id()) || is.null(article_lab_input_multiline(input$prompt))) return(FALSE)
+        if (is.na(selected_id()) || is.null(article_lab_prompt_text_value(input$prompt))) return(FALSE)
         isTRUE(tryCatch({ article_lab_validate_prompt_variables(input$prompt, allowed_variables); TRUE }, error = function(e) FALSE))
       })
     )

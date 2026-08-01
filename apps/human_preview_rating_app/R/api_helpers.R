@@ -154,7 +154,7 @@ article_lab_effective_title_prompt_text <- function(prompt, batch_size, seed_top
   examples <- clean_text(example_titles)
   examples <- unique(examples[!is.na(examples)])
 
-  template <- if (!is.na(manual) && grepl("\\{\\{[a-z_]+\\}\\}", manual)) manual else if (grepl("\\{\\{[a-z_]+\\}\\}", article_summary)) article_summary else NA_character_
+  template <- if (!is.na(manual) && grepl("\\{\\{", manual)) manual else if (grepl("\\{\\{", article_summary)) article_summary else NA_character_
   if (!is.na(template)) {
     summary_value <- if (identical(template, manual)) article_summary else ""
     values <- c(
@@ -167,16 +167,7 @@ article_lab_effective_title_prompt_text <- function(prompt, batch_size, seed_top
       max_title_chars = as.character(article_lab_title_max_chars),
       preferred_title_length = sprintf("%s-%s", article_lab_title_preferred_min_chars, article_lab_title_preferred_max_chars)
     )
-    rendered <- template
-    for (key in names(values)) {
-      if (!nzchar(values[[key]])) rendered <- gsub(sprintf("(?m)^[^\\n]*\\{\\{%s\\}\\}[^\\n]*\\n?", key), "", rendered, perl = TRUE)
-      rendered <- gsub(sprintf("{{%s}}", key), values[[key]], rendered, fixed = TRUE)
-    }
-    unresolved <- unique(regmatches(rendered, gregexpr("\\{\\{[a-z_]+\\}\\}", rendered, perl = TRUE))[[1]])
-    unresolved <- unresolved[nzchar(unresolved) & unresolved != "-1"]
-    if (length(unresolved) > 0L) stop(sprintf("Unknown title-prompt variable%s: %s", ifelse(length(unresolved) == 1L, "", "s"), paste(unresolved, collapse = ", ")), call. = FALSE)
-    rendered <- gsub("\\n{3,}", "\n\n", rendered, perl = TRUE)
-    return(trimws(rendered))
+    return(article_lab_render_prompt_template(template, as.list(values), names(values)))
   }
 
   if (!is.na(seed)) sections <- c(sections, sprintf("Seed topic: %s", seed))
@@ -198,17 +189,16 @@ article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_characte
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
 
   settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_model, reasoning_effort, reasoning_mode)
+  resolved_prompt <- article_lab_effective_title_prompt_text(prompt, batch_size, seed_topic, inspiration_source, example_titles, manual_prompt, context_notes)
   request_payload <- list(
-    prompt = article_lab_input_string(prompt) %||% article_lab_default_prompt,
-    manual_prompt = article_lab_input_multiline(manual_prompt),
+    resolved_prompt = resolved_prompt,
     batch_size = as.integer(batch_size),
     seed_topic = article_lab_input_string(seed_topic),
     inspiration_source = article_lab_input_string(inspiration_source),
     model = settings$model,
     reasoning_effort = settings$reasoning_effort,
     reasoning_mode = settings$reasoning_mode,
-    example_titles = unname(example_titles),
-    context_notes = article_lab_input_multiline(context_notes)
+    example_titles = unname(example_titles)
   )
 
   request_file <- tempfile(pattern = "article_lab_request_", fileext = ".json")
@@ -503,13 +493,37 @@ article_lab_thumbnail_request_payload <- function(packages, variants_per_package
   settings <- article_lab_validate_generation_settings(requested_model, reasoning_effort, effective_reasoning_mode)
   compression <- suppressWarnings(as.integer(output_compression))
   if (length(compression) == 0L || is.na(compression)) compression <- NULL
+  variant_count <- max(1L, min(4L, suppressWarnings(as.integer(variants_per_package)) %||% article_lab_default_thumbnail_variants))
+  template <- article_lab_prompt_text_value(prompt) %||% article_lab_default_thumbnail_prompt
+  requests <- unlist(lapply(seq_len(nrow(packages)), function(i) {
+    input_context <- paste(
+      sprintf("subtitle_id: %s", packages$subtitle_id[[i]]),
+      sprintf("candidate_id: %s", packages$candidate_id[[i]]),
+      sprintf("batch_id: %s", packages$batch_id[[i]]),
+      sprintf("Title: %s", packages$title[[i]]),
+      sprintf("Subtitle: %s", packages$subtitle[[i]]),
+      sep = "\n"
+    )
+    lapply(seq_len(variant_count), function(variant_index) list(
+      subtitle_id = packages$subtitle_id[[i]],
+      candidate_id = packages$candidate_id[[i]],
+      batch_id = packages$batch_id[[i]],
+      title = packages$title[[i]],
+      subtitle = packages$subtitle[[i]],
+      variant_index = variant_index,
+      resolved_prompt = article_lab_render_prompt_template(
+        template,
+        list(input_context = input_context, variant_index = variant_index, variants_per_package = variant_count),
+        c("input_context", "variant_index", "variants_per_package")
+      )
+    ))
+  }), recursive = FALSE)
   list(
     model = settings$model,
     reasoning_effort = settings$reasoning_effort,
     reasoning_mode = if (article_lab_supports_pro_mode(settings$model)) settings$reasoning_mode else "standard",
     execution_mode_supported = article_lab_supports_pro_mode(settings$model),
-    prompt = article_lab_input_string(prompt) %||% article_lab_default_thumbnail_prompt,
-    variants_per_package = max(1L, min(4L, suppressWarnings(as.integer(variants_per_package)) %||% article_lab_default_thumbnail_variants)),
+    variants_per_package = variant_count,
     size = article_lab_input_string(size) %||% article_lab_default_thumbnail_size,
     quality = article_lab_input_string(quality) %||% article_lab_default_thumbnail_quality,
     output_format = article_lab_input_string(output_format) %||% article_lab_default_thumbnail_output_format,
@@ -517,15 +531,7 @@ article_lab_thumbnail_request_payload <- function(packages, variants_per_package
     background = article_lab_input_string(background) %||% article_lab_default_thumbnail_background,
     streaming = FALSE,
     partial_images = NULL,
-    packages = unname(lapply(seq_len(nrow(packages)), function(i) {
-      list(
-        subtitle_id = packages$subtitle_id[[i]],
-        candidate_id = packages$candidate_id[[i]],
-        batch_id = packages$batch_id[[i]],
-        title = packages$title[[i]],
-        subtitle = packages$subtitle[[i]]
-      )
-    }))
+    requests = unname(requests)
   )
 }
 
@@ -639,11 +645,27 @@ article_lab_outline_api_request <- function(packages, model = NA_character_, rea
 
   context_notes_clean <- article_lab_input_multiline(context_notes)
   settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_outline_model, reasoning_effort, reasoning_mode)
+  package_list <- paste(vapply(seq_len(nrow(packages)), function(i) {
+    pdf_path <- if ("pdf_local_path" %in% names(packages) && isTRUE(include_context)) research_resolve_local_pdf_path(packages$pdf_local_path[[i]]) else NA_character_
+    lines <- c(
+      sprintf("%s. thumbnail_id=%s | subtitle_id=%s | candidate_id=%s | batch_id=%s", i, packages$thumbnail_id[[i]], packages$subtitle_id[[i]], packages$candidate_id[[i]], packages$batch_id[[i]]),
+      sprintf("Title: %s", packages$title[[i]]), sprintf("Subtitle: %s", packages$subtitle[[i]]),
+      sprintf("Thumbnail label: %s", packages$thumbnail_label[[i]] %||% "approved thumbnail")
+    )
+    if ("article_summary" %in% names(packages) && isTRUE(include_context) && is.na(pdf_path) && !is.na(packages$article_summary[[i]])) lines <- c(lines, "Research summary context:", packages$article_summary[[i]])
+    if (!is.na(pdf_path)) lines <- c(lines, "Research PDF: attached as input_file")
+    paste(lines, collapse = "\n")
+  }, character(1)), collapse = "\n\n")
+  resolved_prompt <- article_lab_render_prompt_template(
+    article_lab_prompt_text_value(prompt) %||% article_lab_default_outline_prompt,
+    list(input_context = package_list, context_notes = context_notes_clean %||% ""),
+    c("input_context", "context_notes")
+  )
   request_payload <- list(
     model = settings$model,
     reasoning_effort = settings$reasoning_effort,
     reasoning_mode = settings$reasoning_mode,
-    prompt = article_lab_input_multiline(prompt) %||% article_lab_default_outline_prompt,
+    resolved_prompt = resolved_prompt,
     context_notes = if (is.null(context_notes_clean) || is.na(context_notes_clean) || !nzchar(context_notes_clean)) NULL else context_notes_clean,
     packages = unname(lapply(seq_len(nrow(packages)), function(i) {
       pdf_path <- if ("pdf_local_path" %in% names(packages) && isTRUE(include_context)) research_resolve_local_pdf_path(packages$pdf_local_path[[i]]) else NA_character_
@@ -729,12 +751,23 @@ article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L
   if (nrow(candidates) == 0) return(list(rows = data.frame(), model = article_lab_default_subtitle_model, mode = "api", raw_json = NULL))
 
   settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_subtitle_model, reasoning_effort, reasoning_mode)
+  variant_count <- max(1L, min(8L, suppressWarnings(as.integer(variants_per_title)) %||% 4L))
+  title_list <- paste(vapply(seq_len(nrow(candidates)), function(i) {
+    line <- sprintf("%s. candidate_id=%s | batch_id=%s | title=%s", i, candidates$candidate_id[[i]], candidates$batch_id[[i]], candidates$title[[i]])
+    summary <- if ("article_summary" %in% names(candidates)) article_lab_input_multiline(candidates$article_summary[[i]]) else NA_character_
+    if (is.na(summary)) line else paste(line, sprintf("Attached article summary:\n%s", summary), sep = "\n")
+  }, character(1)), collapse = "\n")
+  resolved_prompt <- article_lab_render_prompt_template(
+    article_lab_prompt_text_value(prompt) %||% article_lab_default_subtitle_prompt,
+    list(input_context = title_list, variants_per_title = variant_count, max_subtitle_chars = article_lab_subtitle_max_chars),
+    c("input_context", "variants_per_title", "max_subtitle_chars")
+  )
   request_payload <- list(
     model = settings$model,
     reasoning_effort = settings$reasoning_effort,
     reasoning_mode = settings$reasoning_mode,
-    prompt = article_lab_input_string(prompt) %||% article_lab_default_subtitle_prompt,
-    variants_per_title = max(1L, min(8L, suppressWarnings(as.integer(variants_per_title)) %||% 4L)),
+    resolved_prompt = resolved_prompt,
+    variants_per_title = variant_count,
     candidates = unname(lapply(seq_len(nrow(candidates)), function(i) {
       article_summary <- if ("article_summary" %in% names(candidates)) article_lab_input_multiline(candidates$article_summary[[i]]) else NA_character_
       list(

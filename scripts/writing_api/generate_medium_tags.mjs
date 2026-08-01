@@ -45,37 +45,8 @@ function parseTags(rawText) {
 }
 
 function buildPrompt({ prompt, article }) {
-  const basePrompt = cleanText(prompt) || [
-    "Generate Medium tags for the approved article package.",
-    "Return valid JSON only in the shape {\"tags\":[\"...\",\"...\"]}.",
-    "Return exactly 5 tags unless fewer are clearly appropriate.",
-    "Each tag must be short, specific, Medium-friendly, and useful for personal finance or investing readers.",
-    "Do not include hashtags, numbering, markdown, or explanations."
-  ].join("\n");
-
-  const inputContext = [
-    `full_text_draft_id=${article.full_text_draft_id ?? ""} | candidate_id=${article.candidate_id ?? ""} | batch_id=${article.batch_id ?? ""}`,
-    `Title: ${article.title ?? ""}`,
-    `Subtitle: ${article.subtitle ?? ""}`,
-    "Article body:",
-    article.body ?? ""
-  ].join("\n");
-  if (basePrompt.includes("{{input_context}}")) {
-    const rendered = basePrompt.replaceAll("{{input_context}}", inputContext);
-    const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g) ?? [];
-    if (unresolved.length) throw new Error(`Unknown Medium-tags prompt variable: ${[...new Set(unresolved)].join(", ")}`);
-    return rendered;
-  }
-
-  return [
-    basePrompt,
-    "Article package:",
-    `full_text_draft_id=${article.full_text_draft_id ?? ""} | candidate_id=${article.candidate_id ?? ""} | batch_id=${article.batch_id ?? ""}`,
-    `Title: ${article.title ?? ""}`,
-    `Subtitle: ${article.subtitle ?? ""}`,
-    "Article body:",
-    article.body ?? ""
-  ].join("\n\n");
+  if (typeof prompt !== "string") throw new Error("A resolved Medium-tags prompt is required.");
+  return prompt;
 }
 
 async function main() {
@@ -97,7 +68,7 @@ async function main() {
   const model = cleanText(payload.model) ?? "gpt-5-mini";
   const reasoningEffort = cleanText(payload.reasoning_effort);
   const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
-  const prompt = cleanText(payload.prompt);
+  const prompt = typeof payload.resolved_prompt === "string" ? payload.resolved_prompt : null;
   const article = {
     full_text_draft_id: cleanText(payload.article?.full_text_draft_id),
     candidate_id: cleanText(payload.article?.candidate_id),

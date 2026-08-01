@@ -57,45 +57,8 @@ function parseResults(rawText, variantsPerTitle) {
 }
 
 function buildPrompt({ prompt, candidates, variantsPerTitle }) {
-  const titleList = candidates
-    .map((entry, index) => {
-      const parts = [`${index + 1}. candidate_id=${entry.candidate_id} | batch_id=${entry.batch_id} | title=${entry.title}`];
-      if (entry.article_summary) {
-        parts.push(`Attached article summary:\n${entry.article_summary}`);
-      }
-      return parts.join("\n");
-    })
-    .join("\n");
-
-  const basePrompt = cleanText(prompt) || [
-    "You generate subtitle candidates for Medium-style personal finance and investing articles.",
-    "Return valid JSON only.",
-    "Use this exact shape:",
-    "{\"results\":[{\"candidate_id\":\"...\",\"batch_id\":\"...\",\"subtitles\":[\"...\",\"...\"]}]}",
-    `Return exactly ${variantsPerTitle} subtitle candidates per title.`,
-    `Every subtitle must be at most ${MAX_SUBTITLE_CHARS} characters, including spaces.`,
-    "Keep subtitles clear, credible, useful, and not sensational.",
-    "Do not repeat the title verbatim.",
-    "Do not include numbering, markdown, or explanations."
-  ].join("\n");
-
-  if (basePrompt.includes("{{input_context}}")) {
-    const rendered = basePrompt
-      .replaceAll("{{input_context}}", titleList)
-      .replaceAll("{{variants_per_title}}", String(variantsPerTitle))
-      .replaceAll("{{max_subtitle_chars}}", String(MAX_SUBTITLE_CHARS));
-    const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g) ?? [];
-    if (unresolved.length) throw new Error(`Unknown subtitle prompt variable: ${[...new Set(unresolved)].join(", ")}`);
-    return rendered;
-  }
-
-  return [
-    basePrompt,
-    `Return exactly ${variantsPerTitle} subtitle candidates per title.`,
-    `Every subtitle must be at most ${MAX_SUBTITLE_CHARS} characters, including spaces.`,
-    "Titles:",
-    titleList
-  ].join("\n\n");
+  if (typeof prompt !== "string") throw new Error("A resolved subtitle prompt is required.");
+  return prompt;
 }
 
 async function main() {
@@ -118,7 +81,7 @@ async function main() {
   const reasoningEffort = cleanText(payload.reasoning_effort);
   const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
   const variantsPerTitle = Math.max(1, Math.min(8, Number.parseInt(payload.variants_per_title, 10) || 4));
-  const prompt = cleanText(payload.prompt);
+  const prompt = typeof payload.resolved_prompt === "string" ? payload.resolved_prompt : null;
   const candidates = Array.isArray(payload.candidates)
     ? payload.candidates
         .map((entry) => ({

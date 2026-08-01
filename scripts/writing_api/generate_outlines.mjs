@@ -60,51 +60,8 @@ function parseResults(rawText, packages = []) {
 }
 
 function buildPrompt({ prompt, packages, contextNotes }) {
-  const parts = [];
-  const contextNote = cleanText(contextNotes);
-  if (contextNote) parts.push(`Author comment:\n${contextNote}`);
-  const basePrompt = cleanText(prompt) || [
-    "Generate practical Medium article outlines for approved title/subtitle/thumbnail packages.",
-    "Return valid JSON only.",
-    "Use this exact shape:",
-    "{\"results\":[{\"thumbnail_id\":\"...\",\"subtitle_id\":\"...\",\"candidate_id\":\"...\",\"batch_id\":\"...\",\"outline_text\":\"# Outline\\n...\"}]}",
-    "Each outline should use Markdown headings and bullets.",
-    "Include a hook, 4-6 main sections, key points, caveats, and a closing angle.",
-    "Do not draft the full article."
-  ].join("\n");
-
-  const packageList = packages.map((entry, index) => {
-    const lines = [
-      `${index + 1}. thumbnail_id=${entry.thumbnail_id} | subtitle_id=${entry.subtitle_id} | candidate_id=${entry.candidate_id} | batch_id=${entry.batch_id}`,
-      `Title: ${entry.title}`,
-      `Subtitle: ${entry.subtitle}`,
-      `Thumbnail label: ${entry.thumbnail_label ?? "approved thumbnail"}`
-    ];
-    if (entry.article_summary) {
-      lines.push("Research summary context:", entry.article_summary);
-    }
-    if (entry.pdf_path) {
-      lines.push("Research PDF: attached as input_file");
-    }
-    return lines.join("\n");
-  }).join("\n\n");
-
-  if (basePrompt.includes("{{input_context}}")) {
-    const rendered = basePrompt
-      .replaceAll("{{input_context}}", packageList)
-      .replaceAll("{{context_notes}}", contextNote ?? "");
-    const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g) ?? [];
-    if (unresolved.length) throw new Error(`Unknown outline prompt variable: ${[...new Set(unresolved)].join(", ")}`);
-    return rendered;
-  }
-
-  parts.push(...[
-    basePrompt,
-    "Return one outline per package, preserving all ids exactly.",
-    "Packages:",
-    packageList
-  ].join("\n\n"));
-  return parts.join("\n\n");
+  if (typeof prompt !== "string") throw new Error("A resolved outline prompt is required.");
+  return prompt;
 }
 
 async function buildResponsesInput({ client, prompt, packages, contextNotes }) {
@@ -143,7 +100,7 @@ async function main() {
   const model = cleanText(payload.model) ?? "gpt-5-mini";
   const reasoningEffort = cleanText(payload.reasoning_effort);
   const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
-  const prompt = cleanText(payload.prompt);
+  const prompt = typeof payload.resolved_prompt === "string" ? payload.resolved_prompt : null;
   const contextNotes = cleanText(payload.context_notes);
   const packages = Array.isArray(payload.packages)
     ? payload.packages.map((entry) => ({

@@ -60,6 +60,21 @@ ensure_article_lab_schema <- function(con) {
     }
     dbExecute(con, "INSERT OR IGNORE INTO article_lab_prompt_workflow_state (workflow_key, initialized_at) VALUES (?, ?)", params = list(workflow, now_utc()))
   }
+  dbExecute(
+    con,
+    "UPDATE article_lab_prompt_templates SET prompt_text = ?, updated_at = ? WHERE workflow_key = 'thumbnails' AND template_name = 'Default' AND prompt_text = ?",
+    params = list(article_lab_default_thumbnail_prompt, now_utc(), article_lab_legacy_default_thumbnail_prompt)
+  )
+  dbExecute(
+    con,
+    "UPDATE article_lab_prompt_templates SET prompt_text = ?, updated_at = ? WHERE workflow_key = 'outlines' AND template_name = 'Default' AND prompt_text = ?",
+    params = list(article_lab_default_outline_prompt, now_utc(), article_lab_previous_default_outline_prompt)
+  )
+  dbExecute(
+    con,
+    "UPDATE article_lab_prompt_templates SET prompt_text = ?, updated_at = ? WHERE workflow_key = 'full_text' AND template_name = 'Default' AND prompt_text = ?",
+    params = list(article_lab_default_full_text_prompt, now_utc(), article_lab_previous_default_full_text_prompt)
+  )
 
   migration_done <- dbGetQuery(con, "SELECT 1 FROM article_lab_prompt_templates WHERE workflow_key = '__legacy_migration__' LIMIT 1")
   if (nrow(migration_done) == 0 && dbExistsTable(con, "article_lab_prompts")) {

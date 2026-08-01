@@ -286,34 +286,51 @@ article_lab_full_text_api_request <- function(con, packages, model = NA_characte
   if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_full_text_model, mode = "api", raw_json = NULL, warnings = character()))
 
   settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_full_text_model, reasoning_effort, reasoning_mode)
+  package_payloads <- unname(lapply(seq_len(nrow(packages)), function(i) {
+    summary_id <- research_input_integer(packages$summary_id[[i]])
+    checked_evidence <- if (isTRUE(include_context) && !is.na(summary_id)) build_checked_summary_evidence(con, summary_id) else list()
+    pdf_path <- if ("pdf_local_path" %in% names(packages) && isTRUE(include_context)) research_resolve_local_pdf_path(packages$pdf_local_path[[i]]) else NA_character_
+    has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
+    source_mode <- if (!isTRUE(include_context)) "none" else if (has_pdf) "pdf_attachment" else if (length(checked_evidence) > 0) "checked_summary_evidence" else "none"
+    list(
+      outline_id = packages$outline_id[[i]], thumbnail_id = packages$thumbnail_id[[i]], subtitle_id = packages$subtitle_id[[i]],
+      candidate_id = packages$candidate_id[[i]], batch_id = packages$batch_id[[i]], title = packages$title[[i]],
+      subtitle = packages$subtitle[[i]], thumbnail_label = packages$thumbnail_label[[i]], outline_text = packages$outline_text[[i]],
+      source_context_mode = source_mode, article_summary = NULL, checked_evidence = checked_evidence, pdf_path = if (has_pdf) pdf_path else NULL
+    )
+  }))
+  package_list <- paste(vapply(seq_along(package_payloads), function(i) {
+    entry <- package_payloads[[i]]
+    lines <- c(
+      sprintf("%s. outline_id=%s | thumbnail_id=%s | subtitle_id=%s | candidate_id=%s | batch_id=%s", i, entry$outline_id, entry$thumbnail_id, entry$subtitle_id, entry$candidate_id, entry$batch_id),
+      sprintf("Title: %s", entry$title), sprintf("Subtitle: %s", entry$subtitle),
+      sprintf("Thumbnail concept: %s", entry$thumbnail_label %||% "approved thumbnail"), "Approved outline:", entry$outline_text,
+      sprintf("Source context mode: %s", entry$source_context_mode %||% "none")
+    )
+    if (length(entry$checked_evidence) > 0L) {
+      lines <- c(lines, "Checked summary evidence (use only these to ground the article):")
+      for (item in entry$checked_evidence) {
+        ids <- paste(unlist(item$sentence_ids %||% list()), collapse = ", "); if (!nzchar(ids)) ids <- "n/a"
+        page <- if (is.null(item$page) || is.na(item$page)) "page n/a" else sprintf("p. %s", item$page)
+        quote <- sprintf("Supporting quote: %s", item$supporting_quote %||% "n/a")
+        claim <- sprintf("Claim: %s", item$claim_text %||% "n/a")
+        lines <- c(lines, sprintf("- %s | %s | %s | sentence_ids=[%s] | status=%s | confidence=%s", claim, quote, page, ids, item$selection_status %||% "n/a", item$confidence %||% "n/a"))
+      }
+    }
+    if (!is.null(entry$pdf_path)) lines <- c(lines, "Research PDF: attached as input_file")
+    paste(lines, collapse = "\n")
+  }, character(1)), collapse = "\n\n")
+  resolved_prompt <- article_lab_render_prompt_template(
+    article_lab_prompt_text_value(prompt) %||% article_lab_default_full_text_prompt,
+    list(input_context = package_list), "input_context"
+  )
   request_payload <- list(
     model = settings$model,
     reasoning_effort = settings$reasoning_effort,
     reasoning_mode = settings$reasoning_mode,
-    prompt = article_lab_input_multiline(prompt) %||% article_lab_default_full_text_prompt,
+    resolved_prompt = resolved_prompt,
     prompt_key = article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
-    packages = unname(lapply(seq_len(nrow(packages)), function(i) {
-      summary_id <- research_input_integer(packages$summary_id[[i]])
-      checked_evidence <- if (isTRUE(include_context) && !is.na(summary_id)) build_checked_summary_evidence(con, summary_id) else list()
-      pdf_path <- if ("pdf_local_path" %in% names(packages) && isTRUE(include_context)) research_resolve_local_pdf_path(packages$pdf_local_path[[i]]) else NA_character_
-      has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
-      source_mode <- if (!isTRUE(include_context)) "none" else if (has_pdf) "pdf_attachment" else if (length(checked_evidence) > 0) "checked_summary_evidence" else "none"
-      list(
-        outline_id = packages$outline_id[[i]],
-        thumbnail_id = packages$thumbnail_id[[i]],
-        subtitle_id = packages$subtitle_id[[i]],
-        candidate_id = packages$candidate_id[[i]],
-        batch_id = packages$batch_id[[i]],
-        title = packages$title[[i]],
-        subtitle = packages$subtitle[[i]],
-        thumbnail_label = packages$thumbnail_label[[i]],
-        outline_text = packages$outline_text[[i]],
-        source_context_mode = source_mode,
-        article_summary = NULL,
-        checked_evidence = checked_evidence,
-        pdf_path = if (has_pdf) pdf_path else NULL
-      )
-    }))
+    packages = package_payloads
   )
 
   request_file <- tempfile(pattern = "article_lab_full_text_request_", fileext = ".json")
@@ -513,7 +530,7 @@ article_lab_medium_tags_api_request <- function(row, model = NA_character_, reas
     model = settings$model,
     reasoning_effort = settings$reasoning_effort,
     reasoning_mode = settings$reasoning_mode,
-    prompt = article_lab_input_multiline(prompt) %||% article_lab_default_medium_tags_prompt,
+    resolved_prompt = article_lab_medium_tags_effective_prompt(row, prompt),
     article = list(
       full_text_draft_id = article_lab_row_value(row, "full_text_draft_id"),
       candidate_id = article_lab_row_value(row, "candidate_id"),

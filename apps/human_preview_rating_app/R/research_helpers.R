@@ -377,12 +377,26 @@ research_summary_api_request <- function(source, asset, model = NA_character_, r
   if (is.na(local_pdf_path) || !file.exists(local_pdf_path)) stop("The selected PDF asset does not exist on disk.", call. = FALSE)
 
   settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_research_summary_model, reasoning_effort, reasoning_mode)
+  source_context <- paste(
+    "Source metadata:",
+    sprintf("Research source ID: %s", source$research_source_id[[1]]),
+    sprintf("Source title: %s", article_lab_input_string(source$source_title[[1]]) %||% ""),
+    sprintf("Source URL: %s", article_lab_input_string(source$source_url[[1]]) %||% ""),
+    sprintf("PDF URL: %s", article_lab_input_string(source$pdf_url[[1]]) %||% ""),
+    "Main idea:", article_lab_input_multiline(source$main_idea[[1]]) %||% "", "",
+    "Abstract:", article_lab_input_multiline(source$abstract[[1]]) %||% "",
+    sep = "\n"
+  )
+  resolved_prompt <- article_lab_render_prompt_template(
+    article_lab_prompt_text_value(prompt) %||% article_lab_default_research_summary_prompt,
+    list(input_context = source_context), "input_context"
+  )
   request_payload <- list(
     model = settings$model,
     reasoning_effort = settings$reasoning_effort,
     reasoning_mode = settings$reasoning_mode,
     prompt_version = article_lab_input_string(prompt_version) %||% article_lab_default_research_summary_prompt_version,
-    prompt = article_lab_input_multiline(prompt) %||% article_lab_default_research_summary_prompt,
+    resolved_prompt = resolved_prompt,
     research_source_id = source$research_source_id[[1]],
     source_title = article_lab_input_string(source$source_title[[1]]),
     source_url = article_lab_input_string(source$source_url[[1]]),

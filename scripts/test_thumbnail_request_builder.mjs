@@ -6,7 +6,6 @@ const base = {
   reasoning_effort: "none",
   reasoning_mode: "standard",
   execution_mode_supported: false,
-  prompt: "Package:\n{{input_context}}\nVariant {{variant_index}}/{{variants_per_package}}",
   variants_per_package: 3,
   size: "1536x1024",
   quality: "low",
@@ -15,7 +14,7 @@ const base = {
   background: "opaque",
   streaming: false,
   partial_images: null,
-  packages: [{ subtitle_id: "sub_1", candidate_id: "candidate_1", batch_id: "batch_1", title: "Title", subtitle: "Subtitle" }]
+  requests: [1, 2, 3].map((variant_index) => ({ subtitle_id: "sub_1", candidate_id: "candidate_1", batch_id: "batch_1", title: "Title", subtitle: "Subtitle", variant_index, resolved_prompt: `Package literal {{input_context}}\nVariant ${variant_index}/3\n  preserved  ` }))
 };
 
 const built = buildThumbnailRequests(base);
@@ -23,6 +22,7 @@ assert.equal(built.records.length, 3, "candidate count must create independent r
 for (const [index, record] of built.records.entries()) {
   assert.equal(record.variant_index, index + 1);
   assert.match(record.request.input, new RegExp(`Variant ${index + 1}/3`));
+  assert.equal(record.request.input, base.requests[index].resolved_prompt, "resolved prompt must be copied byte-for-byte");
   assert.equal(record.request.model, base.model);
   assert.deepEqual(record.request.reasoning, { effort: "none" });
   assert.deepEqual(record.request.tool_choice, { type: "image_generation" });
@@ -41,16 +41,17 @@ assert.deepEqual(preview.requests.map((item) => item.sanitized_request), built.r
 assert.equal(preview.requests[0].property_status.partial_images.includes("Not supported"), true);
 assert.equal(preview.requests[0].property_status.execution_mode, "Not supported by selected model");
 
-const png = buildThumbnailRequests({ ...base, variants_per_package: 1, output_format: "png", output_compression: null });
+const oneRequest = { ...base, requests: base.requests.slice(0, 1), variants_per_package: 1 };
+const png = buildThumbnailRequests({ ...oneRequest, output_format: "png", output_compression: null });
 assert.equal("output_compression" in png.records[0].request.tools[0], false, "omitted settings must not be serialized as placeholders");
-assert.equal(buildThumbnailPreview({ ...base, variants_per_package: 1, output_format: "png", output_compression: null }).requests[0].property_status.output_compression, "Omitted — OpenAI API default");
+assert.equal(buildThumbnailPreview({ ...oneRequest, output_format: "png", output_compression: null }).requests[0].property_status.output_compression, "Omitted — OpenAI API default");
 
 assert.throws(() => buildThumbnailRequests({ ...base, output_format: "png", output_compression: 80 }), /only for WebP and JPEG/);
 assert.throws(() => buildThumbnailRequests({ ...base, output_format: "jpeg", background: "transparent" }), /require PNG or WebP/);
 assert.throws(() => buildThumbnailRequests({ ...base, streaming: false, partial_images: 1 }), /require streaming/);
 assert.throws(() => buildThumbnailRequests({ ...base, quality: "ultra" }), /Invalid image quality/);
 
-const secretPreview = JSON.stringify(buildThumbnailPreview({ ...base, api_key: "sk-secret", packages: [{ ...base.packages[0], image: "data:image/png;base64,SECRET" }] }));
+const secretPreview = JSON.stringify(buildThumbnailPreview({ ...base, api_key: "sk-secret" }));
 assert.equal(secretPreview.includes("sk-secret"), false);
 assert.equal(secretPreview.includes("base64,SECRET"), false);
 

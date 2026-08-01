@@ -322,23 +322,40 @@ article_lab_default_subtitle_prompt <- paste(
   "{{input_context}}",
   sep = "\n"
 )
+article_lab_legacy_default_thumbnail_prompt <- paste(
+  "Generate Medium-style thumbnail candidate concepts for approved title and subtitle packages.",
+  "Keep the visual direction clear, editorial, credible, and readable at a glance.",
+  "Return data that can be rendered into preview-card style thumbnail concepts.",
+  "Keep the concept aligned with the title and subtitle without adding clickbait or clutter.",
+  "", "Selected package:", "{{input_context}}", sep = "\n"
+)
 article_lab_default_thumbnail_prompt <- paste(
   "Generate Medium-style thumbnail candidate concepts for approved title and subtitle packages.",
   "Keep the visual direction clear, editorial, credible, and readable at a glance.",
   "Return data that can be rendered into preview-card style thumbnail concepts.",
   "Keep the concept aligned with the title and subtitle without adding clickbait or clutter.",
+  "{{#input_context}}",
   "",
   "Selected package:",
   "{{input_context}}",
+  "{{/input_context}}",
   sep = "\n"
+)
+article_lab_previous_default_outline_prompt <- paste(
+  "Generate a practical Medium article outline for the approved title, subtitle, and thumbnail concept.",
+  "Use Markdown headings and bullets. Include a short hook, 4-6 main sections, key points for each section, and a concise closing angle.",
+  "Keep it reader-facing, credible, specific, and useful. Do not draft the full article yet.",
+  "", "Author context notes:", "{{context_notes}}", "", "Selected packages and research context:", "{{input_context}}", sep = "\n"
 )
 article_lab_default_outline_prompt <- paste(
   "Generate a practical Medium article outline for the approved title, subtitle, and thumbnail concept.",
   "Use Markdown headings and bullets. Include a short hook, 4-6 main sections, key points for each section, and a concise closing angle.",
   "Keep it reader-facing, credible, specific, and useful. Do not draft the full article yet.",
+  "{{#context_notes}}",
   "",
   "Author context notes:",
   "{{context_notes}}",
+  "{{/context_notes}}",
   "",
   "Selected packages and research context:",
   "{{input_context}}",
@@ -358,7 +375,7 @@ article_lab_default_full_text_prompt <- paste(
   "- Use readable Medium-friendly, APA-inspired in-text citations such as 'Vanguard (2019) argues that ...' or '... (Vanguard, 2019)'.",
   "- Add a page number like (Vanguard, 2019, p. 7) only when it helps the reader verify a precise paraphrase. Do not make the whole article feel like an academic paper.",
   "- Do not invent authors, organizations, years, page numbers, statistics, findings, or references. If evidence is weak or missing, soften the claim, mark it as [needs verification], or omit it.",
-  "- Do not include internal evidence tags such as {{EVID:...}}, [Q1], or sentence or page IDs in the public article text. Page and sentence IDs belong only in the citation_map below.",
+  "- Do not include internal evidence tags such as EVID markers, [Q1], or sentence or page IDs in the public article text. Page and sentence IDs belong only in the citation_map below.",
   "",
   "Internal citation_map rules:",
   "- Every reader-facing in-text citation in the article must appear in the citation_map array.",
@@ -379,6 +396,7 @@ article_lab_default_full_text_prompt <- paste(
   "{{input_context}}",
   sep = "\n"
 )
+article_lab_previous_default_full_text_prompt <- sub("EVID markers", "{{EVID:...}}", article_lab_default_full_text_prompt, fixed = TRUE)
 article_lab_legacy_default_full_text_prompt <- sub("\n\nSelected approved package and source context:[\\s\\S]*$", "", article_lab_default_full_text_prompt, perl = TRUE)
 article_lab_full_text_prompt_key <- "full_text_default"
 article_lab_default_medium_tags_prompt <- paste(
@@ -400,21 +418,113 @@ article_lab_default_medium_tags_model <- local({
 })
 article_lab_medium_tags_model_choices <- article_lab_model_choices_with_default(article_lab_default_medium_tags_model)
 
-article_lab_render_prompt_template <- function(template, variables = list()) {
-  rendered <- article_lab_input_multiline(template)
-  if (is.null(rendered) || is.na(rendered)) return("")
-  values <- lapply(variables, function(value) {
-    cleaned <- article_lab_input_multiline(value)
-    if (is.null(cleaned) || is.na(cleaned)) "" else cleaned
-  })
-  for (key in names(values)) {
-    if (!nzchar(values[[key]])) rendered <- gsub(sprintf("(?m)^[^\\n]*\\{\\{%s\\}\\}[^\\n]*\\n?", key), "", rendered, perl = TRUE)
-    rendered <- gsub(sprintf("{{%s}}", key), values[[key]], rendered, fixed = TRUE)
+article_lab_parse_prompt_template <- function(template, allowed_variables) {
+  text <- if (is.null(template) || length(template) == 0L || is.na(template[[1]])) "" else as.character(template[[1]])
+  allowed <- unique(as.character(allowed_variables))
+  matches <- gregexpr("\\{\\{[^{}]*\\}\\}", text, perl = TRUE)[[1]]
+  tokens <- list()
+  if (!identical(matches[[1]], -1L)) {
+    lengths <- attr(matches, "match.length")
+    tokens <- lapply(seq_along(matches), function(i) {
+      raw <- substr(text, matches[[i]], matches[[i]] + lengths[[i]] - 1L)
+      inner <- substr(raw, 3L, nchar(raw) - 2L)
+      if (!grepl("^(#|/)?[a-z_]+$", inner, perl = TRUE)) stop(sprintf("Malformed prompt template tag: %s", raw), call. = FALSE)
+      type <- if (startsWith(inner, "#")) "open" else if (startsWith(inner, "/")) "close" else "variable"
+      name <- if (type == "variable") inner else substring(inner, 2L)
+      if (!name %in% allowed) stop(sprintf("Unknown prompt variable: {{%s}}", name), call. = FALSE)
+      list(type = type, name = name, raw = raw, start = matches[[i]], end = matches[[i]] + lengths[[i]] - 1L)
+    })
   }
-  unresolved <- unique(regmatches(rendered, gregexpr("\\{\\{[a-z_]+\\}\\}", rendered, perl = TRUE))[[1]])
-  unresolved <- unresolved[nzchar(unresolved) & unresolved != "-1"]
-  if (length(unresolved) > 0L) stop(sprintf("Unknown prompt variable%s: %s", ifelse(length(unresolved) == 1L, "", "s"), paste(unresolved, collapse = ", ")), call. = FALSE)
-  trimws(gsub("\\n{3,}", "\n\n", rendered, perl = TRUE))
+  stripped <- text
+  if (length(tokens) > 0L) {
+    for (token in rev(tokens)) substr(stripped, token$start, token$end) <- strrep(" ", token$end - token$start + 1L)
+  }
+  if (grepl("\\{\\{|\\}\\}", stripped, perl = TRUE)) stop("Malformed prompt template syntax: unmatched or malformed braces.", call. = FALSE)
+
+  open <- NULL
+  for (i in seq_along(tokens)) {
+    token <- tokens[[i]]
+    if (token$type == "open") {
+      if (!is.null(open)) stop("Nested prompt conditional blocks are not supported.", call. = FALSE)
+      open <- list(name = token$name, index = i)
+    } else if (token$type == "close") {
+      if (is.null(open)) stop(sprintf("Unmatched closing prompt block: {{/%s}}", token$name), call. = FALSE)
+      if (!identical(open$name, token$name)) stop(sprintf("Mismatched prompt block: expected {{/%s}} but found {{/%s}}.", open$name, token$name), call. = FALSE)
+      tokens[[open$index]]$pair <- i
+      tokens[[i]]$pair <- open$index
+      open <- NULL
+    }
+  }
+  if (!is.null(open)) stop(sprintf("Unmatched opening prompt block: {{#%s}}", open$name), call. = FALSE)
+  list(text = text, tokens = tokens)
+}
+
+article_lab_prompt_tag_line_bounds <- function(text, token) {
+  before <- if (token$start <= 1L) "" else substr(text, 1L, token$start - 1L)
+  after <- if (token$end >= nchar(text)) "" else substr(text, token$end + 1L, nchar(text))
+  line_start <- if (grepl("\n", before, fixed = TRUE)) max(gregexpr("\n", before, fixed = TRUE)[[1]]) + 1L else 1L
+  next_newline <- regexpr("\n", after, fixed = TRUE)[[1]]
+  line_end <- if (next_newline == -1L) nchar(text) else token$end + next_newline
+  prefix <- if (token$start <= line_start) "" else substr(text, line_start, token$start - 1L)
+  suffix_end <- if (next_newline == -1L) nchar(text) else line_end - 1L
+  suffix <- if (token$end >= suffix_end) "" else substr(text, token$end + 1L, suffix_end)
+  standalone <- !nzchar(trimws(prefix)) && !nzchar(trimws(suffix))
+  list(standalone = standalone, start = if (standalone) line_start else token$start, end = if (standalone) line_end else token$end)
+}
+
+article_lab_render_prompt_template <- function(template, variables = list(), allowed_variables = names(variables)) {
+  parsed <- article_lab_parse_prompt_template(template, allowed_variables)
+  text <- parsed$text
+  tokens <- parsed$tokens
+  values <- setNames(lapply(allowed_variables, function(key) {
+    value <- variables[[key]]
+    if (is.null(value) || length(value) == 0L || is.na(value[[1]])) "" else as.character(value[[1]])
+  }), allowed_variables)
+  if (length(tokens) == 0L) return(text)
+
+  render_range <- function(from, to, token_from = 1L, token_to = length(tokens)) {
+    out <- character()
+    cursor <- from
+    i <- token_from
+    while (i <= token_to) {
+      token <- tokens[[i]]
+      if (token$start < from || token$end > to) { i <- i + 1L; next }
+      if (token$type == "close") { i <- i + 1L; next }
+      bounds <- if (token$type == "open") article_lab_prompt_tag_line_bounds(text, token) else list(start = token$start, end = token$end)
+      if (bounds$start > cursor) out <- c(out, substr(text, cursor, bounds$start - 1L))
+      if (token$type == "variable") {
+        out <- c(out, values[[token$name]])
+        cursor <- token$end + 1L
+        i <- i + 1L
+      } else {
+        close_i <- token$pair
+        close_token <- tokens[[close_i]]
+        close_bounds <- article_lab_prompt_tag_line_bounds(text, close_token)
+        if (nzchar(trimws(values[[token$name]]))) {
+          body_start <- bounds$end + 1L
+          body_end <- close_bounds$start - 1L
+          if (body_start <= body_end) out <- c(out, render_range(body_start, body_end, i + 1L, close_i - 1L))
+          cursor <- close_bounds$end + 1L
+        } else {
+          before <- if (token$start <= 1L) "" else substr(text, 1L, token$start - 1L)
+          after <- if (close_token$end >= nchar(text)) "" else substr(text, close_token$end + 1L, nchar(text))
+          line_start <- if (grepl("\n", before, fixed = TRUE)) max(gregexpr("\n", before, fixed = TRUE)[[1]]) + 1L else 1L
+          next_newline <- regexpr("\n", after, fixed = TRUE)[[1]]
+          line_end <- if (next_newline == -1L) nchar(text) else close_token$end + next_newline
+          prefix <- if (token$start <= line_start) "" else substr(text, line_start, token$start - 1L)
+          suffix_end <- if (next_newline == -1L) nchar(text) else line_end - 1L
+          suffix <- if (close_token$end >= suffix_end) "" else substr(text, close_token$end + 1L, suffix_end)
+          whole_lines <- !nzchar(trimws(prefix)) && !nzchar(trimws(suffix))
+          if (whole_lines && line_start < bounds$start && length(out) > 0L) out[[length(out)]] <- substr(out[[length(out)]], 1L, max(0L, nchar(out[[length(out)]]) - (bounds$start - line_start)))
+          cursor <- if (whole_lines) line_end + 1L else close_bounds$end + 1L
+        }
+        i <- close_i + 1L
+      }
+    }
+    if (cursor <= to) out <- c(out, substr(text, cursor, to))
+    paste0(out, collapse = "")
+  }
+  render_range(1L, nchar(text))
 }
 
 article_lab_prompt_variable_help <- function(...) {

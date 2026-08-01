@@ -62,26 +62,8 @@ function extractText(response) {
 }
 
 function buildMetadataText(payload) {
-  const sourceContext = [
-    "Source metadata:",
-    `Research source ID: ${cleanText(payload.research_source_id) ?? ""}`,
-    `Source title: ${cleanText(payload.source_title) ?? ""}`,
-    `Source URL: ${cleanText(payload.source_url) ?? ""}`,
-    `PDF URL: ${cleanText(payload.pdf_url) ?? ""}`,
-    "Main idea:",
-    cleanMultilineText(payload.main_idea) ?? "",
-    "",
-    "Abstract:",
-    cleanMultilineText(payload.abstract) ?? ""
-  ].join("\n");
-  const prompt = cleanMultilineText(payload.prompt) ?? "Summarize this research paper for a beginner-friendly personal finance writing workflow.";
-  if (prompt.includes("{{input_context}}")) {
-    const rendered = prompt.replaceAll("{{input_context}}", sourceContext);
-    const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g) ?? [];
-    if (unresolved.length) throw new Error(`Unknown research-summary prompt variable: ${[...new Set(unresolved)].join(", ")}`);
-    return rendered;
-  }
-  return [sourceContext, "", "User prompt:", prompt].join("\n");
+  if (typeof payload.resolved_prompt !== "string") throw new Error("A resolved research-summary prompt is required.");
+  return payload.resolved_prompt;
 }
 
 async function resolveLocalPdfPath(localPdfPath) {

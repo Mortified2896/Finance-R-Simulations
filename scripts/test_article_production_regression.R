@@ -80,6 +80,18 @@ for (workflow_name in names(workflow_templates)) {
 unknown_variable_error <- tryCatch({ article_lab_render_prompt_template("Test {{unknown_variable}}", list(input_context = "x")); NULL }, error = identity)
 expect(inherits(unknown_variable_error, "error"), "Unknown prompt variables should fail loudly.")
 
+byte_template <- "prefix  \n{{#input_context}}\nPackage:\n{{input_context}}\n{{/input_context}}\nsuffix\t\n"
+byte_packages <- data.frame(subtitle_id = "sub_bytes", candidate_id = "cand_bytes", batch_id = "batch_bytes", title = "Literal {{not_a_tag}}", subtitle = "Whitespace proof", stringsAsFactors = FALSE)
+byte_payload <- article_lab_thumbnail_request_payload(byte_packages, variants_per_package = 1L, model = article_lab_default_thumbnail_model, prompt = byte_template)
+byte_preview <- fromJSON(article_lab_thumbnail_helper_call(byte_payload, preview_only = TRUE), simplifyVector = FALSE)
+preview_prompt <- byte_preview$requests[[1]]$sanitized_request$input
+resolved_prompt <- byte_payload$requests[[1]]$resolved_prompt
+expect(identical(charToRaw(preview_prompt), charToRaw(resolved_prompt)), "Thumbnail preview input was not byte-identical to the canonical resolved prompt.")
+dbExecute(con, "CREATE TEMP TABLE prompt_byte_capture (resolved_prompt TEXT NOT NULL)")
+dbExecute(con, "INSERT INTO prompt_byte_capture (resolved_prompt) VALUES (?)", params = list(resolved_prompt))
+persisted_prompt <- dbGetQuery(con, "SELECT resolved_prompt FROM prompt_byte_capture")$resolved_prompt[[1]]
+expect(identical(charToRaw(persisted_prompt), charToRaw(preview_prompt)), "Persisted prompt was not byte-identical to preview/API input.")
+
 legacy_prompt <- article_lab_effective_title_prompt_text(article_lab_legacy_default_prompt, 3L, seed_topic = "Legacy seed", context_notes = subset_context)
 expect(startsWith(legacy_prompt, paste0("Article context:\n", subset_context)), "A saved legacy prompt no longer receives article context.")
 

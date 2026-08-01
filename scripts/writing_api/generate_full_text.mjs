@@ -115,65 +115,8 @@ function validateCitationMapEntry(entry) {
 }
 
 function buildPrompt({ prompt, packages }) {
-  const basePrompt = cleanText(prompt) || [
-    "Draft complete Medium articles from approved title/subtitle/thumbnail/outline packages.",
-    "Use the provided source context when available and do not invent unsupported research claims.",
-  ].join("\n");
-
-  const responseInstructions = [
-    "Return valid JSON only.",
-    "Return JSON only in this shape: {\"results\":[{\"outline_id\":string,\"thumbnail_id\":string,\"subtitle_id\":string,\"candidate_id\":string,\"batch_id\":string,\"source_context_mode\":\"pdf_attachment\"|\"summary_fallback\"|\"checked_summary_evidence\"|\"none\",\"full_text\":string,\"citation_map\":[{\"citation_text\":string,\"article_sentence\":string,\"source_title\":string,\"source_author_or_org\":string,\"source_year\":string|null,\"page\":string|null,\"sentence_ids\":[string],\"supporting_quote\":string|null,\"verification_note\":string,\"evidence_status\":\"checked\"|\"unchecked\"}]}]}",
-    "full_text is the public Medium-style Markdown article. The body must use indirect citations or paraphrases only, and must not include direct quotes, internal {{EVID:...}} or [Q1] tags, sentence IDs, or page IDs.",
-    "Every reader-facing in-text citation in full_text must appear in citation_map. citation_map entries must include citation_text, article_sentence, source_title, source_author_or_org, source_year (or null), page (or null), sentence_ids (array, possibly empty), supporting_quote (or null), verification_note, and evidence_status.",
-    "If a sentence has no direct supporting source sentence or page, leave page or supporting_quote as null, leave sentence_ids as an empty array, mark evidence_status as 'unchecked', and explain the gap in verification_note.",
-    "If the article has no reader-facing citations, return citation_map as an empty array.",
-    "Copy ids exactly from the package. The full_text value must be the complete Markdown article draft, not a schema example, MARKDOWN_ARTICLE_HERE, placeholder, excerpt, note, or explanation.",
-    "Ignore any earlier placeholder value such as MARKDOWN_ARTICLE_HERE; replace it with the actual full Markdown article."
-  ].join("\n");
-
-  const packageList = packages.map((entry, index) => {
-    const lines = [
-      `${index + 1}. outline_id=${entry.outline_id} | thumbnail_id=${entry.thumbnail_id} | subtitle_id=${entry.subtitle_id} | candidate_id=${entry.candidate_id} | batch_id=${entry.batch_id}`,
-      `Title: ${entry.title}`,
-      `Subtitle: ${entry.subtitle}`,
-      `Thumbnail concept: ${entry.thumbnail_label ?? "approved thumbnail"}`,
-      "Approved outline:",
-      entry.outline_text,
-      `Source context mode: ${entry.source_context_mode ?? "none"}`
-    ];
-    if (entry.article_summary) {
-      lines.push("Research summary/full text fallback:", entry.article_summary);
-    }
-    if (entry.checked_evidence && entry.checked_evidence.length > 0) {
-      lines.push("Checked summary evidence (use only these to ground the article):");
-      for (const item of entry.checked_evidence) {
-        const ids = (item.sentence_ids || []).join(", ") || "n/a";
-        const page = item.page ? `p. ${item.page}` : "page n/a";
-        const quote = item.supporting_quote ? `Supporting quote: ${item.supporting_quote}` : "Supporting quote: n/a";
-        const claim = item.claim_text ? `Claim: ${item.claim_text}` : "Claim: n/a";
-        lines.push(`- ${claim} | ${quote} | ${page} | sentence_ids=[${ids}] | status=${item.selection_status || "n/a"} | confidence=${item.confidence || "n/a"}`);
-      }
-    }
-    if (entry.pdf_path) {
-      lines.push("Research PDF: attached as input_file");
-    }
-    return lines.join("\n");
-  }).join("\n\n");
-
-  if (basePrompt.includes("{{input_context}}")) {
-    const rendered = basePrompt.replaceAll("{{input_context}}", packageList);
-    const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g) ?? [];
-    if (unresolved.length) throw new Error(`Unknown full-text prompt variable: ${[...new Set(unresolved)].join(", ")}`);
-    return rendered;
-  }
-
-  return [
-    basePrompt,
-    responseInstructions,
-    "Return one full article draft per package, preserving all ids exactly.",
-    "Packages:",
-    packageList
-  ].join("\n\n");
+  if (typeof prompt !== "string") throw new Error("A resolved full-text prompt is required.");
+  return prompt;
 }
 
 async function buildResponsesInput({ client, prompt, packages }) {
@@ -300,7 +243,7 @@ async function main() {
   const model = cleanText(payload.model) ?? "gpt-5-mini";
   const reasoningEffort = cleanText(payload.reasoning_effort);
   const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
-  const prompt = cleanText(payload.prompt);
+  const prompt = typeof payload.resolved_prompt === "string" ? payload.resolved_prompt : null;
   const promptKey = cleanText(payload.prompt_key) ?? "full_text_default";
   const packages = Array.isArray(payload.packages)
     ? payload.packages.map((entry) => ({

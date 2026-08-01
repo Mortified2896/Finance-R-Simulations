@@ -46,49 +46,33 @@ function normalizeSettings(payload) {
   return { size, quality, output_format: outputFormat, output_compression: outputCompression, background };
 }
 
-function normalizePackages(values) {
+function normalizeRequests(values) {
   return Array.isArray(values) ? values.map((entry) => ({
     subtitle_id: cleanText(entry.subtitle_id), candidate_id: cleanText(entry.candidate_id),
-    batch_id: cleanText(entry.batch_id), title: cleanText(entry.title), subtitle: cleanText(entry.subtitle)
-  })).filter((entry) => entry.subtitle_id && entry.candidate_id && entry.batch_id && entry.title && entry.subtitle) : [];
-}
-
-export function buildPrompt({ prompt, pkg, variantIndex, variantsPerPackage }) {
-  const basePrompt = cleanText(prompt) || [
-    "Generate Medium-style thumbnail candidates for approved title and subtitle packages.",
-    "Keep the visual direction clear, editorial, credible, and readable at a glance.",
-    "Create a finished thumbnail image suitable for a Medium preview card.",
-    "Keep the concept aligned with the title and subtitle without adding clickbait or clutter."
-  ].join("\n");
-  const inputContext = [`subtitle_id: ${pkg.subtitle_id}`, `candidate_id: ${pkg.candidate_id}`, `batch_id: ${pkg.batch_id}`, `Title: ${pkg.title}`, `Subtitle: ${pkg.subtitle}`].join("\n");
-  if (basePrompt.includes("{{input_context}}")) {
-    const rendered = basePrompt.replaceAll("{{input_context}}", inputContext).replaceAll("{{variant_index}}", String(variantIndex)).replaceAll("{{variants_per_package}}", String(variantsPerPackage));
-    const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g) ?? [];
-    if (unresolved.length) throw new Error(`Unknown thumbnail prompt variable: ${[...new Set(unresolved)].join(", ")}`);
-    return rendered;
-  }
-  return [basePrompt, "", "Create one 1200x720 editorial thumbnail image.", "Do not include logos, watermarks, fake UI chrome, or tiny unreadable text.", "If text appears in the image, keep it minimal and legible.", `Variant ${variantIndex} of ${variantsPerPackage}. Make this variant visually distinct from the others.`, "", inputContext].join("\n");
+    batch_id: cleanText(entry.batch_id), title: cleanText(entry.title), subtitle: cleanText(entry.subtitle),
+    variant_index: Number.parseInt(entry.variant_index, 10), resolved_prompt: typeof entry.resolved_prompt === "string" ? entry.resolved_prompt : null
+  })).filter((entry) => entry.subtitle_id && entry.candidate_id && entry.batch_id && entry.title && entry.subtitle && Number.isInteger(entry.variant_index) && entry.resolved_prompt !== null) : [];
 }
 
 export function buildThumbnailRequests(payload) {
-  const packages = normalizePackages(payload.packages);
-  if (!packages.length) throw new Error("At least one title/subtitle package is required.");
+  const promptRequests = normalizeRequests(payload.requests);
+  if (!promptRequests.length) throw new Error("At least one resolved thumbnail prompt request is required.");
   const model = cleanText(payload.model) ?? DEFAULT_MODEL;
   const reasoningEffort = cleanText(payload.reasoning_effort);
   const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
   const variantsPerPackage = Math.max(1, Math.min(4, Number.parseInt(payload.variants_per_package, 10) || DEFAULT_VARIANTS));
   const image = normalizeSettings(payload);
   const records = [];
-  for (const pkg of packages) {
-    for (let variantIndex = 1; variantIndex <= variantsPerPackage; variantIndex += 1) {
-      const submittedPrompt = buildPrompt({ prompt: payload.prompt, pkg, variantIndex, variantsPerPackage });
+  for (const promptRequest of promptRequests) {
+      const pkg = promptRequest;
+      const variantIndex = promptRequest.variant_index;
+      const submittedPrompt = promptRequest.resolved_prompt;
       const tool = { type: "image_generation", action: "generate", size: image.size, quality: image.quality, output_format: image.output_format, background: image.background };
       if (image.output_compression !== null) tool.output_compression = image.output_compression;
       const request = { model, input: submittedPrompt, tools: [tool], tool_choice: { type: "image_generation" }, stream: false };
       if (reasoningEffort) request.reasoning = { effort: reasoningEffort };
       if (reasoningMode === "pro") request.reasoning = { ...(request.reasoning ?? {}), mode: "pro" };
       records.push({ pkg, variant_index: variantIndex, submitted_prompt: submittedPrompt, request });
-    }
   }
   return { model, reasoning_effort: reasoningEffort, reasoning_mode: reasoningMode, image_settings: image, records };
 }
@@ -144,7 +128,7 @@ async function main() {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey || apiKey === "...") throw new Error("Missing OPENAI_API_KEY. Add it to the local .env file before using live thumbnail generation.");
   try {
-    await withLangfuseRun({ name: "generate-medium-thumbnails-run", input: { packageCount: normalizePackages(payload.packages).length, variantsPerPackage: payload.variants_per_package, hasPrompt: Boolean(payload.prompt) }, metadata: { script: "generateThumbnails", model: built.model, mode: "writingApi" }, tags: ["writing-api", "thumbnail-generation"], sessionId: requestPath, traceName: "generate-medium-thumbnails" }, async () => {
+    await withLangfuseRun({ name: "generate-medium-thumbnails-run", input: { packageCount: new Set(built.records.map((record) => record.pkg.subtitle_id)).size, variantsPerPackage: payload.variants_per_package, hasPrompt: built.records.every((record) => typeof record.submitted_prompt === "string") }, metadata: { script: "generateThumbnails", model: built.model, mode: "writingApi" }, tags: ["writing-api", "thumbnail-generation"], sessionId: requestPath, traceName: "generate-medium-thumbnails" }, async () => {
       const client = await createOpenAIClient(apiKey, { generationName: "generate-medium-thumbnails", generationMetadata: { requestCount: built.records.length }, tags: ["writing-api", "thumbnail-generation"], sessionId: requestPath });
       const grouped = new Map();
       const generationRunId = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);

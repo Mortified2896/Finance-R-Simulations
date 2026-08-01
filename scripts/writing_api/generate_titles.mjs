@@ -134,39 +134,8 @@ function buildPrompt({ prompt, manualPrompt, batchSize, seedTopic, inspirationSo
 }
 
 function buildPromptWithContext({ prompt, manualPrompt, batchSize, seedTopic, inspirationSource, exampleTitles, contextNotes }) {
-  const template = manualPrompt?.match(/\{\{[a-z_]+\}\}/) ? manualPrompt : prompt?.match(/\{\{[a-z_]+\}\}/) ? prompt : null;
-  if (template) {
-    const articleSummary = template === manualPrompt ? prompt : "";
-    const values = {
-      idea_context: contextNotes ?? "",
-      article_summary: articleSummary ?? "",
-      batch_size: String(batchSize),
-      seed_topic: seedTopic ?? "",
-      inspiration_source: inspirationSource ?? "",
-      example_titles: exampleTitles.map((title, index) => `${index + 1}. ${title}`).join("\n"),
-      max_title_chars: String(MAX_TITLE_CHARS),
-      preferred_title_length: PREFERRED_TITLE_LENGTH
-    };
-    let rendered = template;
-    for (const [key, value] of Object.entries(values)) {
-      if (!value) {
-        rendered = rendered.replace(new RegExp(`^[^\\n]*\\{\\{${key}\\}\\}[^\\n]*\\n?`, "gm"), "");
-      }
-      rendered = rendered.replaceAll(`{{${key}}}`, value);
-    }
-    const unresolved = [...new Set(rendered.match(/\{\{[a-z_]+\}\}/g) ?? [])];
-    if (unresolved.length > 0) {
-      throw new Error(`Unknown title-prompt variable${unresolved.length === 1 ? "" : "s"}: ${unresolved.join(", ")}`);
-    }
-    return rendered
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-  }
-  const base = buildPrompt({ prompt, manualPrompt, batchSize, seedTopic, inspirationSource, exampleTitles });
-  if (contextNotes) {
-    return `Article context:\n${contextNotes}\n\n${base}`;
-  }
-  return base;
+  if (typeof prompt !== "string") throw new Error("A resolved title prompt is required.");
+  return prompt;
 }
 
 function buildRetryPrompt({ originalPrompt, batchSize, invalidTitles }) {
@@ -200,8 +169,8 @@ async function main() {
   }
 
   const payload = JSON.parse(await fs.readFile(requestPath, "utf8"));
-  const prompt = cleanMultilineText(payload.prompt);
-  const manualPrompt = cleanMultilineText(payload.manual_prompt);
+  const prompt = typeof payload.resolved_prompt === "string" ? payload.resolved_prompt : null;
+  const manualPrompt = null;
   const model = cleanText(payload.model) ?? "gpt-5-mini";
   const reasoningEffort = cleanText(payload.reasoning_effort);
   const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
