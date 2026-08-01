@@ -5541,69 +5541,7 @@ server <- function(input, output, session) {
 
   output$guide_content <- renderUI({
     if (article_lab_is_workflow_section(active_section()) || identical(active_section(), "settings")) {
-      current_section <- active_section()
-      overview <- article_lab_overview_stats()
-      batches <- article_lab_batches()
-      latest_saved_batch <- article_lab_saved_batch()
-      selected_batch_id <- article_lab_selected_batch_id()
-      selected_candidates <- article_lab_selected_batch_candidates()
-      selected_batch <- if (nrow(batches) > 0 && !is.na(selected_batch_id) && nzchar(selected_batch_id)) {
-        batches[batches$batch_id == selected_batch_id, , drop = FALSE]
-      } else {
-        data.frame()
-      }
-      current_batch_label <- if (identical(current_section, "generate") && !is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
-        sprintf("Unsaved draft with %s titles", nrow(article_lab_state$draft))
-      } else if (identical(current_section, "generate") && !is.null(latest_saved_batch) && nrow(latest_saved_batch) > 0) {
-        sprintf("Latest saved batch %s", latest_saved_batch$batch_id[[1]])
-      } else if (identical(selected_batch_id, article_lab_all_batches_value)) {
-        "All saved titles across batches"
-      } else if (nrow(selected_batch) > 0) {
-        sprintf("Saved batch %s", selected_batch$batch_id[[1]])
-      } else {
-        "No batch saved yet"
-      }
-      current_batch_meta <- if (identical(current_section, "generate") && !is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
-        paste("Draft created at", article_lab_state$draft_created_at %||% now_utc())
-      } else if (identical(current_section, "generate") && !is.null(latest_saved_batch) && nrow(latest_saved_batch) > 0) {
-        paste("Created", latest_saved_batch$created_at[[1]], "\u00b7 model", first_value(latest_saved_batch, "model", article_lab_default_model))
-      } else if (identical(selected_batch_id, article_lab_all_batches_value)) {
-        "The current selection spans all saved batches."
-      } else if (nrow(selected_batch) > 0) {
-        paste("Created", selected_batch$created_at[[1]], "\u00b7 model", first_value(selected_batch, "model", article_lab_default_model))
-      } else {
-        "Generate first, then save to persist candidates."
-      }
-      ready_n <- if (nrow(selected_candidates) == 0) 0L else sum(selected_candidates$normalized_status == "ready_for_api_scoring", na.rm = TRUE)
-      scored_n <- if (nrow(selected_candidates) == 0) 0L else sum(selected_candidates$normalized_status == "api_scored", na.rm = TRUE)
-      approved_n <- if (nrow(selected_candidates) == 0) 0L else sum(selected_candidates$normalized_status == "approved_for_subtitle", na.rm = TRUE)
-      subtitle_ready_n <- if (nrow(selected_candidates) == 0) 0L else sum(selected_candidates$normalized_status == "ready_for_thumbnail", na.rm = TRUE)
-
-      if (current_section %in% c("research_inbox", "api_scoring", "subtitle_generation", "thumbnails")) {
-        return(NULL)
-      }
-
-      return(tagList(
-        div(
-          class = "status-card",
-          h3("Article Lab status"),
-          div(class = "status-metric", overview$saved_candidates[[1]]),
-          p(sprintf("%s saved candidates across %s batches.", overview$saved_candidates[[1]], overview$saved_batches[[1]])),
-          p(class = "lab-status-copy", sprintf("%s remain New, %s are in API queue, %s are approved for subtitles, %s are ready for Thumbnails, and %s are ready for Outline.", overview$generated[[1]], overview$ready_for_api_scoring[[1]], overview$approved_for_subtitle[[1]], overview$ready_for_thumbnail[[1]], overview$ready_for_outline[[1]]))
-        ),
-        div(
-          class = "status-card",
-          h3("Current selection"),
-          p(current_batch_label),
-          p(class = "lab-status-copy", current_batch_meta)
-        ),
-        div(
-          class = "status-card",
-          h3("Reminder"),
-          p("Home remains the separate rating workflow."),
-          p(class = "lab-status-copy", sprintf("This pass now covers Generate, API Scoring, Subtitle Generation, and Thumbnails. %s title%s are ready for Thumbnails in the current selection.", subtitle_ready_n, ifelse(subtitle_ready_n == 1, "", "s")))
-        )
-      ))
+      return(NULL)
     }
 
     if (is_dimension_mode) {
