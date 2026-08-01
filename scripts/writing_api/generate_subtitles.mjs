@@ -128,6 +128,7 @@ async function main() {
       },
       async () => {
         let response;
+        let request;
         try {
           const client = await createOpenAIClient(apiKey, {
             generationName: "generate-medium-subtitles",
@@ -139,7 +140,7 @@ async function main() {
             tags: ["writing-api", "subtitle-generation"],
             sessionId: requestPath
           });
-          const request = { model, input: buildPrompt({ prompt, candidates, variantsPerTitle }) };
+          request = { model, input: buildPrompt({ prompt, candidates, variantsPerTitle }) };
           if (reasoningEffort) request.reasoning = { effort: reasoningEffort };
           if (reasoningMode === "pro") request.reasoning = { ...(request.reasoning ?? {}), mode: "pro" };
           response = await client.responses.create(request);
@@ -166,6 +167,7 @@ async function main() {
           reasoning_mode: reasoningMode,
           request_id: response._request_id ?? response.request_id ?? null,
           response_id: response.id ?? null,
+          sanitized_request: request,
           results,
           raw_text: rawText,
           usage: response.usage ?? null

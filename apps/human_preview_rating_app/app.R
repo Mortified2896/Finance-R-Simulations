@@ -623,11 +623,11 @@ server <- function(input, output, session) {
     if (article_lab_is_workflow_section(current_section)) {
       page_meta <- article_lab_nav_meta(current_section)
       if (current_section %in% c("generate", "api_scoring")) page_meta <- article_lab_nav_meta("title_lab")
-      generate_has_rows <- {
+      generate_has_rows <- if (current_section %in% c("generate", "api_scoring")) {
         saved_rows <- article_lab_generate_candidates()
         draft_rows <- article_lab_state$draft
         nrow(saved_rows) > 0 || (!is.null(draft_rows) && nrow(draft_rows) > 0)
-      }
+      } else FALSE
       generate_prompt_card <- div(
         class = "lab-card lab-setup-card",
         h2("Generation prompt"),

@@ -793,7 +793,6 @@ article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L
   if (!nzchar(trimws(stdout_text))) stop("Subtitle generation helper returned no output.", call. = FALSE)
 
   parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
-  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id), request_id = article_lab_input_string(parsed$request_id))
   result_rows <- lapply(parsed$results %||% list(), function(entry) {
     subtitles <- article_lab_normalize_subtitle(unname(unlist(entry$subtitles %||% list(), use.names = FALSE)))
     if (length(subtitles) == 0) return(NULL)
@@ -812,6 +811,33 @@ article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L
     )
   })
   result_rows <- Filter(Negate(is.null), result_rows)
+
+  if (length(result_rows) == 0) {
+    failure_reason <- "Subtitle generation returned no usable subtitle candidates."
+    article_lab_finish_generation_attempt(
+      attempt_id,
+      "failed",
+      response_id = article_lab_input_string(parsed$response_id),
+      request_id = article_lab_input_string(parsed$request_id),
+      error_message = failure_reason,
+      canonical_request = parsed$sanitized_request
+    )
+    return(list(
+      rows = data.frame(),
+      model = article_lab_input_string(parsed$model) %||% request_payload$model,
+      mode = "failed",
+      raw_json = stdout_text,
+      fallback_reason = failure_reason
+    ))
+  }
+
+  article_lab_finish_generation_attempt(
+    attempt_id,
+    "succeeded",
+    response_id = article_lab_input_string(parsed$response_id),
+    request_id = article_lab_input_string(parsed$request_id),
+    canonical_request = parsed$sanitized_request
+  )
 
   list(
     rows = if (length(result_rows) == 0) data.frame() else do.call(rbind, result_rows),
