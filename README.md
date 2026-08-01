@@ -53,19 +53,27 @@ Install the root Node dependencies used by writing and browser helpers:
 npm install
 ```
 
-Run focused regression checks for the current article workflow:
+Run focused stable/default local app regression checks:
 
 ```sh
 npm run test:article-inbox
 npm run test:article-production
 ```
 
-Initialize the Medium Analysis V2 objects when setting up that workflow, then validate the current local database:
+Validate the Medium Analysis V2 objects in the current local database:
+
+```sh
+npm run validate:medium-v2
+```
+
+If validation reports that required V2 schema objects are missing, and the base Medium import tables already exist, run the setup/repair initializer and then validate again:
 
 ```sh
 Rscript scripts/apply_medium_analysis_v2_schema.R
 npm run validate:medium-v2
 ```
+
+The initializer backs up the database, creates missing V2 tables and columns, and refreshes the V2 cache indexes and views. It does not delete existing analysis rows and is not a routine prerequisite for validation.
 
 These are common entry points, not a complete test suite. The [script inventory](docs/script_inventory.md) and [manual tools index](01_manual_tools/manual_tools_index.md) cover the more specialized collection, import, scoring, and analysis commands.
 
