@@ -63,6 +63,22 @@ expect(sum(gregexpr("One extra direction", exact_prompt, fixed = TRUE)[[1]] > 0L
 expect(grepl("Generate exactly 3 titles", exact_prompt, fixed = TRUE), "The exact prompt preview omitted the requested batch size.")
 expect(!grepl("{{", exact_prompt, fixed = TRUE), "The exact prompt preview retained an unresolved known variable.")
 
+workflow_templates <- list(
+  subtitle = list(template = article_lab_default_subtitle_prompt, variables = list(input_context = "Title: Test", variants_per_title = 4L, max_subtitle_chars = article_lab_subtitle_max_chars)),
+  thumbnail = list(template = article_lab_default_thumbnail_prompt, variables = list(input_context = "Title: Test\nSubtitle: Test subtitle", variant_index = 1L, variants_per_package = 3L)),
+  outline = list(template = article_lab_default_outline_prompt, variables = list(input_context = "Title: Test\nThumbnail label: Test", context_notes = "Prefer a practical structure.")),
+  full_text = list(template = article_lab_default_full_text_prompt, variables = list(input_context = "Title: Test\nApproved outline:\n# Test")),
+  medium_tags = list(template = article_lab_default_medium_tags_prompt, variables = list(input_context = "Title: Test\nArticle body:\nTest body")),
+  research_summary = list(template = article_lab_default_research_summary_prompt, variables = list(input_context = "Source title: Test paper"))
+)
+for (workflow_name in names(workflow_templates)) {
+  rendered_workflow_prompt <- article_lab_render_prompt_template(workflow_templates[[workflow_name]]$template, workflow_templates[[workflow_name]]$variables)
+  expect(!grepl("\\{\\{[a-z_]+\\}\\}", rendered_workflow_prompt, perl = TRUE), sprintf("%s prompt retained an unresolved variable.", workflow_name))
+  expect(nzchar(rendered_workflow_prompt), sprintf("%s prompt rendered empty.", workflow_name))
+}
+unknown_variable_error <- tryCatch({ article_lab_render_prompt_template("Test {{unknown_variable}}", list(input_context = "x")); NULL }, error = identity)
+expect(inherits(unknown_variable_error, "error"), "Unknown prompt variables should fail loudly.")
+
 legacy_prompt <- article_lab_effective_title_prompt_text(article_lab_legacy_default_prompt, 3L, seed_topic = "Legacy seed", context_notes = subset_context)
 expect(startsWith(legacy_prompt, paste0("Article context:\n", subset_context)), "A saved legacy prompt no longer receives article context.")
 

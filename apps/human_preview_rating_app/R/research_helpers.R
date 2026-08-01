@@ -262,7 +262,8 @@ load_research_summary_prompt <- function(con, prompt_version) {
     LIMIT 1
   ", params = list(version))
   if (nrow(rows) == 0) return(article_lab_default_research_summary_prompt)
-  article_lab_input_multiline(rows$prompt_text[[1]]) %||% article_lab_default_research_summary_prompt
+  stored <- article_lab_input_multiline(rows$prompt_text[[1]]) %||% article_lab_default_research_summary_prompt
+  if (identical(stored, article_lab_legacy_default_research_summary_prompt)) article_lab_default_research_summary_prompt else stored
 }
 
 save_research_summary_prompt <- function(con, prompt_version, prompt_text) {

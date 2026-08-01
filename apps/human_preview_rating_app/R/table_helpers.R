@@ -713,7 +713,8 @@ article_lab_review_publish_workspace_ui <- function(row, publications, con = NUL
         tags$details(
           class = "lab-secondary-details",
           tags$summary("Medium tag generation prompt"),
-          div(class = "lab-field", textAreaInput("article_lab_medium_tags_prompt", "Medium tags API prompt", value = article_lab_default_medium_tags_prompt, width = "100%", height = "130px")),
+          div(class = "lab-field", textAreaInput("article_lab_medium_tags_prompt", "Editable Medium tags prompt template", value = article_lab_default_medium_tags_prompt, width = "100%", height = "160px")),
+          p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context")),
           uiOutput("article_lab_medium_tags_effective_prompt")
         ),
         article_lab_action_bar(

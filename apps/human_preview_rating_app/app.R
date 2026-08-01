@@ -852,12 +852,13 @@ server <- function(input, output, session) {
             class = "lab-field",
             textAreaInput(
               "article_lab_subtitle_prompt",
-              "Prompt",
+              "Editable prompt template",
               value = article_lab_default_subtitle_prompt,
               width = "100%",
               height = "190px"
             )
           ),
+          p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context", "variants_per_title", "max_subtitle_chars")),
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
@@ -902,12 +903,13 @@ server <- function(input, output, session) {
             class = "lab-field",
             textAreaInput(
               "article_lab_thumbnail_prompt",
-              "Prompt",
+              "Editable prompt template",
               value = article_lab_default_thumbnail_prompt,
               width = "100%",
               height = "170px"
             )
           ),
+          p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context", "variant_index", "variants_per_package")),
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
@@ -938,8 +940,9 @@ server <- function(input, output, session) {
           ),
           div(
             class = "lab-field",
-            textAreaInput("article_lab_outline_prompt", "Prompt", value = saved_article_lab_outline_prompt(), width = "100%", height = "150px")
+            textAreaInput("article_lab_outline_prompt", "Editable prompt template", value = saved_article_lab_outline_prompt(), width = "100%", height = "150px")
           ),
+          p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context", "context_notes")),
           div(class = "lab-actions", uiOutput("article_lab_outline_prompt_save_button")),
           div(
             class = "lab-field",
@@ -978,8 +981,9 @@ server <- function(input, output, session) {
           ),
           div(
             class = "lab-field",
-            textAreaInput("article_lab_full_text_prompt", "Prompt", value = saved_article_lab_full_text_prompt(), width = "100%", height = "170px")
+            textAreaInput("article_lab_full_text_prompt", "Editable prompt template", value = saved_article_lab_full_text_prompt(), width = "100%", height = "170px")
           ),
+          p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context")),
           div(class = "lab-actions", uiOutput("article_lab_full_text_prompt_save_button")),
           div(
             class = "lab-grid",
@@ -1108,7 +1112,8 @@ server <- function(input, output, session) {
               article_lab_generation_control_ui(con, "research_summary", article_lab_research_summary_model_choices, article_lab_default_research_summary_model),
               div(class = "lab-field", selectInput("research_summary_prompt_version", "Prompt version", choices = article_lab_research_summary_prompt_version_choices, selected = article_lab_default_research_summary_prompt_version, width = "100%"))
             ),
-            div(class = "lab-field lab-editor-textarea", textAreaInput("research_summary_api_prompt", "API prompt", value = article_lab_default_research_summary_prompt, width = "100%", height = "260px")),
+            div(class = "lab-field lab-editor-textarea", textAreaInput("research_summary_api_prompt", "Editable API prompt template", value = article_lab_default_research_summary_prompt, width = "100%", height = "260px")),
+            p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context")),
             uiOutput("research_summary_effective_prompt"),
             div(class = "lab-actions", actionButton("research_generate_summary_draft", "Generate summary draft", class = "lab-primary"))
           ),
@@ -1132,11 +1137,13 @@ server <- function(input, output, session) {
             ),
             h4("Claim sentence marking"),
             article_lab_generation_control_ui(con, "research_claims", article_lab_claim_extraction_model_choices, article_lab_default_claim_extraction_model),
-            div(class = "lab-field lab-editor-textarea", textAreaInput("research_claim_prompt", "Claim sentence marking prompt", value = article_lab_default_claim_extraction_prompt, width = "100%", height = "210px")),
+            div(class = "lab-field lab-editor-textarea", textAreaInput("research_claim_prompt", "Claim sentence marking prompt template", value = article_lab_default_claim_extraction_prompt, width = "100%", height = "210px")),
+            p(class = "lab-status-copy", article_lab_prompt_variable_help("max_claims", "research_source_id", "source_title", "summary_id", "summary_sentence_payload_json")),
             h4("Evidence sentence selection"),
             article_lab_generation_control_ui(con, "research_evidence", article_lab_evidence_selection_model_choices, article_lab_default_evidence_selection_model),
             article_lab_generation_control_ui(con, "research_evidence_fallback", article_lab_evidence_fallback_model_choices, article_lab_default_evidence_fallback_model, "Fallback model"),
-            div(class = "lab-field lab-editor-textarea", textAreaInput("research_evidence_prompt", "Evidence selection prompt", value = article_lab_default_evidence_selection_prompt, width = "100%", height = "210px")),
+            div(class = "lab-field lab-editor-textarea", textAreaInput("research_evidence_prompt", "Evidence selection prompt template", value = article_lab_default_evidence_selection_prompt, width = "100%", height = "210px")),
+            p(class = "lab-status-copy", article_lab_prompt_variable_help("claim_candidate_payload_json")),
             uiOutput("research_evidence_effective_prompts"),
             div(
               class = "lab-actions",
@@ -3400,7 +3407,7 @@ server <- function(input, output, session) {
       sprintf("PDF attachment filename/path: %s", resolved_pdf_path %||% "(none)"),
       sep = "\n"
     )
-    metadata_text <- if (nrow(source) == 0) {
+    source_context <- if (nrow(source) == 0) {
       "(No source selected. Select a source to see the exact source metadata sent with the PDF.)"
     } else {
       paste(
@@ -3414,11 +3421,13 @@ server <- function(input, output, session) {
         "",
         "Abstract:",
         article_lab_input_multiline(source$abstract[[1]]) %||% "",
-        "",
-        "User prompt:",
-        prompt_text,
         sep = "\n"
       )
+    }
+    metadata_text <- if (grepl("{{input_context}}", prompt_text, fixed = TRUE)) {
+      tryCatch(article_lab_render_prompt_template(prompt_text, list(input_context = source_context)), error = function(err) paste("Prompt template error:", conditionMessage(err)))
+    } else {
+      paste(source_context, "", "User prompt:", prompt_text, sep = "\n")
     }
 
     div(
@@ -3430,7 +3439,7 @@ server <- function(input, output, session) {
         tags$summary("Show exact research summary API prompt"),
         h4("Request fields"),
         tags$pre(class = "lab-status-copy", request_fields),
-        h4("Input text sent with PDF"),
+        h4("Exact input_text sent with PDF"),
         tags$pre(class = "lab-status-copy", metadata_text)
       )
     )
@@ -3506,6 +3515,10 @@ server <- function(input, output, session) {
         sprintf("%s. candidate_id=%s | batch_id=%s | title=%s", i, targets$candidate_id[[i]], targets$batch_id[[i]], targets$title[[i]])
       }, character(1)), collapse = "\n")
     }
+    exact_prompt <- tryCatch(
+      article_lab_render_prompt_template(base_prompt, list(input_context = title_list, variants_per_title = variants_per_title, max_subtitle_chars = article_lab_subtitle_max_chars)),
+      error = function(err) paste("Prompt template error:", conditionMessage(err))
+    )
     summary_copy <- if (has_summary) {
       "Subtitle generation will append the confirmed article summary attached to each title's source batch."
     } else {
@@ -3519,8 +3532,8 @@ server <- function(input, output, session) {
       tags$details(
         open = if (has_summary) "open" else NULL,
         tags$summary("Show exact effective prompt"),
-        h4("Subtitle prompt"),
-        tags$pre(class = "lab-status-copy", base_prompt),
+        h4("Exact input_text sent to the API"),
+        tags$pre(class = "lab-status-copy", exact_prompt),
         h4("Request fields"),
         tags$pre(class = "lab-status-copy", request_additions),
         h4("Titles"),
@@ -3577,6 +3590,21 @@ server <- function(input, output, session) {
         )
       }, character(1)), collapse = "\n\n")
     }
+    exact_prompt <- if (nrow(selected_packages) == 0) {
+      article_lab_render_prompt_template(base_prompt, list(input_context = package_list, variant_index = "(variant index)", variants_per_package = variants_per_package))
+    } else {
+      paste(unlist(lapply(seq_len(nrow(selected_packages)), function(i) {
+        package_context <- paste(
+          sprintf("subtitle_id: %s", selected_packages$subtitle_id[[i]]),
+          sprintf("candidate_id: %s", selected_packages$candidate_id[[i]]),
+          sprintf("batch_id: %s", selected_packages$batch_id[[i]]),
+          sprintf("Title: %s", selected_packages$title[[i]]),
+          sprintf("Subtitle: %s", selected_packages$subtitle[[i]]),
+          sep = "\n"
+        )
+        vapply(seq_len(variants_per_package), function(variant_index) article_lab_render_prompt_template(base_prompt, list(input_context = package_context, variant_index = variant_index, variants_per_package = variants_per_package)), character(1))
+      })), collapse = "\n\n---\n\n")
+    }
 
     div(
       class = "lab-card",
@@ -3585,8 +3613,8 @@ server <- function(input, output, session) {
       tags$details(
         open = if (nrow(selected_packages) > 0) "open" else NULL,
         tags$summary("Show exact thumbnail API prompt"),
-        h4("Thumbnail prompt"),
-        tags$pre(class = "lab-status-copy", base_prompt),
+        h4("Exact input_text sent to the API"),
+        tags$pre(class = "lab-status-copy", exact_prompt),
         h4("Request fields"),
         tags$pre(class = "lab-status-copy", request_additions),
         h4("Selected title/subtitle packages"),
@@ -3697,6 +3725,7 @@ server <- function(input, output, session) {
         )
       }, character(1)), collapse = "\n\n")
     }
+    exact_prompt <- tryCatch(article_lab_render_prompt_template(base_prompt, list(input_context = package_list, context_notes = input$article_lab_outline_context_notes %||% "")), error = function(err) paste("Prompt template error:", conditionMessage(err)))
 
     div(
       class = "lab-card",
@@ -3705,8 +3734,8 @@ server <- function(input, output, session) {
       tags$details(
         open = if (nrow(selected_packages) > 0 || nrow(summary_contexts) > 0) "open" else NULL,
         tags$summary("Show exact outline API prompt"),
-        h4("Outline prompt"),
-        tags$pre(class = "lab-status-copy", base_prompt),
+        h4("Exact input_text sent to the API"),
+        tags$pre(class = "lab-status-copy", exact_prompt),
         h4("Request fields"),
         tags$pre(class = "lab-status-copy", request_additions),
         h4("Selected packages"),
@@ -3785,7 +3814,7 @@ server <- function(input, output, session) {
         paste(lines, collapse = "\n")
       }, character(1)), collapse = "\n\n")
     }
-    exact_api_prompt <- paste(
+    exact_api_prompt <- if (grepl("{{input_context}}", base_prompt, fixed = TRUE)) article_lab_render_prompt_template(base_prompt, list(input_context = exact_package_list)) else paste(
       base_prompt,
       "Return valid JSON only.",
       "Return JSON only in this shape: {\"results\":[{\"outline_id\":string,\"thumbnail_id\":string,\"subtitle_id\":string,\"candidate_id\":string,\"batch_id\":string,\"source_context_mode\":\"pdf_attachment\"|\"checked_summary_evidence\"|\"none\",\"full_text\":string,\"citation_map\":[{\"citation_text\":string,\"article_sentence\":string,\"source_title\":string,\"source_author_or_org\":string,\"source_year\":string|null,\"page\":string|null,\"sentence_ids\":[string],\"supporting_quote\":string|null,\"verification_note\":string,\"evidence_status\":\"checked\"|\"unchecked\"}]}]}",

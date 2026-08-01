@@ -160,6 +160,13 @@ function buildPrompt({ prompt, packages }) {
     return lines.join("\n");
   }).join("\n\n");
 
+  if (basePrompt.includes("{{input_context}}")) {
+    const rendered = basePrompt.replaceAll("{{input_context}}", packageList);
+    const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g) ?? [];
+    if (unresolved.length) throw new Error(`Unknown full-text prompt variable: ${[...new Set(unresolved)].join(", ")}`);
+    return rendered;
+  }
+
   return [
     basePrompt,
     responseInstructions,

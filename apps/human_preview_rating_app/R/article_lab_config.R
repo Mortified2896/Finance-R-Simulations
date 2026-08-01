@@ -178,8 +178,12 @@ article_lab_default_research_summary_prompt <- paste(
   "What not to overclaim:",
   "",
   "Possible article directions:",
+  "",
+  "Source metadata used for this request:",
+  "{{input_context}}",
   sep = "\n"
 )
+article_lab_legacy_default_research_summary_prompt <- sub("\n\nSource metadata used for this request:[\\s\\S]*$", "", article_lab_default_research_summary_prompt, perl = TRUE)
 article_lab_default_claim_extraction_model <- local({
   configured <- Sys.getenv("OPENAI_CLAIM_EXTRACTION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- "gpt-5.4-mini"
@@ -271,6 +275,9 @@ article_lab_default_subtitle_prompt <- paste(
   "Do not repeat the title verbatim.",
   "Do not include numbering, markdown, or explanations.",
   "Use the attached article summary when available to ground subtitles in the paper's actual content.",
+  "",
+  "Titles and attached summaries:",
+  "{{input_context}}",
   sep = "\n"
 )
 article_lab_default_thumbnail_prompt <- paste(
@@ -278,14 +285,24 @@ article_lab_default_thumbnail_prompt <- paste(
   "Keep the visual direction clear, editorial, credible, and readable at a glance.",
   "Return data that can be rendered into preview-card style thumbnail concepts.",
   "Keep the concept aligned with the title and subtitle without adding clickbait or clutter.",
+  "",
+  "Selected package:",
+  "{{input_context}}",
   sep = "\n"
 )
 article_lab_default_outline_prompt <- paste(
   "Generate a practical Medium article outline for the approved title, subtitle, and thumbnail concept.",
   "Use Markdown headings and bullets. Include a short hook, 4-6 main sections, key points for each section, and a concise closing angle.",
   "Keep it reader-facing, credible, specific, and useful. Do not draft the full article yet.",
+  "",
+  "Author context notes:",
+  "{{context_notes}}",
+  "",
+  "Selected packages and research context:",
+  "{{input_context}}",
   sep = "\n"
 )
+article_lab_legacy_default_outline_prompt <- sub("\n\nAuthor context notes:[\\s\\S]*$", "", article_lab_default_outline_prompt, perl = TRUE)
 article_lab_outline_prompt_key <- "outline_default"
 article_lab_default_full_text_prompt <- paste(
   "Draft a complete Medium article from the approved package and outline.",
@@ -315,8 +332,12 @@ article_lab_default_full_text_prompt <- paste(
   "  - verification_note: a short note flagging any uncertainty, e.g. 'Supports the paraphrase, but does not prove X.' or 'Needs manual verification: page not yet mapped.'.",
   "  - evidence_status: 'checked' when the paraphrase is grounded in a confirmed summary claim or verified evidence row, otherwise 'unchecked'.",
   "- Return an empty citation_map when the article contains no reader-facing citations.",
+  "",
+  "Selected approved package and source context:",
+  "{{input_context}}",
   sep = "\n"
 )
+article_lab_legacy_default_full_text_prompt <- sub("\n\nSelected approved package and source context:[\\s\\S]*$", "", article_lab_default_full_text_prompt, perl = TRUE)
 article_lab_full_text_prompt_key <- "full_text_default"
 article_lab_default_medium_tags_prompt <- paste(
   "Generate Medium tags for the approved article package.",
@@ -324,6 +345,9 @@ article_lab_default_medium_tags_prompt <- paste(
   "Return exactly 5 tags unless fewer are clearly appropriate.",
   "Each tag must be short, specific, Medium-friendly, and useful for personal finance or investing readers.",
   "Do not include hashtags, numbering, markdown, or explanations.",
+  "",
+  "Approved article package:",
+  "{{input_context}}",
   sep = "\n"
 )
 article_lab_default_medium_tags_model <- local({
@@ -333,6 +357,28 @@ article_lab_default_medium_tags_model <- local({
   configured
 })
 article_lab_medium_tags_model_choices <- article_lab_model_choices_with_default(article_lab_default_medium_tags_model)
+
+article_lab_render_prompt_template <- function(template, variables = list()) {
+  rendered <- article_lab_input_multiline(template)
+  if (is.null(rendered) || is.na(rendered)) return("")
+  values <- lapply(variables, function(value) {
+    cleaned <- article_lab_input_multiline(value)
+    if (is.null(cleaned) || is.na(cleaned)) "" else cleaned
+  })
+  for (key in names(values)) {
+    if (!nzchar(values[[key]])) rendered <- gsub(sprintf("(?m)^[^\\n]*\\{\\{%s\\}\\}[^\\n]*\\n?", key), "", rendered, perl = TRUE)
+    rendered <- gsub(sprintf("{{%s}}", key), values[[key]], rendered, fixed = TRUE)
+  }
+  unresolved <- unique(regmatches(rendered, gregexpr("\\{\\{[a-z_]+\\}\\}", rendered, perl = TRUE))[[1]])
+  unresolved <- unresolved[nzchar(unresolved) & unresolved != "-1"]
+  if (length(unresolved) > 0L) stop(sprintf("Unknown prompt variable%s: %s", ifelse(length(unresolved) == 1L, "", "s"), paste(unresolved, collapse = ", ")), call. = FALSE)
+  trimws(gsub("\\n{3,}", "\n\n", rendered, perl = TRUE))
+}
+
+article_lab_prompt_variable_help <- function(...) {
+  variables <- unlist(list(...), use.names = FALSE)
+  sprintf("Available variables: %s. The exact resolved prompt below is what is sent to the API.", paste(sprintf("{{%s}}", variables), collapse = ", "))
+}
 article_lab_default_score_prompt_version <- "v2_2"
 article_lab_default_score_scope <- "title_only"
 article_lab_all_batches_value <- "__all_article_lab_batches__"
@@ -375,7 +421,14 @@ load_article_lab_prompt <- function(con, prompt_key = article_lab_manual_prompt_
   ", params = list(key))
   if (nrow(rows) == 0) return(fallback)
   stored <- article_lab_input_multiline(rows$prompt_text[[1]]) %||% fallback
-  if (identical(key, article_lab_manual_prompt_key) && identical(stored, article_lab_legacy_default_prompt)) fallback else stored
+  legacy_default <- switch(
+    key,
+    manual_default = article_lab_legacy_default_prompt,
+    outline_default = article_lab_legacy_default_outline_prompt,
+    full_text_default = article_lab_legacy_default_full_text_prompt,
+    NULL
+  )
+  if (!is.null(legacy_default) && identical(stored, legacy_default)) fallback else stored
 }
 
 save_article_lab_prompt <- function(con, prompt_text, prompt_key = article_lab_manual_prompt_key, default_prompt = article_lab_default_prompt) {

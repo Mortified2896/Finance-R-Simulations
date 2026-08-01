@@ -29,6 +29,14 @@ Do not create opaque generation workflows that show only the final output.
 
 Never expose credentials, secrets, private identifiers, or unrestricted raw context merely for traceability.
 
+## Make AI Prompts Editable and Inspectable
+
+Every user-facing AI generation workflow must expose its substantive prompt as an editable template with documented `{{variable_name}}` placeholders for dynamic inputs.
+
+Show the fully resolved prompt exactly as it is sent to the API, alongside the model and relevant generation settings. The preview and runtime request must use the same rendering path so they cannot drift.
+
+Reject unknown or unresolved template variables with a clear, persistent user-facing error. Do not silently send placeholder text or hide appended instructions or context from the exact-prompt preview.
+
 ## Keep AI Generation Controls Complete
 
 Every user-selectable OpenAI model control must use the complete, capability-aware Model / Reasoning / Execution-mode control group. Persist all three settings per workflow and record them with generated outputs; keep unsupported controls visible and disabled rather than sending invalid API parameters. Follow the implementation conventions in `apps/human_preview_rating_app/README.md`.

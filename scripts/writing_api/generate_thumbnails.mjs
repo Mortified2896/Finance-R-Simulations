@@ -44,6 +44,23 @@ function buildPrompt({ prompt, pkg, variantIndex, variantsPerPackage }) {
     "Keep the concept aligned with the title and subtitle without adding clickbait or clutter."
   ].join("\n");
 
+  const inputContext = [
+    `subtitle_id: ${pkg.subtitle_id}`,
+    `candidate_id: ${pkg.candidate_id}`,
+    `batch_id: ${pkg.batch_id}`,
+    `Title: ${pkg.title}`,
+    `Subtitle: ${pkg.subtitle}`
+  ].join("\n");
+  if (basePrompt.includes("{{input_context}}")) {
+    const rendered = basePrompt
+      .replaceAll("{{input_context}}", inputContext)
+      .replaceAll("{{variant_index}}", String(variantIndex))
+      .replaceAll("{{variants_per_package}}", String(variantsPerPackage));
+    const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g) ?? [];
+    if (unresolved.length) throw new Error(`Unknown thumbnail prompt variable: ${[...new Set(unresolved)].join(", ")}`);
+    return rendered;
+  }
+
   return [
     basePrompt,
     "",

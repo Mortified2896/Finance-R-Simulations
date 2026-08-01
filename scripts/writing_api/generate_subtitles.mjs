@@ -79,6 +79,16 @@ function buildPrompt({ prompt, candidates, variantsPerTitle }) {
     "Do not include numbering, markdown, or explanations."
   ].join("\n");
 
+  if (basePrompt.includes("{{input_context}}")) {
+    const rendered = basePrompt
+      .replaceAll("{{input_context}}", titleList)
+      .replaceAll("{{variants_per_title}}", String(variantsPerTitle))
+      .replaceAll("{{max_subtitle_chars}}", String(MAX_SUBTITLE_CHARS));
+    const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g) ?? [];
+    if (unresolved.length) throw new Error(`Unknown subtitle prompt variable: ${[...new Set(unresolved)].join(", ")}`);
+    return rendered;
+  }
+
   return [
     basePrompt,
     `Return exactly ${variantsPerTitle} subtitle candidates per title.`,

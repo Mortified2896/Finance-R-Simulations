@@ -509,9 +509,7 @@ article_lab_medium_ready_markdown <- function(row, settings = row) {
 article_lab_medium_tags_effective_prompt <- function(row, prompt = NA_character_) {
   if (nrow(row) == 0) return("")
   base_prompt <- article_lab_input_multiline(prompt) %||% article_lab_default_medium_tags_prompt
-  paste(
-    base_prompt,
-    "Article package:",
+  input_context <- paste(
     sprintf("full_text_draft_id=%s | candidate_id=%s | batch_id=%s", article_lab_row_value(row, "full_text_draft_id", ""), article_lab_row_value(row, "candidate_id", ""), article_lab_row_value(row, "batch_id", "")),
     sprintf("Title: %s", article_lab_row_value(row, "title", "")),
     sprintf("Subtitle: %s", article_lab_row_value(row, "subtitle", "")),
@@ -519,6 +517,8 @@ article_lab_medium_tags_effective_prompt <- function(row, prompt = NA_character_
     article_lab_row_value(row, "current_draft_text", ""),
     sep = "\n\n"
   )
+  if (grepl("{{input_context}}", base_prompt, fixed = TRUE)) return(article_lab_render_prompt_template(base_prompt, list(input_context = input_context)))
+  paste(base_prompt, "Article package:", input_context, sep = "\n\n")
 }
 
 

@@ -89,6 +89,15 @@ function buildPrompt({ prompt, packages, contextNotes }) {
     return lines.join("\n");
   }).join("\n\n");
 
+  if (basePrompt.includes("{{input_context}}")) {
+    const rendered = basePrompt
+      .replaceAll("{{input_context}}", packageList)
+      .replaceAll("{{context_notes}}", contextNote ?? "");
+    const unresolved = rendered.match(/\{\{[a-z_]+\}\}/g) ?? [];
+    if (unresolved.length) throw new Error(`Unknown outline prompt variable: ${[...new Set(unresolved)].join(", ")}`);
+    return rendered;
+  }
+
   parts.push(...[
     basePrompt,
     "Return one outline per package, preserving all ids exactly.",
