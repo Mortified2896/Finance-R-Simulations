@@ -40,6 +40,17 @@ ensure_article_lab_schema <- function(con) {
     )
   ")
   dbExecute(con, "CREATE TABLE IF NOT EXISTS article_lab_prompt_workflow_state (workflow_key TEXT PRIMARY KEY, initialized_at TEXT NOT NULL)")
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_generation_attempts (
+      attempt_id TEXT PRIMARY KEY, workflow_key TEXT NOT NULL, template_id TEXT, template_name TEXT,
+      prompt_template TEXT NOT NULL, resolved_prompt TEXT NOT NULL, canonical_request_json TEXT NOT NULL,
+      model TEXT NOT NULL, reasoning_effort TEXT, reasoning_mode TEXT NOT NULL,
+      attachment_references_json TEXT, openai_request_id TEXT, openai_response_id TEXT,
+      attempt_number INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL,
+      error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )
+  ")
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_article_lab_generation_attempts_workflow ON article_lab_generation_attempts (workflow_key, created_at DESC)")
 
   shipped_prompts <- list(
     titles = c("Default" = article_lab_default_prompt),
@@ -53,43 +64,31 @@ ensure_article_lab_schema <- function(con) {
     research_evidence = c("Default" = article_lab_default_evidence_selection_prompt),
     medium_tags = c("Default" = article_lab_default_medium_tags_prompt)
   )
+  existing_templates <- dbGetQuery(con, "SELECT * FROM article_lab_prompt_templates ORDER BY workflow_key, template_name")
+  remove_ids <- character()
+  for (i in seq_len(nrow(existing_templates))) {
+    workflow <- existing_templates$workflow_key[[i]]
+    if (!workflow %in% names(shipped_prompts)) { remove_ids <- c(remove_ids, existing_templates$template_id[[i]]); next }
+    valid <- isTRUE(tryCatch({ article_lab_validate_prompt_variables(existing_templates$prompt_text[[i]], article_lab_prompt_registry_variables(workflow)); TRUE }, error = function(e) FALSE))
+    if (!valid) remove_ids <- c(remove_ids, existing_templates$template_id[[i]])
+  }
+  removed <- existing_templates[existing_templates$template_id %in% remove_ids, , drop = FALSE]
+  if (nrow(removed) > 0) {
+    backup_dir <- file.path(project_root, ".local_gitignored", "prompt_template_cleanup")
+    dir.create(backup_dir, recursive = TRUE, showWarnings = FALSE)
+    backup_path <- file.path(backup_dir, paste0("deleted_prompt_templates_", format(Sys.time(), "%Y%m%dT%H%M%S"), ".json"))
+    jsonlite::write_json(removed, backup_path, dataframe = "rows", pretty = TRUE, auto_unbox = TRUE, na = "null")
+    for (id in remove_ids) dbExecute(con, "DELETE FROM article_lab_prompt_templates WHERE template_id = ?", params = list(id))
+  }
   for (workflow in names(shipped_prompts)) {
-    initialized <- dbGetQuery(con, "SELECT 1 FROM article_lab_prompt_workflow_state WHERE workflow_key = ?", params = list(workflow))
-    if (nrow(initialized) == 0 && nrow(article_lab_prompt_template_rows(con, workflow)) == 0) {
-      article_lab_create_prompt_template(con, workflow, names(shipped_prompts[[workflow]])[[1]], shipped_prompts[[workflow]][[1]])
+    current <- shipped_prompts[[workflow]][[1]]
+    default <- dbGetQuery(con, "SELECT template_id, prompt_text FROM article_lab_prompt_templates WHERE workflow_key = ? AND template_name = 'Default' COLLATE NOCASE", params = list(workflow))
+    if (nrow(default) == 0) {
+      article_lab_create_prompt_template(con, workflow, "Default", current)
+    } else if (!identical(default$prompt_text[[1]], current)) {
+      dbExecute(con, "UPDATE article_lab_prompt_templates SET prompt_text = ?, updated_at = ? WHERE template_id = ?", params = list(current, now_utc(), default$template_id[[1]]))
     }
-    dbExecute(con, "INSERT OR IGNORE INTO article_lab_prompt_workflow_state (workflow_key, initialized_at) VALUES (?, ?)", params = list(workflow, now_utc()))
-  }
-  dbExecute(
-    con,
-    "UPDATE article_lab_prompt_templates SET prompt_text = ?, updated_at = ? WHERE workflow_key = 'thumbnails' AND template_name = 'Default' AND prompt_text = ?",
-    params = list(article_lab_default_thumbnail_prompt, now_utc(), article_lab_legacy_default_thumbnail_prompt)
-  )
-  dbExecute(
-    con,
-    "UPDATE article_lab_prompt_templates SET prompt_text = ?, updated_at = ? WHERE workflow_key = 'outlines' AND template_name = 'Default' AND prompt_text = ?",
-    params = list(article_lab_default_outline_prompt, now_utc(), article_lab_previous_default_outline_prompt)
-  )
-  dbExecute(
-    con,
-    "UPDATE article_lab_prompt_templates SET prompt_text = ?, updated_at = ? WHERE workflow_key = 'full_text' AND template_name = 'Default' AND prompt_text = ?",
-    params = list(article_lab_default_full_text_prompt, now_utc(), article_lab_previous_default_full_text_prompt)
-  )
-
-  migration_done <- dbGetQuery(con, "SELECT 1 FROM article_lab_prompt_templates WHERE workflow_key = '__legacy_migration__' LIMIT 1")
-  if (nrow(migration_done) == 0 && dbExistsTable(con, "article_lab_prompts")) {
-    legacy <- dbGetQuery(con, "SELECT prompt_key, prompt_text FROM article_lab_prompts")
-    for (i in seq_len(nrow(legacy))) {
-      key <- legacy$prompt_key[[i]]
-      targets <- if (identical(key, article_lab_outline_prompt_key)) "outlines" else if (identical(key, article_lab_full_text_prompt_key)) "full_text" else if (identical(key, article_lab_manual_prompt_key)) "titles" else c("titles", "outlines", "full_text")
-      for (workflow in targets) try(article_lab_create_prompt_template(con, workflow, key, legacy$prompt_text[[i]]), silent = TRUE)
-    }
-    timestamp <- now_utc()
-    dbExecute(con, "INSERT INTO article_lab_prompt_templates (template_id, workflow_key, template_name, prompt_text, created_at, updated_at) VALUES ('__legacy_migration__', '__legacy_migration__', 'complete', 'complete', ?, ?)", params = list(timestamp, timestamp))
-  }
-  if (dbExistsTable(con, "research_summary_prompts")) {
-    legacy_summaries <- dbGetQuery(con, "SELECT prompt_version, prompt_text FROM research_summary_prompts")
-    for (i in seq_len(nrow(legacy_summaries))) try(article_lab_create_prompt_template(con, "research_summary", legacy_summaries$prompt_version[[i]], legacy_summaries$prompt_text[[i]]), silent = TRUE)
+    dbExecute(con, "INSERT OR REPLACE INTO article_lab_prompt_workflow_state (workflow_key, initialized_at) VALUES (?, ?)", params = list(workflow, now_utc()))
   }
 
   dbExecute(con, "

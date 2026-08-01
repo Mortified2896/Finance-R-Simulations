@@ -142,20 +142,7 @@ def build_payload(model: str, title: str, prompt_version: str, scope: str, reaso
     schema_name = f"article_lab_title_scores_{prompt_version}_{scope}".replace("-", "_")
     request = {
         "model": model,
-        "input": [
-            {
-                "role": "system",
-                "content": (
-                    "You score the reader-facing pre-click appeal of Medium finance titles. "
-                    "Use only the supplied title. Do not infer or use claps, responses, rank, age, publication performance, or observation history. "
-                    "Do not estimate click potential. Return calibrated JSON scores from 1 to 5."
-                ),
-            },
-            {
-                "role": "user",
-                "content": render_prompt_template(prompt_template, title=title, prompt_version=prompt_version, scope=scope) if prompt_template else prompt_content(prompt_version, title, scope),
-            },
-        ],
+        "input": render_prompt_template(prompt_template, title=title, prompt_version=prompt_version, scope=scope) if prompt_template else prompt_content(prompt_version, title, scope),
         "text": {
             "format": {
                 "type": "json_schema",

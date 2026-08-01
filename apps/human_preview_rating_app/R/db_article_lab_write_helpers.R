@@ -293,6 +293,7 @@ article_lab_full_text_api_request <- function(con, packages, model = NA_characte
     has_pdf <- !is.na(pdf_path) && file.exists(pdf_path)
     source_mode <- if (!isTRUE(include_context)) "none" else if (has_pdf) "pdf_attachment" else if (length(checked_evidence) > 0) "checked_summary_evidence" else "none"
     list(
+      item_alias = paste0("item_", LETTERS[[i]]),
       outline_id = packages$outline_id[[i]], thumbnail_id = packages$thumbnail_id[[i]], subtitle_id = packages$subtitle_id[[i]],
       candidate_id = packages$candidate_id[[i]], batch_id = packages$batch_id[[i]], title = packages$title[[i]],
       subtitle = packages$subtitle[[i]], thumbnail_label = packages$thumbnail_label[[i]], outline_text = packages$outline_text[[i]],
@@ -302,7 +303,7 @@ article_lab_full_text_api_request <- function(con, packages, model = NA_characte
   package_list <- paste(vapply(seq_along(package_payloads), function(i) {
     entry <- package_payloads[[i]]
     lines <- c(
-      sprintf("%s. outline_id=%s | thumbnail_id=%s | subtitle_id=%s | candidate_id=%s | batch_id=%s", i, entry$outline_id, entry$thumbnail_id, entry$subtitle_id, entry$candidate_id, entry$batch_id),
+      entry$item_alias,
       sprintf("Title: %s", entry$title), sprintf("Subtitle: %s", entry$subtitle),
       sprintf("Thumbnail concept: %s", entry$thumbnail_label %||% "approved thumbnail"), "Approved outline:", entry$outline_text,
       sprintf("Source context mode: %s", entry$source_context_mode %||% "none")
@@ -310,11 +311,10 @@ article_lab_full_text_api_request <- function(con, packages, model = NA_characte
     if (length(entry$checked_evidence) > 0L) {
       lines <- c(lines, "Checked summary evidence (use only these to ground the article):")
       for (item in entry$checked_evidence) {
-        ids <- paste(unlist(item$sentence_ids %||% list()), collapse = ", "); if (!nzchar(ids)) ids <- "n/a"
         page <- if (is.null(item$page) || is.na(item$page)) "page n/a" else sprintf("p. %s", item$page)
         quote <- sprintf("Supporting quote: %s", item$supporting_quote %||% "n/a")
         claim <- sprintf("Claim: %s", item$claim_text %||% "n/a")
-        lines <- c(lines, sprintf("- %s | %s | %s | sentence_ids=[%s] | status=%s | confidence=%s", claim, quote, page, ids, item$selection_status %||% "n/a", item$confidence %||% "n/a"))
+        lines <- c(lines, sprintf("- %s | %s | %s | status=%s | confidence=%s", claim, quote, page, item$selection_status %||% "n/a", item$confidence %||% "n/a"))
       }
     }
     if (!is.null(entry$pdf_path)) lines <- c(lines, "Research PDF: attached as input_file")
@@ -332,6 +332,8 @@ article_lab_full_text_api_request <- function(con, packages, model = NA_characte
     prompt_key = article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
     packages = package_payloads
   )
+  attempt_id <- article_lab_record_current_attempt("full_text", prompt, resolved_prompt, request_payload,
+    attachments = lapply(Filter(function(x) !is.null(x$pdf_path), package_payloads), function(x) list(type = "input_file", local_reference = x$pdf_path)))
 
   request_file <- tempfile(pattern = "article_lab_full_text_request_", fileext = ".json")
   stdout_file <- tempfile(pattern = "article_lab_full_text_stdout_", fileext = ".json")
@@ -350,6 +352,7 @@ article_lab_full_text_api_request <- function(con, packages, model = NA_characte
   if (!nzchar(trimws(stdout_text))) stop("Full article generation helper returned no output.", call. = FALSE)
 
   parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id))
   result_rows <- lapply(parsed$results %||% list(), function(entry) {
     citation_map <- entry$citation_map %||% list()
     citation_map_json <- if (length(citation_map) == 0) NA_character_ else toJSON(citation_map, auto_unbox = TRUE, null = "null")
@@ -540,6 +543,7 @@ article_lab_medium_tags_api_request <- function(row, model = NA_character_, reas
       body = article_lab_row_value(row, "current_draft_text")
     )
   )
+  attempt_id <- article_lab_record_current_attempt("medium_tags", prompt, request_payload$resolved_prompt, request_payload)
 
   request_file <- tempfile(pattern = "article_lab_medium_tags_request_", fileext = ".json")
   stdout_file <- tempfile(pattern = "article_lab_medium_tags_stdout_", fileext = ".json")
@@ -559,6 +563,7 @@ article_lab_medium_tags_api_request <- function(row, model = NA_character_, reas
   if (!nzchar(trimws(stdout_text))) stop("Medium tag generation helper returned no output.", call. = FALSE)
 
   parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id))
   tags <- article_lab_parse_medium_tags(paste(unlist(parsed$tags %||% list(), use.names = FALSE), collapse = ", "))
   if (length(tags) == 0) stop("API helper returned no usable Medium tags.", call. = FALSE)
   list(tags = tags, model = article_lab_input_string(parsed$model) %||% request_payload$model, mode = article_lab_input_string(parsed$mode) %||% "api", raw_json = stdout_text, response_id = article_lab_input_string(parsed$response_id))

@@ -1,5 +1,6 @@
 import "dotenv/config";
 import fs from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { createOpenAIClient, flushLangfuse, withLangfuseRun } from "./langfuse.mjs";
 
 const MAX_SUBTITLE_CHARS = 90;
@@ -45,15 +46,20 @@ function normalizeSubtitles(values, requestedCount) {
   return unique;
 }
 
-function parseResults(rawText, variantsPerTitle) {
+export function mapSubtitleResults(rawText, variantsPerTitle, candidates) {
   const stripped = stripCodeFences(rawText);
   const parsed = JSON.parse(stripped);
   const results = Array.isArray(parsed.results) ? parsed.results : [];
-  return results.map((entry) => ({
-    candidate_id: cleanText(entry.candidate_id),
-    batch_id: cleanText(entry.batch_id),
+  const byAlias = new Map(candidates.map((entry) => [entry.item_alias, entry]));
+  return results.map((entry) => {
+    const source = byAlias.get(cleanText(entry.item_alias));
+    if (!source) return null;
+    return {
+    item_alias: source.item_alias,
+    candidate_id: source.candidate_id,
+    batch_id: source.batch_id,
     subtitles: normalizeSubtitles(Array.isArray(entry.subtitles) ? entry.subtitles : [], variantsPerTitle)
-  }));
+  };}).filter(Boolean);
 }
 
 function buildPrompt({ prompt, candidates, variantsPerTitle }) {
@@ -85,12 +91,13 @@ async function main() {
   const candidates = Array.isArray(payload.candidates)
     ? payload.candidates
         .map((entry) => ({
+          item_alias: cleanText(entry.item_alias),
           candidate_id: cleanText(entry.candidate_id),
           batch_id: cleanText(entry.batch_id),
           title: cleanText(entry.title),
           article_summary: cleanText(entry.article_summary)
         }))
-        .filter((entry) => entry.candidate_id && entry.batch_id && entry.title)
+        .filter((entry) => entry.item_alias && entry.candidate_id && entry.batch_id && entry.title)
     : [];
 
   if (candidates.length === 0) {
@@ -145,7 +152,7 @@ async function main() {
         const rawText = extractText(response);
         let results;
         try {
-          results = parseResults(rawText, variantsPerTitle);
+          results = mapSubtitleResults(rawText, variantsPerTitle, candidates);
         } catch (error) {
           console.error(`Could not parse subtitle response: ${error.message}`);
           process.exitCode = 1;
@@ -169,7 +176,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => {
   console.error(error.message);
   process.exitCode = 1;
 });

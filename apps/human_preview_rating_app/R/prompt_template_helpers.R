@@ -5,6 +5,129 @@ article_lab_prompt_workflows <- c(
   research_evidence = "Research evidence selection", medium_tags = "Medium tag generation"
 )
 
+# Canonical prompt-variable registry. This is the only source of truth for
+# editor help, validation and rendering. Source fields are application metadata;
+# only the formatted value of a variable referenced by a template is model-visible.
+article_lab_prompt_variable_registry <- list(
+  titles = list(
+    idea_context = list(meaning = "Populated reader-facing article-idea fields.", sources = c("idea fields"), format = "Labeled text lines; internal project IDs omitted.", required = TRUE, conditional = FALSE),
+    article_summary = list(meaning = "Selected research/article summary.", sources = c("summary_text"), format = "Plain text.", required = FALSE, conditional = TRUE),
+    batch_size = list(meaning = "Requested title count.", sources = c("batch_size"), format = "Integer text.", required = TRUE, conditional = FALSE),
+    seed_topic = list(meaning = "Optional user-entered seed topic.", sources = c("seed_topic"), format = "Plain text.", required = FALSE, conditional = TRUE),
+    inspiration_source = list(meaning = "Optional selected inspiration source label.", sources = c("inspiration_source"), format = "Plain text.", required = FALSE, conditional = TRUE),
+    example_titles = list(meaning = "Optional reference titles.", sources = c("historical title text"), format = "One numbered title per line; record IDs omitted.", required = FALSE, conditional = TRUE),
+    max_title_chars = list(meaning = "Hard title character limit.", sources = c("title limit setting"), format = "Integer text.", required = TRUE, conditional = FALSE),
+    preferred_title_length = list(meaning = "Preferred title-length range.", sources = c("preferred length settings"), format = "min-max text.", required = TRUE, conditional = FALSE)
+  ),
+  scoring = list(
+    prompt_version = list(meaning = "Selected scoring rubric version.", sources = c("prompt_version"), format = "Plain text.", required = TRUE, conditional = FALSE),
+    scope = list(meaning = "Selected scoring scope.", sources = c("scope"), format = "Plain text.", required = TRUE, conditional = FALSE),
+    title = list(meaning = "Reader-facing title to score.", sources = c("title"), format = "Plain text; candidate and batch IDs omitted.", required = TRUE, conditional = FALSE)
+  ),
+  subtitles = list(
+    input_context = list(meaning = "Selected titles and any attached summaries.", sources = c("title", "article_summary"), format = "Request-local item aliases with title and optional summary; database IDs omitted.", required = TRUE, conditional = TRUE),
+    variants_per_title = list(meaning = "Requested subtitles per title.", sources = c("variants_per_title"), format = "Integer text.", required = TRUE, conditional = FALSE),
+    max_subtitle_chars = list(meaning = "Hard subtitle character limit.", sources = c("subtitle limit setting"), format = "Integer text.", required = TRUE, conditional = FALSE)
+  ),
+  thumbnails = list(
+    input_context = list(meaning = "One selected title/subtitle package.", sources = c("title", "subtitle"), format = "Title and subtitle only; database IDs omitted.", required = FALSE, conditional = TRUE)
+  ),
+  outlines = list(
+    input_context = list(meaning = "Selected creative packages and optional text research fallback.", sources = c("title", "subtitle", "thumbnail_label", "article_summary"), format = "Request-local item aliases; raw IDs and file paths omitted.", required = TRUE, conditional = FALSE),
+    context_notes = list(meaning = "Optional author-entered outline notes.", sources = c("outline_context_notes"), format = "Plain text, present only when referenced.", required = FALSE, conditional = TRUE)
+  ),
+  full_text = list(
+    input_context = list(meaning = "Selected approved package, outline, and allowed evidence context.", sources = c("title", "subtitle", "thumbnail_label", "outline_text", "checked_evidence"), format = "Request-local item aliases; raw IDs and paths omitted.", required = TRUE, conditional = FALSE)
+  ),
+  research_summary = list(
+    input_context = list(meaning = "Reader-facing source context.", sources = c("source_title", "source_url", "pdf_url", "main_idea", "abstract"), format = "Labeled text; research-source ID and local path omitted.", required = FALSE, conditional = TRUE)
+  ),
+  research_claims = list(
+    max_claims = list(meaning = "Maximum claims to extract.", sources = c("max_claims"), format = "Integer text.", required = TRUE, conditional = FALSE),
+    source_title = list(meaning = "Research source title.", sources = c("source_title"), format = "Plain text.", required = FALSE, conditional = TRUE),
+    summary_sentence_payload_json = list(meaning = "Numbered summary sentences.", sources = c("summary_text"), format = "JSON array using request-local sentence indexes; database IDs omitted.", required = TRUE, conditional = FALSE)
+  ),
+  research_evidence = list(
+    claim_candidate_payload_json = list(meaning = "Claims and candidate evidence sentences.", sources = c("claim_text", "sentence_text", "page_number"), format = "JSON with request-local claim/sentence aliases; database IDs omitted.", required = TRUE, conditional = FALSE)
+  ),
+  medium_tags = list(
+    input_context = list(meaning = "Approved article text package.", sources = c("title", "subtitle", "current_draft_text"), format = "Labeled title, subtitle and body; database IDs omitted.", required = TRUE, conditional = FALSE)
+  )
+)
+
+article_lab_prompt_registry_variables <- function(workflow_key) {
+  workflow <- article_lab_input_string(workflow_key)
+  registry <- article_lab_prompt_variable_registry[[workflow]]
+  if (is.null(registry)) stop("Unknown prompt workflow.", call. = FALSE)
+  names(registry)
+}
+
+article_lab_prompt_registry_help <- function(workflow_key) {
+  registry <- article_lab_prompt_variable_registry[[workflow_key]]
+  if (is.null(registry)) stop("Unknown prompt workflow.", call. = FALSE)
+  vapply(names(registry), function(name) {
+    item <- registry[[name]]
+    sprintf("{{%s}} — %s Format: %s %s%s", name, item$meaning, item$format,
+      if (isTRUE(item$required)) "Required value." else "Optional value.",
+      if (isTRUE(item$conditional)) " May be used as a conditional section." else "")
+  }, character(1))
+}
+
+article_lab_sanitize_canonical_request <- function(request) {
+  scrub <- function(value, key = "") {
+    if (grepl("api[_-]?key|authorization|secret|credential", key, ignore.case = TRUE)) return("[REDACTED]")
+    if (is.list(value)) return(setNames(lapply(names(value), function(name) scrub(value[[name]], name)), names(value)))
+    value
+  }
+  scrub(request)
+}
+
+article_lab_record_generation_attempt <- function(con, workflow_key, template_id, template_name, prompt_template,
+                                                  resolved_prompt, canonical_request, model, reasoning_effort = NA_character_,
+                                                  reasoning_mode = "standard", attachments = list(), request_id = NA_character_,
+                                                  response_id = NA_character_, attempt_number = 1L, status = "submitted",
+                                                  error_message = NA_character_) {
+  timestamp <- now_utc()
+  attempt_id <- paste0("ga_", sprintf("%.0f", as.numeric(Sys.time()) * 1000000), "_", sprintf("%06d", sample.int(999999L, 1L)))
+  dbExecute(con, "
+    INSERT INTO article_lab_generation_attempts
+      (attempt_id, workflow_key, template_id, template_name, prompt_template, resolved_prompt,
+       canonical_request_json, model, reasoning_effort, reasoning_mode, attachment_references_json,
+       openai_request_id, openai_response_id, attempt_number, status, error_message, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ", params = list(attempt_id, workflow_key, template_id, template_name, prompt_template, resolved_prompt,
+    jsonlite::toJSON(article_lab_sanitize_canonical_request(canonical_request), auto_unbox = TRUE, null = "null"),
+    model, reasoning_effort, reasoning_mode,
+    jsonlite::toJSON(attachments, auto_unbox = TRUE, null = "null"), request_id, response_id,
+    as.integer(attempt_number), status, error_message, timestamp, timestamp))
+  attempt_id
+}
+
+article_lab_record_current_attempt <- function(workflow_key, prompt_template, resolved_prompt, request_payload,
+                                               attachments = list(), status = "failed") {
+  con <- getOption("article_lab.generation_connection")
+  if (is.null(con) || !DBI::dbIsValid(con) || !DBI::dbExistsTable(con, "article_lab_generation_attempts")) return(NA_character_)
+  template_id <- article_lab_prompt_template_active(con, workflow_key)
+  rows <- if (is.null(template_id) || is.na(template_id)) data.frame() else article_lab_prompt_template_rows(con, workflow_key)
+  row <- if (nrow(rows)) rows[rows$template_id == template_id, , drop = FALSE] else data.frame()
+  canonical <- list(model = request_payload$model, input = resolved_prompt)
+  if (!is.null(request_payload$reasoning_effort) && !is.na(request_payload$reasoning_effort)) canonical$reasoning <- list(effort = request_payload$reasoning_effort)
+  if (identical(request_payload$reasoning_mode, "pro")) canonical$reasoning <- c(canonical$reasoning %||% list(), list(mode = "pro"))
+  if (length(attachments)) canonical$input <- list(list(role = "user", content = c(list(list(type = "input_text", text = resolved_prompt)), attachments)))
+  article_lab_record_generation_attempt(con, workflow_key, template_id,
+    if (nrow(row)) row$template_name[[1]] else NA_character_, prompt_template, resolved_prompt,
+    canonical, request_payload$model, request_payload$reasoning_effort, request_payload$reasoning_mode,
+    attachments, status = status)
+}
+
+article_lab_finish_generation_attempt <- function(attempt_id, status, response_id = NA_character_, request_id = NA_character_, error_message = NA_character_) {
+  con <- getOption("article_lab.generation_connection")
+  if (is.null(attempt_id) || is.na(attempt_id) || is.null(con) || !DBI::dbIsValid(con)) return(invisible(FALSE))
+  DBI::dbExecute(con, "UPDATE article_lab_generation_attempts SET status = ?, openai_response_id = ?, openai_request_id = ?, error_message = ?, updated_at = ? WHERE attempt_id = ?",
+    params = list(status, response_id, request_id, error_message, now_utc(), attempt_id))
+  invisible(TRUE)
+}
+
 article_lab_prompt_text_value <- function(value) {
   if (is.null(value) || length(value) == 0L || is.na(value[[1]])) return(NULL)
   text <- as.character(value[[1]])
@@ -88,8 +211,9 @@ article_lab_validate_prompt_variables <- function(prompt_text, allowed_variables
   invisible(TRUE)
 }
 
-article_lab_prompt_manager_ui <- function(id, label = "Editable prompt template", height = "170px", variables = character()) {
+article_lab_prompt_manager_ui <- function(id, label = "Editable prompt template", height = "170px", workflow_key = NULL, variables = character()) {
   ns <- NS(id)
+  if (!is.null(workflow_key)) variables <- article_lab_prompt_registry_variables(workflow_key)
   tagList(
     div(class = "lab-grid",
       div(class = "lab-field", uiOutput(ns("selector"))),
@@ -98,7 +222,8 @@ article_lab_prompt_manager_ui <- function(id, label = "Editable prompt template"
     div(class = "lab-field", textAreaInput(ns("prompt"), label, value = "", width = "100%", height = height)),
     if (length(variables) > 0) tagList(
       p(class = "lab-status-copy", article_lab_prompt_variable_help(variables)),
-      p(class = "lab-status-copy", sprintf("Optional section: {{#%s}}…{{/%s}}. It is omitted when %s is empty; conditional blocks cannot be nested.", variables[[1]], variables[[1]], sprintf("{{%s}}", variables[[1]])))
+      if (!is.null(workflow_key)) tags$ul(class = "lab-status-copy", lapply(article_lab_prompt_registry_help(workflow_key), tags$li)) else NULL,
+      p(class = "lab-status-copy", "Conditional sections use {{#variable}}…{{/variable}} and are omitted when the value is empty; conditional blocks cannot be nested.")
     ) else NULL,
     div(class = "lab-actions",
       actionButton(ns("save"), "Save changes", class = "lab-primary"),
@@ -110,7 +235,10 @@ article_lab_prompt_manager_ui <- function(id, label = "Editable prompt template"
   )
 }
 
-article_lab_prompt_manager_server <- function(id, con, workflow_key, allowed_variables = character()) {
+article_lab_prompt_manager_server <- function(id, con, workflow_key, allowed_variables = NULL) {
+  registry_variables <- article_lab_prompt_registry_variables(workflow_key)
+  if (!is.null(allowed_variables) && !identical(as.character(allowed_variables), registry_variables)) stop("Prompt variables must come from the canonical workflow registry.", call. = FALSE)
+  allowed_variables <- registry_variables
   moduleServer(id, function(input, output, session) {
     revision <- reactiveVal(0L)
     selected_id <- reactiveVal(NA_character_)

@@ -138,21 +138,6 @@ function buildPromptWithContext({ prompt, manualPrompt, batchSize, seedTopic, in
   return prompt;
 }
 
-function buildRetryPrompt({ originalPrompt, batchSize, invalidTitles }) {
-  return [
-    "Your previous title candidates were too long.",
-    `Rewrite them so every title is at most ${MAX_TITLE_CHARS} characters, including spaces.`,
-    `Prefer ${PREFERRED_TITLE_LENGTH} characters when possible. Do not make titles long unless the extra words clearly improve clarity or curiosity.`,
-    `Return valid JSON only in the shape {\"titles\": [\"...\", \"...\"]}.`,
-    `Return exactly ${batchSize} titles.`,
-    "Do not explain anything.",
-    "Original prompt:",
-    originalPrompt,
-    "Too-long titles to shorten:",
-    invalidTitles.map((title, index) => `${index + 1}. ${title}`).join("\n")
-  ].join("\n\n");
-}
-
 async function main() {
   const requestPath = process.argv[2];
   if (!requestPath) {
@@ -264,11 +249,7 @@ async function main() {
             });
             const retryRequest = {
               model,
-              input: buildRetryPrompt({
-                originalPrompt: builtPrompt,
-                batchSize,
-                invalidTitles: invalid
-              })
+              input: builtPrompt
             };
             if (reasoningEffort) retryRequest.reasoning = { effort: reasoningEffort };
             if (reasoningMode === "pro") retryRequest.reasoning = { ...(retryRequest.reasoning ?? {}), mode: "pro" };

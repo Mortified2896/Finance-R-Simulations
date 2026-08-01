@@ -276,10 +276,9 @@ article_lab_default_claim_extraction_prompt <- paste(
   "- Prefer concrete measured findings, data, causal/mechanism claims, and source limitations.",
   "- Avoid headings, article ideas, generic commentary, and sentences that do not assert a source-checkable fact.",
   "",
-  "Source metadata:",
-  "Research source ID: {{research_source_id}}",
+  "{{#source_title}}",
   "Source title: {{source_title}}",
-  "Summary ID: {{summary_id}}",
+  "{{/source_title}}",
   "",
   "Numbered summary sentences:",
   "{{summary_sentence_payload_json}}",
@@ -310,7 +309,7 @@ article_lab_default_subtitle_prompt <- paste(
   "Generate Medium-style subtitle candidates for approved personal finance and investing article titles.",
   "Return valid JSON only.",
   "Use this exact shape:",
-  "{\"results\":[{\"candidate_id\":\"...\",\"batch_id\":\"...\",\"subtitles\":[\"...\",\"...\"]}]}",
+  "{\"results\":[{\"item_alias\":\"item_A\",\"subtitles\":[\"...\",\"...\"]}]}",
   "Return exactly the requested number of subtitle candidates per title.",
   "Every subtitle must be at most 90 characters, including spaces.",
   "Keep subtitles clear, credible, useful, and not sensational.",
@@ -375,7 +374,7 @@ article_lab_default_full_text_prompt <- paste(
   "- Use readable Medium-friendly, APA-inspired in-text citations such as 'Vanguard (2019) argues that ...' or '... (Vanguard, 2019)'.",
   "- Add a page number like (Vanguard, 2019, p. 7) only when it helps the reader verify a precise paraphrase. Do not make the whole article feel like an academic paper.",
   "- Do not invent authors, organizations, years, page numbers, statistics, findings, or references. If evidence is weak or missing, soften the claim, mark it as [needs verification], or omit it.",
-  "- Do not include internal evidence tags such as EVID markers, [Q1], or sentence or page IDs in the public article text. Page and sentence IDs belong only in the citation_map below.",
+  "- Do not include internal evidence tags such as EVID markers, [Q1], or sentence or page IDs in the public article text.",
   "",
   "Internal citation_map rules:",
   "- Every reader-facing in-text citation in the article must appear in the citation_map array.",
@@ -386,11 +385,12 @@ article_lab_default_full_text_prompt <- paste(
   "  - source_author_or_org: the author or organization as it appears in the citation.",
   "  - source_year: the publication year, or null if not available.",
   "  - page: the page number if known, or null.",
-  "  - sentence_ids: the internal PDF sentence IDs that support the paraphrase, or an empty array if not available.",
   "  - supporting_quote: a short quote from the source that supports the paraphrase, or null if not available.",
   "  - verification_note: a short note flagging any uncertainty, e.g. 'Supports the paraphrase, but does not prove X.' or 'Needs manual verification: page not yet mapped.'.",
   "  - evidence_status: 'checked' when the paraphrase is grounded in a confirmed summary claim or verified evidence row, otherwise 'unchecked'.",
   "- Return an empty citation_map when the article contains no reader-facing citations.",
+  "",
+  "Return JSON as {\"results\":[{\"item_alias\":\"item_A\",\"full_text\":\"complete Markdown article\",\"citation_map\":[]}]}. Copy item_alias exactly.",
   "",
   "Selected approved package and source context:",
   "{{input_context}}",
@@ -431,7 +431,7 @@ article_lab_parse_prompt_template <- function(template, allowed_variables) {
       if (!grepl("^(#|/)?[a-z_]+$", inner, perl = TRUE)) stop(sprintf("Malformed prompt template tag: %s", raw), call. = FALSE)
       type <- if (startsWith(inner, "#")) "open" else if (startsWith(inner, "/")) "close" else "variable"
       name <- if (type == "variable") inner else substring(inner, 2L)
-      if (!name %in% allowed) stop(sprintf("Unknown prompt variable: {{%s}}", name), call. = FALSE)
+      if (!name %in% allowed) stop(sprintf("Unknown prompt variable: {{%s}}. Valid variables: %s.", name, paste(sprintf("{{%s}}", allowed), collapse = ", ")), call. = FALSE)
       list(type = type, name = name, raw = raw, start = matches[[i]], end = matches[[i]] + lengths[[i]] - 1L)
     })
   }

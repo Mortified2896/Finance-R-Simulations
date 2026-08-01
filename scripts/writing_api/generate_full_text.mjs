@@ -1,6 +1,7 @@
 import "dotenv/config";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { createOpenAIClient, flushLangfuse, withLangfuseRun } from "./langfuse.mjs";
 
 function cleanText(value) {
@@ -134,7 +135,7 @@ async function buildResponsesInput({ client, prompt, packages }) {
   return [{ role: "user", content }];
 }
 
-function parseResults(rawText, packages = []) {
+export function mapFullTextResults(rawText, packages = []) {
   const warnings = [];
   let parsed;
   try {
@@ -185,7 +186,10 @@ function parseResults(rawText, packages = []) {
       warnings
     }];
   }
+  const byAlias = new Map(packages.map((item) => [item.item_alias, item]));
   return results.map((entry) => {
+    const source = byAlias.get(cleanText(entry.item_alias));
+    if (!source) return null;
     const entryWarnings = [];
     const fullText = stripPackageHeader(entry.full_text);
     const internalMarkers = findInternalMarkers(fullText);
@@ -211,17 +215,18 @@ function parseResults(rawText, packages = []) {
       }
     }
     return {
-      outline_id: cleanText(entry.outline_id),
-      thumbnail_id: cleanText(entry.thumbnail_id),
-      subtitle_id: cleanText(entry.subtitle_id),
-      candidate_id: cleanText(entry.candidate_id),
-      batch_id: cleanText(entry.batch_id),
-      source_context_mode: cleanText(entry.source_context_mode) ?? "none",
+      item_alias: source.item_alias,
+      outline_id: source.outline_id,
+      thumbnail_id: source.thumbnail_id,
+      subtitle_id: source.subtitle_id,
+      candidate_id: source.candidate_id,
+      batch_id: source.batch_id,
+      source_context_mode: source.source_context_mode ?? "none",
       full_text: fullText,
       citation_map: citationMap,
       warnings: entryWarnings
     };
-  }).filter((entry) => entry.outline_id && entry.thumbnail_id && entry.subtitle_id && entry.candidate_id && entry.batch_id && entry.full_text && !isPlaceholderDraft(entry.full_text));
+  }).filter((entry) => entry && entry.full_text && !isPlaceholderDraft(entry.full_text));
 }
 
 async function main() {
@@ -246,7 +251,8 @@ async function main() {
   const prompt = typeof payload.resolved_prompt === "string" ? payload.resolved_prompt : null;
   const promptKey = cleanText(payload.prompt_key) ?? "full_text_default";
   const packages = Array.isArray(payload.packages)
-    ? payload.packages.map((entry) => ({
+      ? payload.packages.map((entry) => ({
+        item_alias: cleanText(entry.item_alias),
         outline_id: cleanText(entry.outline_id),
         thumbnail_id: cleanText(entry.thumbnail_id),
         subtitle_id: cleanText(entry.subtitle_id),
@@ -260,7 +266,7 @@ async function main() {
         article_summary: cleanText(entry.article_summary),
         checked_evidence: Array.isArray(entry.checked_evidence) ? entry.checked_evidence : [],
         pdf_path: cleanText(entry.pdf_path)
-      })).filter((entry) => entry.outline_id && entry.thumbnail_id && entry.subtitle_id && entry.candidate_id && entry.batch_id && entry.title && entry.subtitle && entry.outline_text)
+      })).filter((entry) => entry.item_alias && entry.outline_id && entry.thumbnail_id && entry.subtitle_id && entry.candidate_id && entry.batch_id && entry.title && entry.subtitle && entry.outline_text)
     : [];
 
   if (packages.length === 0) {
@@ -301,7 +307,7 @@ async function main() {
         const rawText = extractText(response);
         let results;
         try {
-          results = parseResults(rawText, packages);
+          results = mapFullTextResults(rawText, packages);
         } catch (error) {
           console.error(`Could not parse full article response: ${error.message}. Raw response preview: ${previewText(rawText)}`);
           process.exitCode = 1;
@@ -337,7 +343,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => {
   console.error(error.message);
   process.exitCode = 1;
 });

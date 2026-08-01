@@ -379,7 +379,6 @@ research_summary_api_request <- function(source, asset, model = NA_character_, r
   settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_research_summary_model, reasoning_effort, reasoning_mode)
   source_context <- paste(
     "Source metadata:",
-    sprintf("Research source ID: %s", source$research_source_id[[1]]),
     sprintf("Source title: %s", article_lab_input_string(source$source_title[[1]]) %||% ""),
     sprintf("Source URL: %s", article_lab_input_string(source$source_url[[1]]) %||% ""),
     sprintf("PDF URL: %s", article_lab_input_string(source$pdf_url[[1]]) %||% ""),
@@ -389,7 +388,7 @@ research_summary_api_request <- function(source, asset, model = NA_character_, r
   )
   resolved_prompt <- article_lab_render_prompt_template(
     article_lab_prompt_text_value(prompt) %||% article_lab_default_research_summary_prompt,
-    list(input_context = source_context), "input_context"
+    list(input_context = source_context), article_lab_prompt_registry_variables("research_summary")
   )
   request_payload <- list(
     model = settings$model,
@@ -405,6 +404,8 @@ research_summary_api_request <- function(source, asset, model = NA_character_, r
     abstract = article_lab_input_multiline(source$abstract[[1]]),
     local_pdf_path = local_pdf_path
   )
+  attempt_id <- article_lab_record_current_attempt("research_summary", prompt, resolved_prompt, request_payload,
+    attachments = list(list(type = "input_file", local_reference = local_pdf_path)))
 
   request_file <- tempfile(pattern = "research_summary_request_", fileext = ".json")
   stdout_file <- tempfile(pattern = "research_summary_stdout_", fileext = ".json")
@@ -424,6 +425,7 @@ research_summary_api_request <- function(source, asset, model = NA_character_, r
   if (!nzchar(trimws(stdout_text))) stop("Research summary helper returned no output.", call. = FALSE)
 
   parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id))
   summary_text <- article_lab_input_multiline(parsed$summary_text)
   if (is.null(summary_text) || is.na(summary_text)) stop("Research summary helper returned no summary_text.", call. = FALSE)
   list(
@@ -596,13 +598,10 @@ research_paperqa_chunks_request <- function(source, asset, query = NULL, chunk_c
 }
 
 research_evidence_render_template <- function(template, variables) {
-  out <- article_lab_input_multiline(template) %||% ""
-  for (name in names(variables)) {
-    value <- variables[[name]]
-    if (is.null(value) || length(value) == 0 || is.na(value[[1]])) value <- ""
-    out <- gsub(paste0("\\{\\{", name, "\\}\\}"), as.character(value[[1]]), out, fixed = FALSE)
-  }
-  out
+  workflow <- if ("claim_candidate_payload_json" %in% names(variables)) "research_evidence" else "research_claims"
+  allowed <- article_lab_prompt_registry_variables(workflow)
+  values <- setNames(lapply(allowed, function(name) variables[[name]] %||% ""), allowed)
+  article_lab_render_prompt_template(article_lab_input_multiline(template) %||% "", values, allowed)
 }
 
 research_evidence_api_request <- function(step, resolved_prompt, model, reasoning_effort, summary_id, research_source_id, reasoning_mode = "standard") {
@@ -619,6 +618,8 @@ research_evidence_api_request <- function(step, resolved_prompt, model, reasonin
     summary_id = summary_id,
     research_source_id = research_source_id
   )
+  workflow <- if (identical(step, "claim-sentence-marking")) "research_claims" else "research_evidence"
+  attempt_id <- article_lab_record_current_attempt(workflow, resolved_prompt, resolved_prompt, request_payload)
   request_file <- tempfile(pattern = paste0(step, "_request_"), fileext = ".json")
   stdout_file <- tempfile(pattern = paste0(step, "_stdout_"), fileext = ".json")
   stderr_file <- tempfile(pattern = paste0(step, "_stderr_"), fileext = ".log")
@@ -635,6 +636,7 @@ research_evidence_api_request <- function(step, resolved_prompt, model, reasonin
   }
   if (!nzchar(trimws(stdout_text))) stop("Evidence helper returned no output.", call. = FALSE)
   parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
+  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id))
   parsed$raw_json <- stdout_text
   parsed
 }

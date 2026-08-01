@@ -49,7 +49,7 @@ expect(grepl("gpt-5-mini", as.character(invalid_request_error), fixed = TRUE), "
 payload <- article_lab_thumbnail_request_payload(
   data.frame(subtitle_id = "sub_1", candidate_id = "candidate_1", batch_id = "batch_1", title = "Title", subtitle = "Subtitle"),
   variants_per_package = 2L, model = "gpt-5.4-mini", reasoning_effort = "none", reasoning_mode = "standard",
-  prompt = "{{input_context}} variant {{variant_index}}/{{variants_per_package}}",
+  prompt = "{{input_context}}",
   size = "1536x1024", quality = "low", output_format = "webp", output_compression = 81L, background = "opaque"
 )
 expect(identical(payload$size, "1536x1024") && identical(payload$quality, "low"), "Image size or quality did not reach the canonical helper payload.")

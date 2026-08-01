@@ -93,7 +93,7 @@ persisted_prompt <- dbGetQuery(con, "SELECT resolved_prompt FROM prompt_byte_cap
 expect(identical(charToRaw(persisted_prompt), charToRaw(preview_prompt)), "Persisted prompt was not byte-identical to preview/API input.")
 
 legacy_prompt <- article_lab_effective_title_prompt_text(article_lab_legacy_default_prompt, 3L, seed_topic = "Legacy seed", context_notes = subset_context)
-expect(startsWith(legacy_prompt, paste0("Article context:\n", subset_context)), "A saved legacy prompt no longer receives article context.")
+expect(identical(legacy_prompt, article_lab_legacy_default_prompt), "A template without variables received hidden article context.")
 
 batch_a <- save_article_lab_batch(con, article_lab_default_prompt, "Project A", "manual", 1L, "fixture-model", "Project A approved title", generation_mode = "fixture", article_context_notes = all_context, article_project_id = project_a)
 batch_b <- save_article_lab_batch(con, article_lab_default_prompt, "Project B", "manual", 1L, "fixture-model", "Project B private title", generation_mode = "fixture", article_context_notes = "Project B context", article_project_id = project_b)
