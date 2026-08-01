@@ -63,3 +63,28 @@ article_lab_button <- function(input_id, label, class = "lab-secondary", onclick
   }
   button
 }
+
+article_lab_disabled_select <- function(input_id, label, value = "Not supported") {
+  htmltools::tagQuery(selectInput(input_id, label, choices = setNames("__unsupported__", value), selected = "__unsupported__", width = "100%"))$
+    find("select")$addAttrs(disabled = "disabled")$allTags()
+}
+
+article_lab_generation_control_ui <- function(con, workflow_key, model_choices, default_model, model_label = "Model") {
+  spec <- article_lab_generation_workflows[[workflow_key]]
+  if (is.null(spec)) stop("Unknown generation workflow: ", workflow_key, call. = FALSE)
+  preference <- article_lab_load_generation_preference(con, workflow_key, default_model, spec$default_reasoning, spec$default_mode)
+  model <- preference$model
+  choices <- article_lab_model_choices_with_default(model, model_choices)
+  efforts <- article_lab_reasoning_capabilities(model)
+  selected_effort <- preference$reasoning_effort
+  if (length(efforts) > 0 && !selected_effort %in% efforts) selected_effort <- spec$default_reasoning
+  if (length(efforts) > 0 && !selected_effort %in% efforts) selected_effort <- efforts[[1]]
+  mode_supported <- article_lab_supports_pro_mode(model)
+  selected_mode <- if (mode_supported && identical(preference$reasoning_mode, "pro")) "pro" else "standard"
+  div(
+    class = "lab-grid lab-generation-controls",
+    div(class = "lab-field", selectInput(spec$model_id, model_label, choices = choices, selected = model, width = "100%")),
+    div(class = "lab-field", if (length(efforts) > 0) selectInput(spec$reasoning_id, "Reasoning level", choices = efforts, selected = selected_effort, width = "100%") else article_lab_disabled_select(spec$reasoning_id, "Reasoning level")),
+    div(class = "lab-field", if (mode_supported) selectInput(spec$mode_id, "Execution mode", choices = c("Standard" = "standard", "Pro" = "pro"), selected = selected_mode, width = "100%") else article_lab_disabled_select(spec$mode_id, "Execution mode"))
+  )
+}

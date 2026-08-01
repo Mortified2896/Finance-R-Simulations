@@ -132,22 +132,22 @@ article_lab_insert_outline_drafts <- function(con, outline_rows) {
         dbExecute(
           con,
           "UPDATE article_lab_outlines
-           SET updated_at = ?, outline_text = ?, status = 'draft', notes = NULL, model = ?, generation_mode = ?, raw_json = ?, approved_at = NULL
+           SET updated_at = ?, outline_text = ?, status = 'draft', notes = NULL, model = ?, reasoning_effort = ?, reasoning_mode = ?, generation_mode = ?, raw_json = ?, approved_at = NULL
            WHERE outline_id = ?",
           params = list(
-            timestamp, outline_rows$outline_text[[i]], outline_rows$model[[i]], outline_rows$generation_mode[[i]], outline_rows$raw_json[[i]], existing$outline_id[[1]]
+            timestamp, outline_rows$outline_text[[i]], outline_rows$model[[i]], outline_rows$reasoning_effort[[i]], outline_rows$reasoning_mode[[i]], outline_rows$generation_mode[[i]], outline_rows$raw_json[[i]], existing$outline_id[[1]]
           )
         )
       } else {
         dbExecute(
           con,
           "INSERT INTO article_lab_outlines
-           (outline_id, thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, updated_at, outline_text, status, notes, model, generation_mode, raw_json, approved_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', NULL, ?, ?, ?, NULL)",
+           (outline_id, thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, updated_at, outline_text, status, notes, model, reasoning_effort, reasoning_mode, generation_mode, raw_json, approved_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', NULL, ?, ?, ?, ?, ?, NULL)",
           params = list(
             article_lab_outline_id(outline_rows$thumbnail_id[[i]]),
             outline_rows$thumbnail_id[[i]], outline_rows$subtitle_id[[i]], outline_rows$candidate_id[[i]], outline_rows$batch_id[[i]],
-            timestamp, timestamp, outline_rows$outline_text[[i]], outline_rows$model[[i]], outline_rows$generation_mode[[i]], outline_rows$raw_json[[i]]
+            timestamp, timestamp, outline_rows$outline_text[[i]], outline_rows$model[[i]], outline_rows$reasoning_effort[[i]], outline_rows$reasoning_mode[[i]], outline_rows$generation_mode[[i]], outline_rows$raw_json[[i]]
           )
         )
       }
@@ -279,14 +279,17 @@ article_lab_archive_outlines <- function(con, outline_ids) {
 }
 
 
-article_lab_full_text_api_request <- function(con, packages, model = NA_character_, prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
+article_lab_full_text_api_request <- function(con, packages, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
   helper_path <- file.path("scripts", "writing_api", "generate_full_text.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_full_text.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
   if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_full_text_model, mode = "api", raw_json = NULL, warnings = character()))
 
+  settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_full_text_model, reasoning_effort, reasoning_mode)
   request_payload <- list(
-    model = article_lab_input_string(model) %||% article_lab_default_full_text_model,
+    model = settings$model,
+    reasoning_effort = settings$reasoning_effort,
+    reasoning_mode = settings$reasoning_mode,
     prompt = article_lab_input_multiline(prompt) %||% article_lab_default_full_text_prompt,
     prompt_key = article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
     packages = unname(lapply(seq_len(nrow(packages)), function(i) {
@@ -344,6 +347,8 @@ article_lab_full_text_api_request <- function(con, packages, model = NA_characte
       citation_map_json = citation_map_json,
       created_at = now_utc(),
       model = article_lab_input_string(parsed$model) %||% request_payload$model,
+      reasoning_effort = article_lab_input_string(parsed$reasoning_effort) %||% settings$reasoning_effort,
+      reasoning_mode = article_lab_input_string(parsed$reasoning_mode) %||% settings$reasoning_mode,
       generation_mode = "api",
       raw_json = stdout_text,
       stringsAsFactors = FALSE,
@@ -360,9 +365,9 @@ article_lab_full_text_api_request <- function(con, packages, model = NA_characte
   )
 }
 
-generate_full_text_drafts <- function(con, packages, model = NA_character_, prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
+generate_full_text_drafts <- function(con, packages, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, prompt_key = NA_character_, include_context = TRUE) {
   tryCatch(
-    article_lab_full_text_api_request(con, packages, model = model, prompt = prompt, prompt_key = prompt_key, include_context = include_context),
+    article_lab_full_text_api_request(con, packages, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt, prompt_key = prompt_key, include_context = include_context),
     error = function(e) list(rows = data.frame(), model = article_lab_input_string(model) %||% article_lab_default_full_text_model, mode = "failed", fallback_reason = conditionMessage(e))
   )
 }
@@ -379,13 +384,13 @@ article_lab_insert_full_text_drafts <- function(con, draft_rows, prompt_key = NA
         con,
         "INSERT INTO article_lab_full_text_drafts
          (full_text_draft_id, outline_id, thumbnail_id, subtitle_id, candidate_id, batch_id,
-          original_generated_text, current_draft_text, status, is_approved, model, prompt_key, prompt_version,
+          original_generated_text, current_draft_text, status, is_approved, model, reasoning_effort, reasoning_mode, prompt_key, prompt_version,
           generation_mode, source_context_mode, citation_map_json, raw_json, notes, created_at, updated_at, approved_at, rejected_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL)",
         params = list(
           article_lab_full_text_draft_id(draft_rows$outline_id[[i]]),
           draft_rows$outline_id[[i]], draft_rows$thumbnail_id[[i]], draft_rows$subtitle_id[[i]], draft_rows$candidate_id[[i]], draft_rows$batch_id[[i]],
-          draft_rows$full_text[[i]], draft_rows$full_text[[i]], draft_rows$model[[i]] %||% article_lab_default_full_text_model,
+          draft_rows$full_text[[i]], draft_rows$full_text[[i]], draft_rows$model[[i]] %||% article_lab_default_full_text_model, draft_rows$reasoning_effort[[i]], draft_rows$reasoning_mode[[i]],
           article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
           article_lab_input_string(prompt_version) %||% article_lab_input_string(prompt_key) %||% article_lab_full_text_prompt_key,
           draft_rows$generation_mode[[i]] %||% "api", draft_rows$source_context_mode[[i]] %||% "none", citation_map_json, draft_rows$raw_json[[i]], timestamp, timestamp
@@ -497,14 +502,17 @@ article_lab_save_publication <- function(con, publication_name, platform = "Medi
 }
 
 
-article_lab_medium_tags_api_request <- function(row, model = NA_character_, prompt = NA_character_) {
+article_lab_medium_tags_api_request <- function(row, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_) {
   helper_path <- file.path("scripts", "writing_api", "generate_medium_tags.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_medium_tags.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
   if (nrow(row) == 0) stop("Select an approved full article draft before generating Medium tags.", call. = FALSE)
 
+  settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_medium_tags_model, reasoning_effort, reasoning_mode)
   request_payload <- list(
-    model = article_lab_input_string(model) %||% article_lab_default_medium_tags_model,
+    model = settings$model,
+    reasoning_effort = settings$reasoning_effort,
+    reasoning_mode = settings$reasoning_mode,
     prompt = article_lab_input_multiline(prompt) %||% article_lab_default_medium_tags_prompt,
     article = list(
       full_text_draft_id = article_lab_row_value(row, "full_text_draft_id"),
@@ -602,7 +610,7 @@ article_lab_save_publish_settings <- function(con, row, values) {
   1L
 }
 
-article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model = NA_character_, prompt = NA_character_, variants_per_title = 4L) {
+article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, variants_per_title = 4L) {
   candidate_ids <- clean_text(candidate_ids)
   candidate_ids <- unique(candidate_ids[!is.na(candidate_ids)])
   if (length(candidate_ids) == 0) {
@@ -657,7 +665,7 @@ article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model 
     sprintf("SELECT candidate_id, subtitle FROM article_lab_subtitle_candidates WHERE candidate_id IN (%s)", paste(rep("?", nrow(eligible)), collapse = ", ")),
     params = as.list(eligible$candidate_id)
   )
-  generated <- generate_subtitle_candidates(eligible, variants_per_title = variants_per_title, model = model, prompt = prompt)
+  generated <- generate_subtitle_candidates(eligible, variants_per_title = variants_per_title, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt)
   subtitle_rows <- generated$rows
   if (nrow(subtitle_rows) == 0) {
     return(list(generated_n = 0L, title_n = 0L, skipped_n = skipped_n + nrow(eligible), batch_ids = unique(rows$batch_id), mode = generated$mode %||% "none", model = generated$model %||% article_lab_default_subtitle_model, fallback_reason = generated$fallback_reason %||% NULL))
@@ -679,8 +687,8 @@ article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model 
         con,
         "
         INSERT INTO article_lab_subtitle_candidates
-        (subtitle_id, candidate_id, batch_id, created_at, subtitle, status, notes, model, generation_mode, raw_json, approved_at, rejected_at)
-        VALUES (?, ?, ?, ?, ?, 'generated', NULL, ?, ?, ?, NULL, NULL)
+        (subtitle_id, candidate_id, batch_id, created_at, subtitle, status, notes, model, reasoning_effort, reasoning_mode, generation_mode, raw_json, approved_at, rejected_at)
+        VALUES (?, ?, ?, ?, ?, 'generated', NULL, ?, ?, ?, ?, ?, NULL, NULL)
         ",
         params = list(
           article_lab_subtitle_id(row$candidate_id[[1]], i),
@@ -689,6 +697,8 @@ article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model 
           row$created_at[[1]] %||% now_utc(),
           row$subtitle[[1]],
           row$model[[1]] %||% article_lab_default_subtitle_model,
+          row$reasoning_effort[[1]],
+          row$reasoning_mode[[1]],
           row$generation_mode[[1]] %||% generated$mode %||% "generated",
           row$raw_json[[1]]
         )
@@ -934,7 +944,7 @@ article_lab_dismiss_thumbnail_packages <- function(con, subtitle_ids) {
   list(dismissed_n = nrow(eligible_rows), skipped_n = skipped_n, candidate_ids = candidate_ids, batch_ids = batch_ids)
 }
 
-article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, model = NA_character_, prompt = NA_character_, variants_per_package = article_lab_default_thumbnail_variants) {
+article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, variants_per_package = article_lab_default_thumbnail_variants) {
   subtitle_ids <- clean_text(subtitle_ids)
   subtitle_ids <- unique(subtitle_ids[!is.na(subtitle_ids)])
   if (length(subtitle_ids) == 0) {
@@ -1001,7 +1011,7 @@ article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, mode
     data.frame()
   }
 
-  generated <- generate_thumbnail_candidates(eligible, variants_per_package = variants_per_package, model = model, prompt = prompt)
+  generated <- generate_thumbnail_candidates(eligible, variants_per_package = variants_per_package, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt)
   thumbnail_rows <- generated$rows
   if (nrow(thumbnail_rows) == 0) {
     return(list(generated_n = 0L, package_n = 0L, skipped_n = skipped_n + nrow(eligible), batch_ids = unique(rows$batch_id), mode = generated$mode %||% "none", model = generated$model %||% article_lab_default_thumbnail_model))
@@ -1023,8 +1033,8 @@ article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, mode
         con,
         "
         INSERT INTO article_lab_thumbnail_candidates
-        (thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, thumbnail_label, thumbnail_data_uri, status, notes, model, generation_mode, raw_json, approved_at, rejected_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', NULL, ?, ?, ?, NULL, NULL)
+        (thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, thumbnail_label, thumbnail_data_uri, status, notes, model, reasoning_effort, reasoning_mode, generation_mode, raw_json, approved_at, rejected_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', NULL, ?, ?, ?, ?, ?, NULL, NULL)
         ",
         params = list(
           article_lab_thumbnail_id(row$subtitle_id[[1]], i),
@@ -1035,6 +1045,8 @@ article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, mode
           row$thumbnail_label[[1]],
           row$thumbnail_data_uri[[1]],
           row$model[[1]] %||% article_lab_default_thumbnail_model,
+          row$reasoning_effort[[1]],
+          row$reasoning_mode[[1]],
           row$generation_mode[[1]] %||% generated$mode %||% "generated",
           row$raw_json[[1]]
         )
@@ -1292,12 +1304,12 @@ article_lab_upsert_score <- function(con, score_row) {
     con,
     "
     INSERT OR REPLACE INTO article_lab_title_api_scores
-    (score_id, candidate_id, batch_id, scored_at, model, prompt_version, scope,
+    (score_id, candidate_id, batch_id, scored_at, model, reasoning_effort, reasoning_mode, prompt_version, scope,
      clarity, curiosity, specificity, beginner_appeal, credibility, emotional_pull,
      promise_strength, trust_risk, medium_clap_potential, medium_comment_potential,
      overall_article_potential, combined_title_score, predicted_success_bucket,
      short_reason, raw_json, error)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ",
     params = list(
       article_lab_score_id(score_row$candidate_id[[1]]),
@@ -1305,6 +1317,8 @@ article_lab_upsert_score <- function(con, score_row) {
       score_row$batch_id[[1]],
       score_row$scored_at[[1]] %||% now_utc(),
       score_row$model[[1]] %||% article_lab_default_score_model,
+      score_row$reasoning_effort[[1]] %||% NA_character_,
+      score_row$reasoning_mode[[1]] %||% "standard",
       score_row$prompt_version[[1]] %||% article_lab_default_score_prompt_version,
       score_row$scope[[1]] %||% article_lab_default_score_scope,
       score_row$clarity[[1]],
@@ -1328,7 +1342,7 @@ article_lab_upsert_score <- function(con, score_row) {
   combined_score
 }
 
-article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope, candidate_ids = NULL) {
+article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope, reasoning_effort = NA_character_, reasoning_mode = "standard", candidate_ids = NULL) {
   article_lab_recover_api_pending_candidates(con, batch_id = batch_id)
   batch_label <- if (identical(batch_id, article_lab_all_batches_value)) "all titles" else paste("batch", batch_id)
   selected_ids <- clean_text(candidate_ids)
@@ -1403,7 +1417,7 @@ article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope,
     )
 
     result <- tryCatch(
-      article_lab_score_api_request(api_rows, model = model, prompt_version = prompt_version, scope = scope),
+      article_lab_score_api_request(api_rows, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt_version = prompt_version, scope = scope),
       error = function(e) e
     )
     if (inherits(result, "error")) {
@@ -1669,7 +1683,7 @@ article_lab_archive_api_scored_candidates <- function(con, candidate_ids) {
   list(archived_n = length(eligible_ids), skipped_n = skipped_n, batch_ids = batch_ids)
 }
 
-save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, raw_json = NA_character_, generation_mode = "generated", enforce_max_chars = TRUE, notes_extra = NULL, article_context_notes = NULL, article_project_id = NULL) {
+save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, requested_batch_size, model, titles, reasoning_effort = NA_character_, reasoning_mode = "standard", raw_json = NA_character_, generation_mode = "generated", enforce_max_chars = TRUE, notes_extra = NULL, article_context_notes = NULL, article_project_id = NULL) {
   if (length(titles) == 0) return(invisible(NULL))
   validated <- article_lab_validate_titles(titles, max_chars = article_lab_title_max_chars)
   title_values <- validated$titles
@@ -1697,8 +1711,8 @@ save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, 
     dbExecute(
       con,
       "INSERT INTO article_lab_title_batches
-       (batch_id, article_project_id, created_at, prompt, seed_topic, inspiration_source, requested_batch_size, model, status, notes, article_context_notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+       (batch_id, article_project_id, created_at, prompt, seed_topic, inspiration_source, requested_batch_size, model, reasoning_effort, reasoning_mode, status, notes, article_context_notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       params = list(
         batch_id,
         project_id,
@@ -1708,6 +1722,8 @@ save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, 
         if (length(inspiration_value) == 0) NA_character_ else inspiration_value[[1]],
         requested_size,
         model_value[[1]],
+        article_lab_input_string(reasoning_effort) %||% NA_character_,
+        article_lab_input_string(reasoning_mode) %||% "standard",
         "generated",
         paste(
           sprintf("Generation mode: %s.", generation_mode),

@@ -81,6 +81,8 @@ async function main() {
 
   const payload = JSON.parse(await fs.readFile(requestPath, "utf8"));
   const model = cleanText(payload.model) ?? "gpt-5-mini";
+  const reasoningEffort = cleanText(payload.reasoning_effort);
+  const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
   const prompt = cleanText(payload.prompt);
   const article = {
     full_text_draft_id: cleanText(payload.article?.full_text_draft_id),
@@ -116,10 +118,10 @@ async function main() {
             tags: ["writing-api", "medium-tags"],
             sessionId: requestPath
           });
-          response = await client.responses.create({
-            model,
-            input: buildPrompt({ prompt, article })
-          });
+          const request = { model, input: buildPrompt({ prompt, article }) };
+          if (reasoningEffort) request.reasoning = { effort: reasoningEffort };
+          if (reasoningMode === "pro") request.reasoning = { ...(request.reasoning ?? {}), mode: "pro" };
+          response = await client.responses.create(request);
         } catch (error) {
           console.error(`OpenAI API failure: ${error.message}`);
           process.exitCode = 1;
@@ -139,6 +141,8 @@ async function main() {
         process.stdout.write(JSON.stringify({
           mode: "api",
           model,
+          reasoning_effort: reasoningEffort,
+          reasoning_mode: reasoningMode,
           response_id: response.id ?? null,
           tags,
           raw_text: rawText,

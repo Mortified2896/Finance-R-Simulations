@@ -1,0 +1,42 @@
+suppressPackageStartupMessages({
+  library(DBI)
+  library(RSQLite)
+})
+
+app_dir <- file.path("apps", "human_preview_rating_app")
+source(file.path(app_dir, "R", "text_helpers.R"))
+source(file.path(app_dir, "R", "input_helpers.R"))
+source(file.path(app_dir, "R", "app_config.R"))
+source(file.path(app_dir, "R", "db_helpers.R"))
+source(file.path(app_dir, "R", "id_helpers.R"))
+project_root <- normalizePath(".", mustWork = TRUE)
+source(file.path(app_dir, "R", "article_lab_config.R"))
+source(file.path(app_dir, "R", "schema_article_lab.R"))
+source(file.path(app_dir, "R", "api_helpers.R"))
+
+expect <- function(condition, message) if (!isTRUE(condition)) stop(message, call. = FALSE)
+expect(identical(article_lab_reasoning_capabilities("gpt-5.6-terra"), c("none", "low", "medium", "high", "xhigh", "max")), "GPT-5.6 reasoning levels changed unexpectedly.")
+expect(article_lab_supports_pro_mode("gpt-5.6-sol"), "GPT-5.6 Sol should support Pro mode.")
+expect(!article_lab_supports_pro_mode("gpt-5.4"), "GPT-5.4 must not expose GPT-5.6 Pro mode.")
+expect(length(article_lab_reasoning_capabilities("gpt-4.1")) == 0L, "GPT-4.1 should disable configurable reasoning.")
+expect(identical(article_lab_validate_generation_settings("gpt-4.1", NA_character_, "standard")$reasoning_mode, "standard"), "Non-Pro models should retain standard execution.")
+expect(inherits(try(article_lab_validate_generation_settings("gpt-4.1", "low", "standard"), silent = TRUE), "try-error"), "Unsupported reasoning should fail before an API call.")
+expect(inherits(try(article_lab_validate_generation_settings("gpt-5.4", "medium", "pro"), silent = TRUE), "try-error"), "Unsupported Pro mode should fail before an API call.")
+
+test_db <- tempfile(pattern = "article_lab_generation_preferences_", fileext = ".sqlite")
+on.exit(unlink(test_db, force = TRUE), add = TRUE)
+con <- dbConnect(SQLite(), test_db)
+dbExecute(con, "CREATE TABLE article_projects (article_project_id TEXT PRIMARY KEY)")
+ensure_article_lab_schema(con)
+
+initial <- article_lab_load_generation_preference(con, "titles", "gpt-5.6-terra", "low", "standard")
+expect(identical(initial$model, "gpt-5.6-terra") && identical(initial$reasoning_effort, "low") && identical(initial$reasoning_mode, "standard"), "Code defaults were not used for an unsaved workflow.")
+article_lab_save_generation_preference(con, "titles", "gpt-5.6-terra", "high", "pro", "high", "pro")
+dbDisconnect(con)
+
+con <- dbConnect(SQLite(), test_db)
+saved <- article_lab_load_generation_preference(con, "titles", "gpt-5-mini", "low", "standard")
+expect(identical(saved$model, "gpt-5.6-terra") && identical(saved$reasoning_effort, "high") && identical(saved$reasoning_mode, "pro"), "Saved workflow preferences did not survive a database restart.")
+dbDisconnect(con)
+
+message("Article Lab generation settings tests passed.")

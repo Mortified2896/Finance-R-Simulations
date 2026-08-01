@@ -175,6 +175,8 @@ async function main() {
   const prompt = cleanMultilineText(payload.prompt);
   const manualPrompt = cleanMultilineText(payload.manual_prompt);
   const model = cleanText(payload.model) ?? "gpt-5-mini";
+  const reasoningEffort = cleanText(payload.reasoning_effort);
+  const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
   const seedTopic = cleanText(payload.seed_topic);
   const inspirationSource = cleanText(payload.inspiration_source);
   const contextNotes = cleanMultilineText(payload.context_notes);
@@ -234,10 +236,10 @@ async function main() {
             tags: ["writing-api", "title-generation"],
             sessionId: requestPath
           });
-          response = await client.responses.create({
-            model,
-            input: builtPrompt
-          });
+          const request = { model, input: builtPrompt };
+          if (reasoningEffort) request.reasoning = { effort: reasoningEffort };
+          if (reasoningMode === "pro") request.reasoning = { ...(request.reasoning ?? {}), mode: "pro" };
+          response = await client.responses.create(request);
         } catch (error) {
           console.error(`OpenAI API failure: ${error.message}`);
           process.exitCode = 1;
@@ -263,14 +265,17 @@ async function main() {
               tags: ["writing-api", "title-generation", "retry"],
               sessionId: requestPath
             });
-            retryResponse = await retryClient.responses.create({
+            const retryRequest = {
               model,
               input: buildRetryPrompt({
                 originalPrompt: builtPrompt,
                 batchSize,
                 invalidTitles: invalid
               })
-            });
+            };
+            if (reasoningEffort) retryRequest.reasoning = { effort: reasoningEffort };
+            if (reasoningMode === "pro") retryRequest.reasoning = { ...(retryRequest.reasoning ?? {}), mode: "pro" };
+            retryResponse = await retryClient.responses.create(retryRequest);
           } catch (error) {
             console.error(`OpenAI API retry failure: ${error.message}`);
             process.exitCode = 1;
@@ -291,6 +296,8 @@ async function main() {
         const output = {
           mode: "api",
           model,
+          reasoning_effort: reasoningEffort,
+          reasoning_mode: reasoningMode,
           response_id: response.id ?? null,
           titles: valid,
           raw_text: rawText,

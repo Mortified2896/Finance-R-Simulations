@@ -12,10 +12,17 @@ article_lab_manual_prompt_key <- "manual_default"
 article_lab_default_model <- local({
   configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_HEADLINE_MODEL", unset = "")
-  if (!nzchar(configured)) configured <- "gpt-5-mini"
+  if (!nzchar(configured)) configured <- "gpt-5.6-terra"
   configured
 })
 article_lab_model_choices <- c(
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano",
   "gpt-5",
   "gpt-5-mini",
   "gpt-5-nano",
@@ -25,6 +32,38 @@ article_lab_model_choices <- c(
   "o3",
   "o3-mini",
   "o4-mini"
+)
+
+article_lab_reasoning_capabilities <- function(model) {
+  model <- trimws(as.character(model %||% "")[[1]])
+  if (grepl("^gpt-5\\.6(?:-|$)", model)) return(c("none", "low", "medium", "high", "xhigh", "max"))
+  if (grepl("^gpt-5\\.[45](?:-|$)", model)) return(c("none", "low", "medium", "high", "xhigh"))
+  if (grepl("^gpt-5(?:-|$)", model)) return(c("minimal", "low", "medium", "high"))
+  if (grepl("^(o3|o4)(?:-|$)", model)) return(c("low", "medium", "high"))
+  character()
+}
+
+article_lab_supports_pro_mode <- function(model) {
+  grepl("^gpt-5\\.6(?:-|$)", trimws(as.character(model %||% "")[[1]]))
+}
+
+article_lab_reasoning_mode_choices <- c("standard", "pro")
+article_lab_generation_env <- function(name, fallback) {
+  value <- trimws(Sys.getenv(name, unset = ""))
+  if (nzchar(value)) value else fallback
+}
+article_lab_generation_workflows <- list(
+  titles = list(model_id = "article_lab_model", reasoning_id = "article_lab_reasoning_effort", mode_id = "article_lab_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_TITLE_GENERATION_REASONING_EFFORT", "low"), default_mode = article_lab_generation_env("OPENAI_TITLE_GENERATION_REASONING_MODE", "standard")),
+  scoring = list(model_id = "article_lab_score_model", reasoning_id = "article_lab_score_reasoning_effort", mode_id = "article_lab_score_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_TITLE_SCORING_REASONING_EFFORT", "low"), default_mode = article_lab_generation_env("OPENAI_TITLE_SCORING_REASONING_MODE", "standard")),
+  subtitles = list(model_id = "article_lab_subtitle_model", reasoning_id = "article_lab_subtitle_reasoning_effort", mode_id = "article_lab_subtitle_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_SUBTITLE_GENERATION_REASONING_EFFORT", "low"), default_mode = article_lab_generation_env("OPENAI_SUBTITLE_GENERATION_REASONING_MODE", "standard")),
+  thumbnails = list(model_id = "article_lab_thumbnail_model", reasoning_id = "article_lab_thumbnail_reasoning_effort", mode_id = "article_lab_thumbnail_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_THUMBNAIL_GENERATION_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_THUMBNAIL_GENERATION_REASONING_MODE", "standard")),
+  outlines = list(model_id = "article_lab_outline_model", reasoning_id = "article_lab_outline_reasoning_effort", mode_id = "article_lab_outline_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_OUTLINE_GENERATION_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_OUTLINE_GENERATION_REASONING_MODE", "standard")),
+  full_text = list(model_id = "article_lab_full_text_model", reasoning_id = "article_lab_full_text_reasoning_effort", mode_id = "article_lab_full_text_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_FULL_TEXT_GENERATION_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_FULL_TEXT_GENERATION_REASONING_MODE", "standard")),
+  research_summary = list(model_id = "research_summary_model", reasoning_id = "research_summary_reasoning_effort", mode_id = "research_summary_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_RESEARCH_SUMMARY_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_RESEARCH_SUMMARY_REASONING_MODE", "standard")),
+  research_claims = list(model_id = "research_claim_model", reasoning_id = "research_claim_reasoning_effort", mode_id = "research_claim_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_CLAIM_EXTRACTION_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_CLAIM_EXTRACTION_REASONING_MODE", "standard")),
+  research_evidence = list(model_id = "research_evidence_model", reasoning_id = "research_evidence_reasoning_effort", mode_id = "research_evidence_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_EVIDENCE_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_EVIDENCE_REASONING_MODE", "standard")),
+  research_evidence_fallback = list(model_id = "research_evidence_fallback_model", reasoning_id = "research_evidence_fallback_reasoning_effort", mode_id = "research_evidence_fallback_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_EVIDENCE_FALLBACK_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_EVIDENCE_FALLBACK_REASONING_MODE", "standard")),
+  medium_tags = list(model_id = "article_lab_medium_tags_model", reasoning_id = "article_lab_medium_tags_reasoning_effort", mode_id = "article_lab_medium_tags_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_MEDIUM_TAGS_REASONING_EFFORT", "low"), default_mode = article_lab_generation_env("OPENAI_MEDIUM_TAGS_REASONING_MODE", "standard"))
 )
 article_lab_model_choices_with_default <- function(default_model, base_choices = article_lab_model_choices) {
   default_model <- as.character(default_model %||% "")
@@ -56,7 +95,7 @@ article_lab_default_thumbnail_model <- local({
   if (!nzchar(configured)) configured <- "gpt-5.5"
   configured
 })
-article_lab_thumbnail_model_choices <- article_lab_model_choices_with_default(article_lab_default_thumbnail_model, base_choices = c("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"))
+article_lab_thumbnail_model_choices <- article_lab_model_choices_with_default(article_lab_default_thumbnail_model, base_choices = c("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"))
 article_lab_default_outline_model <- local({
   configured <- Sys.getenv("OPENAI_OUTLINE_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_SUBTITLE_GENERATION_MODEL", unset = "")
@@ -119,7 +158,7 @@ article_lab_default_claim_extraction_model <- local({
 })
 article_lab_claim_extraction_model_choices <- article_lab_model_choices_with_default(
   article_lab_default_claim_extraction_model,
-  base_choices = c("gpt-5.4-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5")
+  base_choices = c("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5")
 )
 article_lab_default_evidence_selection_model <- local({
   configured <- Sys.getenv("OPENAI_EVIDENCE_SELECTION_MODEL", unset = "")
@@ -128,7 +167,7 @@ article_lab_default_evidence_selection_model <- local({
 })
 article_lab_evidence_selection_model_choices <- article_lab_model_choices_with_default(
   article_lab_default_evidence_selection_model,
-  base_choices = c("gpt-5.4-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5")
+  base_choices = c("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5")
 )
 article_lab_default_evidence_fallback_model <- local({
   configured <- Sys.getenv("OPENAI_EVIDENCE_FALLBACK_MODEL", unset = "")
@@ -137,7 +176,7 @@ article_lab_default_evidence_fallback_model <- local({
 })
 article_lab_evidence_fallback_model_choices <- article_lab_model_choices_with_default(
   article_lab_default_evidence_fallback_model,
-  base_choices = c("gpt-5.4", "gpt-5", "gpt-5.4-mini", "gpt-5-mini")
+  base_choices = c("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5", "gpt-5.4-mini", "gpt-5-mini")
 )
 article_lab_evidence_reasoning_choices <- c("minimal", "low", "medium")
 article_lab_default_evidence_reasoning_effort <- Sys.getenv("OPENAI_EVIDENCE_REASONING_EFFORT", unset = "low")

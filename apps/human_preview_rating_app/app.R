@@ -133,6 +133,67 @@ server <- function(input, output, session) {
   article_lab_refresh <- reactiveVal(0L)
   article_lab_active_outline_thumbnail <- reactiveVal(NULL)
 
+  generation_default_models <- list(
+    titles = article_lab_default_model, scoring = article_lab_default_score_model,
+    subtitles = article_lab_default_subtitle_model, thumbnails = article_lab_default_thumbnail_model,
+    outlines = article_lab_default_outline_model, full_text = article_lab_default_full_text_model,
+    research_summary = article_lab_default_research_summary_model,
+    research_claims = article_lab_default_claim_extraction_model,
+    research_evidence = article_lab_default_evidence_selection_model,
+    research_evidence_fallback = article_lab_default_evidence_fallback_model,
+    medium_tags = article_lab_default_medium_tags_model
+  )
+
+  lapply(names(article_lab_generation_workflows), function(workflow_key) {
+    local({
+      key <- workflow_key
+      spec <- article_lab_generation_workflows[[key]]
+      default_model <- generation_default_models[[key]]
+      observeEvent(input[[spec$model_id]], {
+        model <- article_lab_input_string(input[[spec$model_id]])
+        if (is.na(model)) return()
+        saved <- article_lab_load_generation_preference(con, key, default_model, spec$default_reasoning, spec$default_mode)
+        efforts <- article_lab_reasoning_capabilities(model)
+        if (length(efforts) == 0) {
+          updateSelectInput(session, spec$reasoning_id, choices = c("Not supported" = "__unsupported__"), selected = "__unsupported__")
+          session$sendCustomMessage("articleLabSetSelectState", list(id = spec$reasoning_id, disabled = TRUE))
+          selected_effort <- NULL
+        } else {
+          selected_effort <- saved$last_supported_reasoning_effort
+          if (is.na(selected_effort) || !selected_effort %in% efforts) selected_effort <- spec$default_reasoning
+          if (!selected_effort %in% efforts) selected_effort <- efforts[[1]]
+          updateSelectInput(session, spec$reasoning_id, choices = efforts, selected = selected_effort)
+          session$sendCustomMessage("articleLabSetSelectState", list(id = spec$reasoning_id, disabled = FALSE))
+        }
+        if (article_lab_supports_pro_mode(model)) {
+          selected_mode <- if (identical(saved$last_supported_reasoning_mode, "pro")) "pro" else "standard"
+          updateSelectInput(session, spec$mode_id, choices = c("Standard" = "standard", "Pro" = "pro"), selected = selected_mode)
+          session$sendCustomMessage("articleLabSetSelectState", list(id = spec$mode_id, disabled = FALSE))
+        } else {
+          selected_mode <- "standard"
+          updateSelectInput(session, spec$mode_id, choices = c("Not supported" = "__unsupported__"), selected = "__unsupported__")
+          session$sendCustomMessage("articleLabSetSelectState", list(id = spec$mode_id, disabled = TRUE))
+        }
+        article_lab_save_generation_preference(con, key, model, selected_effort, selected_mode)
+      }, ignoreInit = FALSE)
+      observeEvent(input[[spec$reasoning_id]], {
+        value <- article_lab_input_string(input[[spec$reasoning_id]])
+        model <- article_lab_input_string(input[[spec$model_id]])
+        if (is.na(value) || identical(value, "__unsupported__") || is.na(model)) return()
+        if (!value %in% article_lab_reasoning_capabilities(model)) return()
+        saved <- article_lab_load_generation_preference(con, key, default_model, spec$default_reasoning, spec$default_mode)
+        article_lab_save_generation_preference(con, key, model, value, saved$reasoning_mode, value, NULL)
+      }, ignoreInit = TRUE)
+      observeEvent(input[[spec$mode_id]], {
+        value <- article_lab_input_string(input[[spec$mode_id]])
+        model <- article_lab_input_string(input[[spec$model_id]])
+        if (is.na(value) || identical(value, "__unsupported__") || is.na(model) || !article_lab_supports_pro_mode(model)) return()
+        saved <- article_lab_load_generation_preference(con, key, default_model, spec$default_reasoning, spec$default_mode)
+        article_lab_save_generation_preference(con, key, model, saved$reasoning_effort, value, NULL, value)
+      }, ignoreInit = TRUE)
+    })
+  })
+
   article_lab_set_title_error <- function(kind, reason, mode = "validation", project_ids = selected_article_project_id()) {
     affected_ids <- clean_text(as.character(project_ids %||% character()))
     affected_ids <- affected_ids[!is.na(affected_ids)]
@@ -603,10 +664,7 @@ server <- function(input, output, session) {
             class = "lab-field",
             numericInput("article_lab_batch_size", "Batch size", value = 12L, min = 1L, max = 25L, width = "100%")
           ),
-          div(
-            class = "lab-field",
-            selectInput("article_lab_model", "Model", choices = article_lab_title_generation_model_choices, selected = article_lab_default_model, width = "100%")
-          ),
+          article_lab_generation_control_ui(con, "titles", article_lab_title_generation_model_choices, article_lab_default_model),
           div(
             class = "lab-field",
             textInput("article_lab_seed_topic", "Optional seed/topic (manual mode)", value = "", width = "100%", placeholder = "Optional article idea or angle")
@@ -722,10 +780,7 @@ server <- function(input, output, session) {
               class = "lab-field",
               numericInput("article_lab_batch_size", "Batch size", value = 12L, min = 1L, max = 25L, width = "100%")
             ),
-            div(
-              class = "lab-field",
-              selectInput("article_lab_model", "Model", choices = article_lab_title_generation_model_choices, selected = article_lab_default_model, width = "100%")
-            ),
+            article_lab_generation_control_ui(con, "titles", article_lab_title_generation_model_choices, article_lab_default_model),
             div(
               class = "lab-field",
               textInput("article_lab_seed_topic", "Optional seed/topic (manual mode)", value = "", width = "100%", placeholder = "Optional article idea or angle")
@@ -793,7 +848,7 @@ server <- function(input, output, session) {
         div(
           class = "lab-card",
           h2("Controls"),
-          div(class = "lab-grid", uiOutput("article_lab_batch_selector"), div(class = "lab-field", selectInput("article_lab_score_model", "Model", choices = article_lab_score_model_choices, selected = article_lab_default_score_model, width = "100%")), div(class = "lab-field", textInput("article_lab_score_prompt_version", "Prompt version", value = article_lab_default_score_prompt_version, width = "100%")), div(class = "lab-field", textInput("article_lab_score_scope", "Scope", value = article_lab_default_score_scope, width = "100%"))),
+          div(class = "lab-grid", uiOutput("article_lab_batch_selector"), article_lab_generation_control_ui(con, "scoring", article_lab_score_model_choices, article_lab_default_score_model), div(class = "lab-field", textInput("article_lab_score_prompt_version", "Prompt version", value = article_lab_default_score_prompt_version, width = "100%")), div(class = "lab-field", textInput("article_lab_score_scope", "Scope", value = article_lab_default_score_scope, width = "100%"))),
           article_lab_action_bar(
             uiOutput("article_lab_score_button"),
             actionButton("article_lab_refresh_scores", "Refresh", class = "lab-secondary")
@@ -822,7 +877,7 @@ server <- function(input, output, session) {
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
-            div(class = "lab-field", selectInput("article_lab_subtitle_model", "Model", choices = article_lab_subtitle_model_choices, selected = article_lab_default_subtitle_model, width = "100%")),
+            article_lab_generation_control_ui(con, "subtitles", article_lab_subtitle_model_choices, article_lab_default_subtitle_model),
             div(class = "lab-field", numericInput("article_lab_subtitle_variants_per_title", "Subtitle candidates per title", value = 4L, min = 1L, max = 8L, width = "100%"))
           ),
           article_lab_action_bar(
@@ -872,7 +927,7 @@ server <- function(input, output, session) {
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
-            div(class = "lab-field", selectInput("article_lab_thumbnail_model", "Responses generation model", choices = article_lab_thumbnail_model_choices, selected = article_lab_default_thumbnail_model, width = "100%")),
+            article_lab_generation_control_ui(con, "thumbnails", article_lab_thumbnail_model_choices, article_lab_default_thumbnail_model, "Responses generation model"),
             div(class = "lab-field", numericInput("article_lab_thumbnail_variants_per_package", "Thumbnail candidates per package", value = article_lab_default_thumbnail_variants, min = 1L, max = 4L, width = "100%"))
           ),
           article_lab_action_bar(
@@ -910,7 +965,7 @@ server <- function(input, output, session) {
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
-            div(class = "lab-field", selectInput("article_lab_outline_model", "Model", choices = article_lab_outline_model_choices, selected = article_lab_default_outline_model, width = "100%")),
+            article_lab_generation_control_ui(con, "outlines", article_lab_outline_model_choices, article_lab_default_outline_model),
             uiOutput("article_lab_outline_context_toggle")
           ),
           article_lab_action_bar(
@@ -945,7 +1000,7 @@ server <- function(input, output, session) {
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
-            div(class = "lab-field", selectInput("article_lab_full_text_model", "Model", choices = article_lab_full_text_model_choices, selected = article_lab_default_full_text_model, width = "100%")),
+            article_lab_generation_control_ui(con, "full_text", article_lab_full_text_model_choices, article_lab_default_full_text_model),
             div(class = "lab-field", checkboxInput("article_lab_full_text_include_context", "Include source PDF and checked evidence (indirect citations enforced)", value = TRUE, width = "100%"))
           ),
           article_lab_action_bar(
@@ -1066,7 +1121,7 @@ server <- function(input, output, session) {
             h3("API summary generation"),
             div(
               class = "lab-grid",
-              div(class = "lab-field", selectInput("research_summary_model", "Model", choices = article_lab_research_summary_model_choices, selected = article_lab_default_research_summary_model, width = "100%")),
+              article_lab_generation_control_ui(con, "research_summary", article_lab_research_summary_model_choices, article_lab_default_research_summary_model),
               div(class = "lab-field", selectInput("research_summary_prompt_version", "Prompt version", choices = article_lab_research_summary_prompt_version_choices, selected = article_lab_default_research_summary_prompt_version, width = "100%"))
             ),
             div(class = "lab-field lab-editor-textarea", textAreaInput("research_summary_api_prompt", "API prompt", value = article_lab_default_research_summary_prompt, width = "100%", height = "260px")),
@@ -1092,20 +1147,11 @@ server <- function(input, output, session) {
               div(class = "lab-field", numericInput("research_evidence_candidates_per_claim", "Candidate sentences per claim", value = 12L, min = 3L, max = 20L, width = "100%"))
             ),
             h4("Claim sentence marking"),
-            div(
-              class = "lab-grid",
-              div(class = "lab-field", selectInput("research_claim_model", "Model", choices = article_lab_claim_extraction_model_choices, selected = article_lab_default_claim_extraction_model, width = "100%")),
-              div(class = "lab-field", selectInput("research_claim_reasoning_effort", "Reasoning effort", choices = article_lab_evidence_reasoning_choices, selected = article_lab_default_evidence_reasoning_effort, width = "100%"))
-            ),
+            article_lab_generation_control_ui(con, "research_claims", article_lab_claim_extraction_model_choices, article_lab_default_claim_extraction_model),
             div(class = "lab-field lab-editor-textarea", textAreaInput("research_claim_prompt", "Claim sentence marking prompt", value = article_lab_default_claim_extraction_prompt, width = "100%", height = "210px")),
             h4("Evidence sentence selection"),
-            div(
-              class = "lab-grid",
-              div(class = "lab-field", selectInput("research_evidence_model", "Model", choices = article_lab_evidence_selection_model_choices, selected = article_lab_default_evidence_selection_model, width = "100%")),
-              div(class = "lab-field", selectInput("research_evidence_reasoning_effort", "Reasoning effort", choices = article_lab_evidence_reasoning_choices, selected = article_lab_default_evidence_reasoning_effort, width = "100%")),
-              div(class = "lab-field", selectInput("research_evidence_fallback_model", "Fallback model", choices = article_lab_evidence_fallback_model_choices, selected = article_lab_default_evidence_fallback_model, width = "100%")),
-              div(class = "lab-field", selectInput("research_evidence_fallback_reasoning_effort", "Fallback reasoning", choices = article_lab_evidence_reasoning_choices, selected = "medium", width = "100%"))
-            ),
+            article_lab_generation_control_ui(con, "research_evidence", article_lab_evidence_selection_model_choices, article_lab_default_evidence_selection_model),
+            article_lab_generation_control_ui(con, "research_evidence_fallback", article_lab_evidence_fallback_model_choices, article_lab_default_evidence_fallback_model, "Fallback model"),
             div(class = "lab-field lab-editor-textarea", textAreaInput("research_evidence_prompt", "Evidence selection prompt", value = article_lab_default_evidence_selection_prompt, width = "100%", height = "210px")),
             uiOutput("research_evidence_effective_prompts"),
             div(
@@ -2344,7 +2390,7 @@ server <- function(input, output, session) {
       summary_sentence_payload = summary_sentence_payload
     ), auto_unbox = TRUE, null = "null")
     claim_result <- tryCatch(
-      research_evidence_api_request("claim-sentence-marking", claim_prompt, claim_model, claim_reasoning, summary$summary_id[[1]], source$research_source_id[[1]]),
+      research_evidence_api_request("claim-sentence-marking", claim_prompt, claim_model, claim_reasoning, summary$summary_id[[1]], source$research_source_id[[1]], input$research_claim_reasoning_mode %||% "standard"),
       error = function(e) e
     )
     if (inherits(claim_result, "error")) {
@@ -2457,7 +2503,7 @@ server <- function(input, output, session) {
     evidence_model <- if (isTRUE(use_fallback)) article_lab_input_string(input$research_evidence_fallback_model) %||% article_lab_default_evidence_fallback_model else article_lab_input_string(input$research_evidence_model) %||% article_lab_default_evidence_selection_model
     evidence_reasoning <- if (isTRUE(use_fallback)) article_lab_input_string(input$research_evidence_fallback_reasoning_effort) %||% "medium" else article_lab_input_string(input$research_evidence_reasoning_effort) %||% article_lab_default_evidence_reasoning_effort
     evidence_result <- tryCatch(
-      research_evidence_api_request("evidence-selection", evidence_prompt, evidence_model, evidence_reasoning, summary$summary_id[[1]], source$research_source_id[[1]]),
+      research_evidence_api_request("evidence-selection", evidence_prompt, evidence_model, evidence_reasoning, summary$summary_id[[1]], source$research_source_id[[1]], if (isTRUE(use_fallback)) input$research_evidence_fallback_reasoning_mode %||% "standard" else input$research_evidence_reasoning_mode %||% "standard"),
       error = function(e) e
     )
     if (inherits(evidence_result, "error")) {
@@ -2741,6 +2787,8 @@ server <- function(input, output, session) {
         source = source,
         asset = asset,
         model = input$research_summary_model,
+        reasoning_effort = input$research_summary_reasoning_effort,
+        reasoning_mode = input$research_summary_reasoning_mode,
         prompt_version = prompt_version,
         prompt = prompt_text
       ),
@@ -2758,16 +2806,16 @@ server <- function(input, output, session) {
     if (nrow(existing) > 0) {
       dbExecute(con, "
         UPDATE research_source_summaries
-        SET updated_at = ?, summary_text = ?, status = 'draft', model = ?, prompt_version = ?, raw_json = ?
+        SET updated_at = ?, summary_text = ?, status = 'draft', model = ?, reasoning_effort = ?, reasoning_mode = ?, prompt_version = ?, raw_json = ?
         WHERE summary_id = ?
-      ", params = list(timestamp, result$summary_text, result$model, result$prompt_version, result$raw_json, existing$summary_id[[1]]))
+      ", params = list(timestamp, result$summary_text, result$model, result$reasoning_effort, result$reasoning_mode, result$prompt_version, result$raw_json, existing$summary_id[[1]]))
       summary_id <- existing$summary_id[[1]]
     } else {
       dbExecute(con, "
         INSERT INTO research_source_summaries
-          (research_source_id, created_at, updated_at, summary_text, status, model, prompt_version, raw_json)
-        VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)
-      ", params = list(source_id, timestamp, timestamp, result$summary_text, result$model, result$prompt_version, result$raw_json))
+          (research_source_id, created_at, updated_at, summary_text, status, model, reasoning_effort, reasoning_mode, prompt_version, raw_json)
+        VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)
+      ", params = list(source_id, timestamp, timestamp, result$summary_text, result$model, result$reasoning_effort, result$reasoning_mode, result$prompt_version, result$raw_json))
       summary_id <- dbGetQuery(con, "SELECT last_insert_rowid() AS summary_id")$summary_id[[1]]
     }
     article_lab_state$notice <- sprintf("Generated and saved summary draft %s with model %s.", summary_id, result$model)
@@ -2812,7 +2860,7 @@ server <- function(input, output, session) {
     if (nrow(source) == 0) return()
     prompt <- research_title_prompt(source, angle)
     inspiration <- paste0("research_angle:", angle_id)
-    generated <- generate_title_candidates(con, prompt, batch_size = input$article_lab_batch_size %||% 12L, seed_topic = angle$angle_title[[1]], inspiration_source = inspiration, model = input$article_lab_model %||% article_lab_default_model)
+    generated <- generate_title_candidates(con, prompt, batch_size = input$article_lab_batch_size %||% 12L, seed_topic = angle$angle_title[[1]], inspiration_source = inspiration, model = input$article_lab_model %||% article_lab_default_model, reasoning_effort = input$article_lab_reasoning_effort, reasoning_mode = input$article_lab_reasoning_mode %||% "standard")
     if (identical(generated$mode, "failed") || nrow(generated$titles) == 0) {
       article_lab_state$last_title_generate_error <- list(kind = "api_failed", reason = generated$fallback_reason %||% "Title generation returned no usable rows.", mode = generated$mode %||% "failed", model = generated$model %||% article_lab_default_model, selected_ids = as.character(angle_id))
       article_lab_state$last_title_generate_error_at <- Sys.time()
@@ -2821,7 +2869,7 @@ server <- function(input, output, session) {
     candidate_id <- promote_research_angle_candidate(con, angle_id)
     project_id <- develop_article_candidate(con, candidate_id)
     selected_article_project_id(project_id)
-    batch_id <- save_article_lab_batch(con, prompt, angle$angle_title[[1]], inspiration, input$article_lab_batch_size %||% 12L, generated$model %||% input$article_lab_model %||% article_lab_default_model, generated$titles$title, raw_json = generated$raw_json, generation_mode = generated$mode %||% "research_inbox", article_project_id = project_id)
+    batch_id <- save_article_lab_batch(con, prompt, angle$angle_title[[1]], inspiration, input$article_lab_batch_size %||% 12L, generated$model %||% input$article_lab_model %||% article_lab_default_model, generated$titles$title, reasoning_effort = generated$reasoning_effort %||% input$article_lab_reasoning_effort, reasoning_mode = generated$reasoning_mode %||% input$article_lab_reasoning_mode %||% "standard", raw_json = generated$raw_json, generation_mode = generated$mode %||% "research_inbox", article_project_id = project_id)
     dbExecute(con, "UPDATE research_article_angles SET updated_at = ?, status = 'sent_to_title_lab', article_lab_batch_id = ? WHERE research_angle_id = ?", params = list(now_utc(), batch_id, angle_id))
     updateTextAreaInput(session, "article_lab_prompt", value = prompt)
     updateTextInput(session, "article_lab_seed_topic", value = angle$angle_title[[1]])
@@ -4319,7 +4367,7 @@ server <- function(input, output, session) {
   })
 
   output$article_lab_review_publish_workspace <- renderUI({
-    article_lab_review_publish_workspace_ui(article_lab_selected_review_publish_row(), article_lab_publication_rows())
+    article_lab_review_publish_workspace_ui(article_lab_selected_review_publish_row(), article_lab_publication_rows(), con)
   })
 
   output$article_lab_medium_tags_effective_prompt <- renderUI({
@@ -4407,6 +4455,8 @@ server <- function(input, output, session) {
       seed_topic = seed_topic_value,
       inspiration_source = inspiration_value,
       model = input$article_lab_model,
+      reasoning_effort = input$article_lab_reasoning_effort,
+      reasoning_mode = input$article_lab_reasoning_mode %||% "standard",
       manual_prompt = manual_prompt_value,
       context_notes = context_notes_value
     )
@@ -4451,9 +4501,11 @@ server <- function(input, output, session) {
         ""
       }
       article_lab_state$notice <- sprintf(
-        "Generated %s draft titles with the OpenAI API using model %s.%s%s%s Save the batch to persist it to SQLite.",
+        "Generated %s draft titles with the OpenAI API using model %s, reasoning %s, execution mode %s.%s%s%s Save the batch to persist it to SQLite.",
         nrow(generated$titles),
         generated$model %||% article_lab_default_model,
+        generated$reasoning_effort %||% "not supported",
+        generated$reasoning_mode %||% "standard",
         example_copy,
         retry_copy,
         dropped_copy
@@ -4606,6 +4658,8 @@ server <- function(input, output, session) {
       requested_batch_size = input$article_lab_batch_size,
       model = input$article_lab_model,
       titles = draft$title,
+      reasoning_effort = draft_meta$reasoning_effort %||% input$article_lab_reasoning_effort,
+      reasoning_mode = draft_meta$reasoning_mode %||% input$article_lab_reasoning_mode %||% "standard",
       raw_json = if (is.null(draft_meta$raw_json)) NA_character_ else draft_meta$raw_json,
       generation_mode = draft_meta$mode %||% "generated",
       enforce_max_chars = !((draft_meta$mode %||% "") %in% c("manual", "mixed")),
@@ -4815,6 +4869,8 @@ server <- function(input, output, session) {
         con,
         batch_id = batch_id,
         model = input$article_lab_score_model,
+        reasoning_effort = input$article_lab_score_reasoning_effort,
+        reasoning_mode = input$article_lab_score_reasoning_mode %||% "standard",
         prompt_version = input$article_lab_score_prompt_version,
         scope = input$article_lab_score_scope,
         candidate_ids = selected_ids
@@ -4977,6 +5033,8 @@ server <- function(input, output, session) {
         con,
         candidate_ids = selected_ids,
         model = input$article_lab_subtitle_model,
+        reasoning_effort = input$article_lab_subtitle_reasoning_effort,
+        reasoning_mode = input$article_lab_subtitle_reasoning_mode %||% "standard",
         prompt = input$article_lab_subtitle_prompt,
         variants_per_title = input$article_lab_subtitle_variants_per_title
       ),
@@ -5159,6 +5217,8 @@ server <- function(input, output, session) {
         con,
         subtitle_ids = selected_ids,
         model = input$article_lab_thumbnail_model,
+        reasoning_effort = input$article_lab_thumbnail_reasoning_effort,
+        reasoning_mode = input$article_lab_thumbnail_reasoning_mode %||% "standard",
         prompt = input$article_lab_thumbnail_prompt,
         variants_per_package = variants_per_package
       ),
@@ -5335,6 +5395,8 @@ server <- function(input, output, session) {
           generated <- generate_outline_drafts(
             selected_rows,
             model = input$article_lab_outline_model,
+            reasoning_effort = input$article_lab_outline_reasoning_effort,
+            reasoning_mode = input$article_lab_outline_reasoning_mode %||% "standard",
             prompt = input$article_lab_outline_prompt,
             include_context = isTRUE(input$article_lab_outline_include_context),
             context_notes = input$article_lab_outline_context_notes
@@ -5608,6 +5670,8 @@ server <- function(input, output, session) {
         con,
         selected_rows,
         model = input$article_lab_full_text_model,
+        reasoning_effort = input$article_lab_full_text_reasoning_effort,
+        reasoning_mode = input$article_lab_full_text_reasoning_mode %||% "standard",
         prompt = input$article_lab_full_text_prompt,
         prompt_key = input$article_lab_full_text_prompt_key,
         include_context = isTRUE(input$article_lab_full_text_include_context)
@@ -5800,6 +5864,8 @@ server <- function(input, output, session) {
       article_lab_medium_tags_api_request(
         row,
         model = input$article_lab_medium_tags_model %||% article_lab_default_medium_tags_model,
+        reasoning_effort = input$article_lab_medium_tags_reasoning_effort,
+        reasoning_mode = input$article_lab_medium_tags_reasoning_mode %||% "standard",
         prompt = input$article_lab_medium_tags_prompt %||% article_lab_default_medium_tags_prompt
       ),
       error = function(e) list(error = conditionMessage(e))

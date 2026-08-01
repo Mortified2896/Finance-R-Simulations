@@ -91,6 +91,8 @@ async function main() {
 
   const payload = JSON.parse(await fs.readFile(requestPath, "utf8"));
   const model = cleanText(payload.model) ?? DEFAULT_MODEL;
+  const reasoningEffort = cleanText(payload.reasoning_effort);
+  const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
   const prompt = cleanText(payload.prompt);
   const variantsPerPackage = Math.max(1, Math.min(4, Number.parseInt(payload.variants_per_package, 10) || DEFAULT_VARIANTS));
   const packages = normalizePackages(payload.packages);
@@ -125,11 +127,14 @@ async function main() {
           for (let variantIndex = 1; variantIndex <= variantsPerPackage; variantIndex += 1) {
             let response;
             try {
-              response = await client.responses.create({
+              const request = {
                 model,
                 input: buildPrompt({ prompt, pkg, variantIndex, variantsPerPackage }),
                 tools: [{ type: "image_generation", size: "1536x1024" }]
-              });
+              };
+              if (reasoningEffort) request.reasoning = { effort: reasoningEffort };
+              if (reasoningMode === "pro") request.reasoning = { ...(request.reasoning ?? {}), mode: "pro" };
+              response = await client.responses.create(request);
             } catch (error) {
               console.error(`OpenAI API failure: ${error.message}`);
               process.exitCode = 1;
@@ -149,6 +154,8 @@ async function main() {
               thumbnail_data_uri: `data:image/png;base64,${image.b64}`,
               created_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
               model,
+              reasoning_effort: reasoningEffort,
+              reasoning_mode: reasoningMode,
               generation_mode: "api",
               raw_json: {
                 response_id: response.id ?? null,
@@ -164,7 +171,7 @@ async function main() {
           results.push({ ...pkg, thumbnails });
         }
 
-        process.stdout.write(JSON.stringify({ mode: "api", model, results }));
+        process.stdout.write(JSON.stringify({ mode: "api", model, reasoning_effort: reasoningEffort, reasoning_mode: reasoningMode, results }));
       }
     );
   } finally {

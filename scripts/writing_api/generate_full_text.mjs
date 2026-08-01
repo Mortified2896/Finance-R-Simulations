@@ -291,6 +291,8 @@ async function main() {
 
   const payload = JSON.parse(await fs.readFile(requestPath, "utf8"));
   const model = cleanText(payload.model) ?? "gpt-5-mini";
+  const reasoningEffort = cleanText(payload.reasoning_effort);
+  const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
   const prompt = cleanText(payload.prompt);
   const promptKey = cleanText(payload.prompt_key) ?? "full_text_default";
   const packages = Array.isArray(payload.packages)
@@ -336,7 +338,10 @@ async function main() {
             tags: ["writing-api", "full-text-generation"],
             sessionId: requestPath
           });
-          response = await client.responses.create({ model, input: await buildResponsesInput({ client, prompt, packages }) });
+          const request = { model, input: await buildResponsesInput({ client, prompt, packages }) };
+          if (reasoningEffort) request.reasoning = { effort: reasoningEffort };
+          if (reasoningMode === "pro") request.reasoning = { ...(request.reasoning ?? {}), mode: "pro" };
+          response = await client.responses.create(request);
         } catch (error) {
           console.error(`OpenAI API failure: ${error.message}`);
           process.exitCode = 1;
@@ -366,6 +371,8 @@ async function main() {
         process.stdout.write(JSON.stringify({
           mode: "api",
           model,
+          reasoning_effort: reasoningEffort,
+          reasoning_mode: reasoningMode,
           prompt_key: promptKey,
           response_id: response.id ?? null,
           results,

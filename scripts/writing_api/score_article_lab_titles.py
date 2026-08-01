@@ -131,9 +131,9 @@ def prompt_content(prompt_version: str, title: str, scope: str) -> str:
     )
 
 
-def build_payload(model: str, title: str, prompt_version: str, scope: str) -> dict[str, Any]:
+def build_payload(model: str, title: str, prompt_version: str, scope: str, reasoning_effort: str | None = None, reasoning_mode: str = "standard") -> dict[str, Any]:
     schema_name = f"article_lab_title_scores_{prompt_version}_{scope}".replace("-", "_")
-    return {
+    request = {
         "model": model,
         "input": [
             {
@@ -158,6 +158,11 @@ def build_payload(model: str, title: str, prompt_version: str, scope: str) -> di
             }
         },
     }
+    if reasoning_effort:
+        request["reasoning"] = {"effort": reasoning_effort}
+    if reasoning_mode == "pro":
+        request.setdefault("reasoning", {})["mode"] = "pro"
+    return request
 
 
 def extract_response_text(response: dict[str, Any]) -> str:
@@ -223,6 +228,8 @@ def main() -> int:
     model = clean_text(payload.get("model")) or DEFAULT_MODEL
     prompt_version = clean_text(payload.get("prompt_version")) or DEFAULT_PROMPT_VERSION
     scope = clean_text(payload.get("scope")) or DEFAULT_SCOPE
+    reasoning_effort = clean_text(payload.get("reasoning_effort"))
+    reasoning_mode = clean_text(payload.get("reasoning_mode")) or "standard"
     if scope not in VALID_SCOPES:
         print(f"Unsupported scope: {scope}", file=sys.stderr)
         return 1
@@ -268,7 +275,7 @@ def main() -> int:
                 try:
                     response = call_openai(
                         client,
-                        build_payload(model, title, prompt_version, scope),
+                        build_payload(model, title, prompt_version, scope, reasoning_effort, reasoning_mode),
                         name="score-article-lab-title",
                         metadata={
                             "candidate_id": candidate_id,
@@ -284,6 +291,8 @@ def main() -> int:
                         "batch_id": batch_id,
                         "scored_at": utc_now(),
                         "model": model,
+                        "reasoning_effort": reasoning_effort,
+                        "reasoning_mode": reasoning_mode,
                         "prompt_version": prompt_version,
                         "scope": scope,
                         "predicted_success_bucket": parsed["predicted_success_bucket"],
@@ -307,6 +316,8 @@ def main() -> int:
     result = {
         "mode": "api",
         "model": model,
+        "reasoning_effort": reasoning_effort,
+        "reasoning_mode": reasoning_mode,
         "prompt_version": prompt_version,
         "scope": scope,
         "scored_count": len(scores),

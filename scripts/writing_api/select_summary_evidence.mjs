@@ -53,6 +53,7 @@ async function main() {
   const payload = JSON.parse(await fs.readFile(requestPath, "utf8"));
   const model = cleanText(payload.model) ?? "gpt-5.4-mini";
   const reasoningEffort = cleanText(payload.reasoning_effort) ?? "low";
+  const reasoningMode = cleanText(payload.reasoning_mode) ?? "standard";
   const resolvedPrompt = cleanText(payload.resolved_prompt);
   const step = cleanText(payload.step) ?? "summary-evidence";
   if (!resolvedPrompt) {
@@ -103,6 +104,7 @@ async function main() {
             input: [{ role: "user", content: [{ type: "input_text", text: resolvedPrompt }] }]
           };
           if (reasoningEffort) request.reasoning = { effort: reasoningEffort };
+          if (reasoningMode === "pro") request.reasoning = { ...(request.reasoning ?? {}), mode: "pro" };
           response = await client.responses.create(request);
         } catch (error) {
           console.error(`OpenAI API failure: ${error.message}`);
@@ -124,6 +126,7 @@ async function main() {
           step,
           model,
           reasoning_effort: reasoningEffort,
+          reasoning_mode: reasoningMode,
           raw_text: rawText,
           response_id: response.id ?? null,
           usage: response.usage ?? null,

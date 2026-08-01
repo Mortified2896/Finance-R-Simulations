@@ -366,7 +366,7 @@ save_research_pdf_asset <- function(con, source_id, status, source_url = NA_char
   dbGetQuery(con, "SELECT last_insert_rowid() AS asset_id")$asset_id[[1]]
 }
 
-research_summary_api_request <- function(source, asset, model = NA_character_, prompt_version = NA_character_, prompt = NA_character_) {
+research_summary_api_request <- function(source, asset, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt_version = NA_character_, prompt = NA_character_) {
   helper_path <- file.path("scripts", "writing_api", "summarize_research_pdf.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/summarize_research_pdf.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
@@ -375,8 +375,11 @@ research_summary_api_request <- function(source, asset, model = NA_character_, p
   local_pdf_path <- research_resolve_local_pdf_path(asset$local_path[[1]])
   if (is.na(local_pdf_path) || !file.exists(local_pdf_path)) stop("The selected PDF asset does not exist on disk.", call. = FALSE)
 
+  settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_research_summary_model, reasoning_effort, reasoning_mode)
   request_payload <- list(
-    model = article_lab_input_string(model) %||% article_lab_default_research_summary_model,
+    model = settings$model,
+    reasoning_effort = settings$reasoning_effort,
+    reasoning_mode = settings$reasoning_mode,
     prompt_version = article_lab_input_string(prompt_version) %||% article_lab_default_research_summary_prompt_version,
     prompt = article_lab_input_multiline(prompt) %||% article_lab_default_research_summary_prompt,
     research_source_id = source$research_source_id[[1]],
@@ -411,6 +414,8 @@ research_summary_api_request <- function(source, asset, model = NA_character_, p
   list(
     summary_text = summary_text,
     model = article_lab_input_string(parsed$model) %||% request_payload$model,
+    reasoning_effort = article_lab_input_string(parsed$reasoning_effort) %||% settings$reasoning_effort,
+    reasoning_mode = article_lab_input_string(parsed$reasoning_mode) %||% settings$reasoning_mode,
     prompt_version = article_lab_input_string(parsed$prompt_version) %||% request_payload$prompt_version,
     raw_json = stdout_text,
     response_id = article_lab_input_string(parsed$response_id)
@@ -585,14 +590,16 @@ research_evidence_render_template <- function(template, variables) {
   out
 }
 
-research_evidence_api_request <- function(step, resolved_prompt, model, reasoning_effort, summary_id, research_source_id) {
+research_evidence_api_request <- function(step, resolved_prompt, model, reasoning_effort, summary_id, research_source_id, reasoning_mode = "standard") {
   helper_path <- file.path("scripts", "writing_api", "select_summary_evidence.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/select_summary_evidence.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+  settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_evidence_selection_model, reasoning_effort, reasoning_mode)
   request_payload <- list(
     step = step,
-    model = article_lab_input_string(model) %||% article_lab_default_evidence_selection_model,
-    reasoning_effort = article_lab_input_string(reasoning_effort) %||% article_lab_default_evidence_reasoning_effort,
+    model = settings$model,
+    reasoning_effort = settings$reasoning_effort,
+    reasoning_mode = settings$reasoning_mode,
     resolved_prompt = article_lab_input_multiline(resolved_prompt),
     summary_id = summary_id,
     research_source_id = research_source_id

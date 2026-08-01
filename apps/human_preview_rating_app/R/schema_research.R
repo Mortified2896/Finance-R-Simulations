@@ -47,6 +47,8 @@ ensure_research_workflow_schema <- function(con) {
       status TEXT NOT NULL DEFAULT 'draft',
       confirmed_at TEXT,
       model TEXT,
+      reasoning_effort TEXT,
+      reasoning_mode TEXT,
       prompt_version TEXT,
       notes TEXT,
       raw_json TEXT,
@@ -113,6 +115,7 @@ ensure_research_workflow_schema <- function(con) {
       prompt_payload_json TEXT,
       model TEXT,
       reasoning_effort TEXT,
+      reasoning_mode TEXT,
       raw_json_response TEXT,
       error_message TEXT,
       created_at TEXT NOT NULL,
@@ -147,6 +150,7 @@ ensure_research_workflow_schema <- function(con) {
       prompt_payload_json TEXT,
       model TEXT,
       reasoning_effort TEXT,
+      reasoning_mode TEXT,
       raw_json_response TEXT,
       error_message TEXT,
       verified_at TEXT,
@@ -175,7 +179,7 @@ ensure_research_workflow_schema <- function(con) {
   summary_columns <- list(
     research_source_id = "INTEGER NOT NULL DEFAULT 0", created_at = "TEXT NOT NULL DEFAULT ''",
     updated_at = "TEXT NOT NULL DEFAULT ''", summary_text = "TEXT NOT NULL DEFAULT ''",
-    status = "TEXT NOT NULL DEFAULT 'draft'", confirmed_at = "TEXT", model = "TEXT",
+    status = "TEXT NOT NULL DEFAULT 'draft'", confirmed_at = "TEXT", model = "TEXT", reasoning_effort = "TEXT", reasoning_mode = "TEXT",
     prompt_version = "TEXT", notes = "TEXT", raw_json = "TEXT"
   )
   for (column_name in names(summary_columns)) db_add_column_if_missing(con, "research_source_summaries", column_name, summary_columns[[column_name]])
@@ -207,7 +211,7 @@ ensure_research_workflow_schema <- function(con) {
     claim_index = "INTEGER NOT NULL DEFAULT 0", claim_text = "TEXT NOT NULL DEFAULT ''",
     original_text = "TEXT", placement_hint = "TEXT", importance = "TEXT",
     status = "TEXT NOT NULL DEFAULT 'suggested'", prompt_template = "TEXT",
-    prompt_payload_json = "TEXT", model = "TEXT", reasoning_effort = "TEXT",
+    prompt_payload_json = "TEXT", model = "TEXT", reasoning_effort = "TEXT", reasoning_mode = "TEXT",
     raw_json_response = "TEXT", error_message = "TEXT",
     created_at = "TEXT NOT NULL DEFAULT ''", updated_at = "TEXT NOT NULL DEFAULT ''"
   )
@@ -217,7 +221,7 @@ ensure_research_workflow_schema <- function(con) {
     claim_id = "INTEGER NOT NULL DEFAULT 0", sentence_id = "INTEGER",
     selection_status = "TEXT NOT NULL DEFAULT 'suggested'", confidence = "TEXT",
     selector_reason = "TEXT", prompt_template = "TEXT", prompt_payload_json = "TEXT",
-    model = "TEXT", reasoning_effort = "TEXT", raw_json_response = "TEXT",
+    model = "TEXT", reasoning_effort = "TEXT", reasoning_mode = "TEXT", raw_json_response = "TEXT",
     error_message = "TEXT", verified_at = "TEXT", verified_by = "TEXT",
     notes = "TEXT", created_at = "TEXT NOT NULL DEFAULT ''", updated_at = "TEXT NOT NULL DEFAULT ''"
   )

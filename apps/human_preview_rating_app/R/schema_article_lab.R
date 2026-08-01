@@ -1,5 +1,17 @@
 ensure_article_lab_schema <- function(con) {
   dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_generation_preferences (
+      workflow_key TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      reasoning_effort TEXT,
+      reasoning_mode TEXT NOT NULL DEFAULT 'standard',
+      last_supported_reasoning_effort TEXT,
+      last_supported_reasoning_mode TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  ")
+  dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_lab_prompts (
       prompt_key TEXT PRIMARY KEY,
       created_at TEXT NOT NULL,
@@ -25,6 +37,8 @@ ensure_article_lab_schema <- function(con) {
   ")
 
   db_add_column_if_missing(con, "article_lab_title_batches", "article_project_id", "TEXT")
+  db_add_column_if_missing(con, "article_lab_title_batches", "reasoning_effort", "TEXT")
+  db_add_column_if_missing(con, "article_lab_title_batches", "reasoning_mode", "TEXT")
   dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_article_lab_title_batches_project ON article_lab_title_batches (article_project_id, created_at DESC)")
 
   dbExecute(con, "
@@ -45,7 +59,6 @@ ensure_article_lab_schema <- function(con) {
       FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
     )
   ")
-
   db_add_column_if_missing(con, "article_lab_title_batches", "article_context_notes", "TEXT")
 
   db_add_column_if_missing(con, "article_lab_title_candidates", "title_char_count", "INTEGER")
@@ -87,6 +100,8 @@ ensure_article_lab_schema <- function(con) {
       FOREIGN KEY(batch_id) REFERENCES article_lab_title_batches(batch_id)
     )
   ")
+  db_add_column_if_missing(con, "article_lab_title_api_scores", "reasoning_effort", "TEXT")
+  db_add_column_if_missing(con, "article_lab_title_api_scores", "reasoning_mode", "TEXT")
 
   dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_lab_subtitle_candidates (
@@ -112,6 +127,8 @@ ensure_article_lab_schema <- function(con) {
   db_add_column_if_missing(con, "article_lab_subtitle_candidates", "generation_mode", "TEXT")
   db_add_column_if_missing(con, "article_lab_subtitle_candidates", "raw_json", "TEXT")
   db_add_column_if_missing(con, "article_lab_subtitle_candidates", "approved_at", "TEXT")
+  db_add_column_if_missing(con, "article_lab_subtitle_candidates", "reasoning_effort", "TEXT")
+  db_add_column_if_missing(con, "article_lab_subtitle_candidates", "reasoning_mode", "TEXT")
   db_add_column_if_missing(con, "article_lab_subtitle_candidates", "rejected_at", "TEXT")
 
   dbExecute(con, "
@@ -142,6 +159,8 @@ ensure_article_lab_schema <- function(con) {
   db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "generation_mode", "TEXT")
   db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "raw_json", "TEXT")
   db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "approved_at", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "reasoning_effort", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "reasoning_mode", "TEXT")
   db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "rejected_at", "TEXT")
 
   dbExecute(con, "
@@ -173,6 +192,8 @@ ensure_article_lab_schema <- function(con) {
   db_add_column_if_missing(con, "article_lab_outlines", "generation_mode", "TEXT")
   db_add_column_if_missing(con, "article_lab_outlines", "raw_json", "TEXT")
   db_add_column_if_missing(con, "article_lab_outlines", "approved_at", "TEXT")
+  db_add_column_if_missing(con, "article_lab_outlines", "reasoning_effort", "TEXT")
+  db_add_column_if_missing(con, "article_lab_outlines", "reasoning_mode", "TEXT")
   db_add_column_if_missing(con, "article_lab_outlines", "archived", "INTEGER NOT NULL DEFAULT 0")
   db_add_column_if_missing(con, "article_lab_outlines", "archived_at", "TEXT")
 
@@ -214,7 +235,7 @@ ensure_article_lab_schema <- function(con) {
     candidate_id = "TEXT NOT NULL DEFAULT ''", batch_id = "TEXT NOT NULL DEFAULT ''",
     original_generated_text = "TEXT NOT NULL DEFAULT ''", current_draft_text = "TEXT NOT NULL DEFAULT ''",
     status = "TEXT NOT NULL DEFAULT 'draft'", is_approved = "INTEGER NOT NULL DEFAULT 0",
-    model = "TEXT", prompt_key = "TEXT", prompt_version = "TEXT", generation_mode = "TEXT NOT NULL DEFAULT 'generated'",
+    model = "TEXT", reasoning_effort = "TEXT", reasoning_mode = "TEXT", prompt_key = "TEXT", prompt_version = "TEXT", generation_mode = "TEXT NOT NULL DEFAULT 'generated'",
     source_context_mode = "TEXT", citation_map_json = "TEXT", raw_json = "TEXT", notes = "TEXT",
     created_at = "TEXT NOT NULL DEFAULT ''", updated_at = "TEXT NOT NULL DEFAULT ''",
     approved_at = "TEXT", rejected_at = "TEXT"

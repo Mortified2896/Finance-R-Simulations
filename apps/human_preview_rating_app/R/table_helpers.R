@@ -648,7 +648,7 @@ article_lab_review_publish_selector_ui <- function(rows, selected_id = NULL) {
   selectizeInput("article_lab_review_publish_draft_id", "Approved article", choices = choices, selected = selected_id, width = "100%")
 }
 
-article_lab_review_publish_workspace_ui <- function(row, publications) {
+article_lab_review_publish_workspace_ui <- function(row, publications, con = NULL) {
   if (nrow(row) == 0) return(article_lab_empty_state("Select an approved draft", "Select an approved full article draft to manage publishing metadata."))
   target <- article_lab_row_value(row, "publishing_target", "Do not publish yet")
   if (is.na(target) || !(target %in% article_lab_publish_target_choices)) target <- "Do not publish yet"
@@ -689,7 +689,7 @@ article_lab_review_publish_workspace_ui <- function(row, publications) {
         div(
           class = "lab-grid",
           div(class = "lab-field", textInput("article_lab_publish_medium_tags", "Medium tags (max 5, comma or line separated)", value = article_lab_tags_display(article_lab_row_value(row, "medium_tags_json", "")), width = "100%")),
-          div(class = "lab-field", selectInput("article_lab_medium_tags_model", "Medium tags model", choices = article_lab_medium_tags_model_choices, selected = article_lab_default_medium_tags_model, width = "100%")),
+          if (is.null(con)) div(class = "lab-field", selectInput("article_lab_medium_tags_model", "Medium tags model", choices = article_lab_medium_tags_model_choices, selected = article_lab_default_medium_tags_model, width = "100%")) else article_lab_generation_control_ui(con, "medium_tags", article_lab_medium_tags_model_choices, article_lab_default_medium_tags_model, "Medium tags model"),
           div(class = "lab-field", selectInput("article_lab_publishing_target", "Publishing target", choices = article_lab_publish_target_choices, selected = target, width = "100%")),
           div(class = "lab-field", selectInput("article_lab_publish_status", "Publish status", choices = setNames(article_lab_publish_status_values, vapply(article_lab_publish_status_values, article_lab_publish_status_label, character(1))), selected = publish_status, width = "100%")),
           div(class = "lab-field", selectInput("article_lab_monetization", "Monetization", choices = article_lab_monetization_choices, selected = monetization, width = "100%"))

@@ -7,6 +7,18 @@ article_lab_has_api_key <- function() {
   any(grepl("^\\s*OPENAI_API_KEY\\s*=\\s*.+", lines))
 }
 
+article_lab_validate_generation_settings <- function(model, reasoning_effort = NA_character_, reasoning_mode = "standard") {
+  model <- article_lab_input_string(model)
+  if (is.na(model)) stop("A generation model is required.", call. = FALSE)
+  supported <- article_lab_reasoning_capabilities(model)
+  effort <- article_lab_input_string(reasoning_effort)
+  mode <- article_lab_input_string(reasoning_mode) %||% "standard"
+  if (!is.null(effort) && !effort %in% supported) stop("Reasoning level '", effort, "' is not supported by model ", model, ".", call. = FALSE)
+  if (!mode %in% c("standard", "pro")) stop("Unsupported execution mode: ", mode, call. = FALSE)
+  if (identical(mode, "pro") && !article_lab_supports_pro_mode(model)) stop("Pro mode is not supported by model ", model, ".", call. = FALSE)
+  list(model = model, reasoning_effort = if (length(supported) == 0 || is.null(effort)) NA_character_ else effort, reasoning_mode = if (article_lab_supports_pro_mode(model)) mode else "standard")
+}
+
 article_lab_python_candidates <- function() {
   env_candidates <- clean_text(c(
     Sys.getenv("ARTICLE_LAB_PYTHON", unset = ""),
@@ -155,18 +167,21 @@ article_lab_effective_title_prompt_text <- function(prompt, batch_size, seed_top
   if (!is.na(context)) sprintf("Article context:\n%s\n\n%s", context, base_prompt) else base_prompt
 }
 
-article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_, example_titles = character(), manual_prompt = NA_character_, context_notes = NA_character_) {
+article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", example_titles = character(), manual_prompt = NA_character_, context_notes = NA_character_) {
   helper_path <- file.path("scripts", "writing_api", "generate_titles.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_titles.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
 
+  settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_model, reasoning_effort, reasoning_mode)
   request_payload <- list(
     prompt = article_lab_input_string(prompt) %||% article_lab_default_prompt,
     manual_prompt = article_lab_input_multiline(manual_prompt),
     batch_size = as.integer(batch_size),
     seed_topic = article_lab_input_string(seed_topic),
     inspiration_source = article_lab_input_string(inspiration_source),
-    model = article_lab_input_string(model) %||% article_lab_default_model,
+    model = settings$model,
+    reasoning_effort = settings$reasoning_effort,
+    reasoning_mode = settings$reasoning_mode,
     example_titles = unname(example_titles),
     context_notes = article_lab_input_multiline(context_notes)
   )
@@ -208,6 +223,8 @@ article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_characte
     ),
     mode = article_lab_input_string(parsed$mode) %||% "api",
     model = article_lab_input_string(parsed$model) %||% request_payload$model,
+    reasoning_effort = article_lab_input_string(parsed$reasoning_effort) %||% settings$reasoning_effort,
+    reasoning_mode = article_lab_input_string(parsed$reasoning_mode) %||% settings$reasoning_mode,
     raw_json = stdout_text,
     example_titles_used = as.integer(length(example_titles)),
     response_id = article_lab_input_string(parsed$response_id),
@@ -217,7 +234,7 @@ article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_characte
   )
 }
 
-generate_title_candidates <- function(con, prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_, manual_prompt = NA_character_, context_notes = NA_character_) {
+generate_title_candidates <- function(con, prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", manual_prompt = NA_character_, context_notes = NA_character_) {
   inspiration_value <- article_lab_input_string(inspiration_source)
   example_titles <- if (identical(inspiration_value, "top performing titles")) article_lab_top_title_examples(con, limit = 8L) else character()
 
@@ -228,6 +245,8 @@ generate_title_candidates <- function(con, prompt, batch_size, seed_topic = NA_c
       seed_topic = seed_topic,
       inspiration_source = inspiration_source,
       model = model,
+      reasoning_effort = reasoning_effort,
+      reasoning_mode = reasoning_mode,
       example_titles = example_titles,
       manual_prompt = manual_prompt,
       context_notes = context_notes
@@ -315,15 +334,18 @@ article_lab_score_user_prompt <- function(prompt_version, scope, title) {
   )
 }
 
-article_lab_score_api_request <- function(candidates, model = NA_character_, prompt_version = NA_character_, scope = NA_character_) {
+article_lab_score_api_request <- function(candidates, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt_version = NA_character_, scope = NA_character_) {
   helper_path <- file.path("scripts", "writing_api", "score_article_lab_titles.py")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/score_article_lab_titles.py", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
   if (nrow(candidates) == 0) return(list(scores = data.frame(), errors = list()))
   python_bin <- article_lab_resolve_python()
 
+  settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_score_model, reasoning_effort, reasoning_mode)
   request_payload <- list(
-    model = article_lab_input_string(model) %||% article_lab_default_score_model,
+    model = settings$model,
+    reasoning_effort = settings$reasoning_effort,
+    reasoning_mode = settings$reasoning_mode,
     prompt_version = article_lab_input_string(prompt_version) %||% article_lab_default_score_prompt_version,
     scope = article_lab_input_string(scope) %||% article_lab_default_score_scope,
     candidates = unname(lapply(seq_len(nrow(candidates)), function(i) {
@@ -447,14 +469,17 @@ article_lab_manual_subtitle_choice_map <- function(target_rows, pending_rows) {
   choices
 }
 
-article_lab_thumbnail_api_request <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, prompt = NA_character_) {
+article_lab_thumbnail_api_request <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_) {
   helper_path <- file.path("scripts", "writing_api", "generate_thumbnails.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_thumbnails.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
   if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_thumbnail_model, mode = "api", raw_json = NULL))
 
+  settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_thumbnail_model, reasoning_effort, reasoning_mode)
   request_payload <- list(
-    model = article_lab_input_string(model) %||% article_lab_default_thumbnail_model,
+    model = settings$model,
+    reasoning_effort = settings$reasoning_effort,
+    reasoning_mode = settings$reasoning_mode,
     prompt = article_lab_input_string(prompt) %||% article_lab_default_thumbnail_prompt,
     variants_per_package = max(1L, min(4L, suppressWarnings(as.integer(variants_per_package)) %||% article_lab_default_thumbnail_variants)),
     packages = unname(lapply(seq_len(nrow(packages)), function(i) {
@@ -505,6 +530,8 @@ article_lab_thumbnail_api_request <- function(packages, variants_per_package = a
         thumbnail_data_uri = article_lab_input_string(thumbnail$thumbnail_data_uri),
         created_at = article_lab_input_string(thumbnail$created_at) %||% now_utc(),
         model = article_lab_input_string(thumbnail$model) %||% article_lab_input_string(parsed$model) %||% request_payload$model,
+        reasoning_effort = article_lab_input_string(thumbnail$reasoning_effort) %||% settings$reasoning_effort,
+        reasoning_mode = article_lab_input_string(thumbnail$reasoning_mode) %||% settings$reasoning_mode,
         generation_mode = article_lab_input_string(thumbnail$generation_mode) %||% "api",
         raw_json = if (is.null(thumbnail$raw_json)) stdout_text else toJSON(thumbnail$raw_json, auto_unbox = TRUE, null = "null"),
         stringsAsFactors = FALSE,
@@ -523,9 +550,9 @@ article_lab_thumbnail_api_request <- function(packages, variants_per_package = a
   )
 }
 
-generate_thumbnail_candidates <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, prompt = NA_character_) {
+generate_thumbnail_candidates <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_) {
   tryCatch(
-    article_lab_thumbnail_api_request(packages, variants_per_package = variants_per_package, model = model, prompt = prompt),
+    article_lab_thumbnail_api_request(packages, variants_per_package = variants_per_package, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt),
     error = function(e) {
       list(
         rows = data.frame(),
@@ -538,15 +565,18 @@ generate_thumbnail_candidates <- function(packages, variants_per_package = artic
   )
 }
 
-article_lab_outline_api_request <- function(packages, model = NA_character_, prompt = NA_character_, include_context = TRUE, context_notes = NULL) {
+article_lab_outline_api_request <- function(packages, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, include_context = TRUE, context_notes = NULL) {
   helper_path <- file.path("scripts", "writing_api", "generate_outlines.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_outlines.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
   if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_outline_model, mode = "api", raw_json = NULL))
 
   context_notes_clean <- article_lab_input_multiline(context_notes)
+  settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_outline_model, reasoning_effort, reasoning_mode)
   request_payload <- list(
-    model = article_lab_input_string(model) %||% article_lab_default_outline_model,
+    model = settings$model,
+    reasoning_effort = settings$reasoning_effort,
+    reasoning_mode = settings$reasoning_mode,
     prompt = article_lab_input_multiline(prompt) %||% article_lab_default_outline_prompt,
     context_notes = if (is.null(context_notes_clean) || is.na(context_notes_clean) || !nzchar(context_notes_clean)) NULL else context_notes_clean,
     packages = unname(lapply(seq_len(nrow(packages)), function(i) {
@@ -595,6 +625,8 @@ article_lab_outline_api_request <- function(packages, model = NA_character_, pro
       outline_text = article_lab_input_multiline(entry$outline_text),
       created_at = now_utc(),
       model = article_lab_input_string(parsed$model) %||% request_payload$model,
+      reasoning_effort = article_lab_input_string(parsed$reasoning_effort) %||% settings$reasoning_effort,
+      reasoning_mode = article_lab_input_string(parsed$reasoning_mode) %||% settings$reasoning_mode,
       generation_mode = "api",
       raw_json = stdout_text,
       stringsAsFactors = FALSE,
@@ -610,9 +642,9 @@ article_lab_outline_api_request <- function(packages, model = NA_character_, pro
   )
 }
 
-generate_outline_drafts <- function(packages, model = NA_character_, prompt = NA_character_, include_context = TRUE, context_notes = NULL) {
+generate_outline_drafts <- function(packages, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, include_context = TRUE, context_notes = NULL) {
   tryCatch(
-    article_lab_outline_api_request(packages, model = model, prompt = prompt, include_context = include_context, context_notes = context_notes),
+    article_lab_outline_api_request(packages, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt, include_context = include_context, context_notes = context_notes),
     error = function(e) {
       list(
         rows = data.frame(),
@@ -624,14 +656,17 @@ generate_outline_drafts <- function(packages, model = NA_character_, prompt = NA
   )
 }
 
-article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L, model = NA_character_, prompt = NA_character_) {
+article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_) {
   helper_path <- file.path("scripts", "writing_api", "generate_subtitles.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_subtitles.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
   if (nrow(candidates) == 0) return(list(rows = data.frame(), model = article_lab_default_subtitle_model, mode = "api", raw_json = NULL))
 
+  settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_subtitle_model, reasoning_effort, reasoning_mode)
   request_payload <- list(
-    model = article_lab_input_string(model) %||% article_lab_default_subtitle_model,
+    model = settings$model,
+    reasoning_effort = settings$reasoning_effort,
+    reasoning_mode = settings$reasoning_mode,
     prompt = article_lab_input_string(prompt) %||% article_lab_default_subtitle_prompt,
     variants_per_title = max(1L, min(8L, suppressWarnings(as.integer(variants_per_title)) %||% 4L)),
     candidates = unname(lapply(seq_len(nrow(candidates)), function(i) {
@@ -677,6 +712,8 @@ article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L
       subtitle = subtitles,
       created_at = rep(article_lab_input_string(entry$created_at) %||% now_utc(), length(subtitles)),
       model = rep(article_lab_input_string(entry$model) %||% request_payload$model, length(subtitles)),
+      reasoning_effort = rep(article_lab_input_string(parsed$reasoning_effort) %||% settings$reasoning_effort, length(subtitles)),
+      reasoning_mode = rep(article_lab_input_string(parsed$reasoning_mode) %||% settings$reasoning_mode, length(subtitles)),
       generation_mode = rep(article_lab_input_string(entry$generation_mode) %||% "api", length(subtitles)),
       raw_json = rep(if (is.null(entry$raw_json)) stdout_text else toJSON(entry$raw_json, auto_unbox = TRUE, null = "null"), length(subtitles)),
       stringsAsFactors = FALSE,
@@ -693,9 +730,9 @@ article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L
   )
 }
 
-generate_subtitle_candidates <- function(candidates, variants_per_title = 4L, model = NA_character_, prompt = NA_character_) {
+generate_subtitle_candidates <- function(candidates, variants_per_title = 4L, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_) {
   tryCatch(
-    article_lab_subtitle_api_request(candidates, variants_per_title = variants_per_title, model = model, prompt = prompt),
+    article_lab_subtitle_api_request(candidates, variants_per_title = variants_per_title, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt),
     error = function(e) {
       list(
         rows = data.frame(),
