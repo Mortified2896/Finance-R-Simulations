@@ -292,7 +292,7 @@ article_lab_thumbnail_package_table_ui <- function(rows) {
   if (nrow(rows) == 0) {
     return(article_lab_empty_state(
       "No packages need thumbnails",
-      "No title/subtitle packages currently need thumbnail candidates in this selection.",
+      "No title/subtitle packages are currently available for another thumbnail batch in this selection.",
       "Next step: approve subtitle candidates from Subtitle Generation."
     ))
   }
@@ -375,6 +375,23 @@ article_lab_thumbnail_candidate_grid_ui <- function(rows) {
               src = row$thumbnail_data_uri[[1]],
               alt = paste("Thumbnail candidate for", row$title[[1]])
             )
+          )
+        ),
+        tags$details(
+          class = "thumbnail-generation-metadata",
+          tags$summary("Generation details"),
+          tags$dl(
+            tags$dt("Submitted prompt"), tags$dd(tags$pre(class = "lab-status-copy", row$submitted_prompt[[1]] %||% "Not recorded")),
+            tags$dt("OpenAI revised prompt"), tags$dd(tags$pre(class = "lab-status-copy", row$revised_prompt[[1]] %||% "Not returned")),
+            tags$dt("Orchestration model"), tags$dd(row$model[[1]] %||% "Not recorded"),
+            tags$dt("Reasoning / execution"), tags$dd(sprintf("%s / %s", row$reasoning_effort[[1]] %||% "omitted", row$reasoning_mode[[1]] %||% "omitted")),
+            tags$dt("Effective image settings"), tags$dd(tags$pre(class = "lab-status-copy", row$image_settings_json[[1]] %||% "Not recorded")),
+            tags$dt("OpenAI response ID"), tags$dd(row$response_id[[1]] %||% "Not recorded"),
+            tags$dt("Image-generation call ID"), tags$dd(row$image_generation_call_id[[1]] %||% "Not recorded"),
+            tags$dt("Generated"), tags$dd(row$created_at[[1]] %||% "Not recorded"),
+            tags$dt("Local asset"), tags$dd(row$local_asset_path[[1]] %||% "Not recorded"),
+            tags$dt("Package / variant"), tags$dd(sprintf("%s / %s", row$subtitle_id[[1]], row$variant_index[[1]] %||% "Not recorded"))
+            ,tags$dt("Generation batch"), tags$dd(row$generation_run_id[[1]] %||% "Not recorded")
           )
         ),
         textInput(notes_id, label = NULL, value = row$notes[[1]] %||% "", width = "100%", placeholder = "Optional note")

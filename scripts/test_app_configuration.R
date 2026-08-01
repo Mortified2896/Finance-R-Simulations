@@ -82,7 +82,7 @@ expect(identical(responses_precedence$article_lab_default_thumbnail_model, "gpt-
 
 built_in_images_config <- load_config(include_article_lab = TRUE)
 expect(identical(built_in_images_config$article_lab_default_thumbnail_model, built_in_images_config$article_lab_builtin_thumbnail_model), "The built-in Images default must be used when neither thumbnail-specific variable is set.")
-expect(identical(built_in_images_config$article_lab_builtin_thumbnail_model, "gpt-5.5"), "The built-in Images default changed unexpectedly.")
+expect(identical(built_in_images_config$article_lab_builtin_thumbnail_model, "gpt-5.4-mini"), "The built-in Images repair-test default changed unexpectedly.")
 
 title_isolation <- load_config(
   list(OPENAI_TITLE_GENERATION_MODEL = "gpt-4.1"),

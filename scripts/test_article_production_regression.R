@@ -96,8 +96,12 @@ expect(setequal(load_article_lab_batches(con, project_a)$batch_id, c(batch_a, re
 
 subtitle_a <- paste0("sub_", title_a)
 dbExecute(con, "INSERT INTO article_lab_subtitle_candidates (subtitle_id, candidate_id, batch_id, created_at, subtitle, status, model, generation_mode) VALUES (?, ?, ?, ?, ?, 'approved', 'fixture-model', 'fixture')", params = list(subtitle_a, title_a, batch_a, timestamp, "Project A subtitle"))
+generated_thumbnail_a <- paste0("thumb_generated_", title_a)
+dbExecute(con, "INSERT INTO article_lab_thumbnail_candidates (thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, thumbnail_label, thumbnail_data_uri, status, model, generation_mode) VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', 'fixture-model', 'fixture')", params = list(generated_thumbnail_a, subtitle_a, title_a, batch_a, timestamp, "Earlier generated thumbnail", "data:image/svg+xml;base64,PHN2Zy8+"))
+expect(subtitle_a %in% load_article_lab_thumbnail_packages(con, batch_a)$subtitle_id, "A package with unapproved generated thumbnails must remain available for another generation batch.")
 thumbnail_a <- paste0("thumb_", title_a)
 dbExecute(con, "INSERT INTO article_lab_thumbnail_candidates (thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, thumbnail_label, thumbnail_data_uri, status, model, generation_mode) VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', 'fixture-model', 'fixture')", params = list(thumbnail_a, subtitle_a, title_a, batch_a, timestamp, "Project A thumbnail", "data:image/svg+xml;base64,PHN2Zy8+"))
+expect(!(subtitle_a %in% load_article_lab_thumbnail_packages(con, batch_a)$subtitle_id), "A package must leave thumbnail generation only after a thumbnail is approved.")
 outline_a <- paste0("outline_", title_a)
 dbExecute(con, "INSERT INTO article_lab_outlines (outline_id, thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, updated_at, outline_text, status, model, generation_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', 'fixture-model', 'fixture')", params = list(outline_a, thumbnail_a, subtitle_a, title_a, batch_a, timestamp, timestamp, "# Project A outline\n\n## Evidence"))
 draft_a <- paste0("draft_", title_a)

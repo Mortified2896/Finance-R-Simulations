@@ -1993,6 +1993,8 @@ article_lab_js <- function(is_dimension_mode_value = get0("is_dimension_mode", i
       "        if (!event.target || !event.target.matches('input[type=\"checkbox\"]')) return;",
       "        articleLabApplyFullTextSingleSelection(event.target);",
       "        articleLabRefreshSelectionState(document);",
+      "        const selectionItem = event.target.closest('[data-selection-group]');",
+      "        if (selectionItem) articleLabSyncSelections(selectionItem.getAttribute('data-selection-group'));",
       "      });",
         "",
         "      window.articleLabSyncSelections = articleLabSyncSelections;",

@@ -162,6 +162,14 @@ ensure_article_lab_schema <- function(con) {
   db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "reasoning_effort", "TEXT")
   db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "reasoning_mode", "TEXT")
   db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "rejected_at", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "submitted_prompt", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "revised_prompt", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "response_id", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "image_generation_call_id", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "variant_index", "INTEGER")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "image_settings_json", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "local_asset_path", "TEXT")
+  db_add_column_if_missing(con, "article_lab_thumbnail_candidates", "generation_run_id", "TEXT")
 
   dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_lab_outlines (

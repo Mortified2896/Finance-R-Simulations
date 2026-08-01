@@ -110,7 +110,7 @@ article_lab_generation_workflows <- list(
   titles = list(model_id = "article_lab_model", reasoning_id = "article_lab_reasoning_effort", mode_id = "article_lab_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_TITLE_GENERATION_REASONING_EFFORT", "low"), default_mode = article_lab_generation_env("OPENAI_TITLE_GENERATION_REASONING_MODE", "standard")),
   scoring = list(model_id = "article_lab_score_model", reasoning_id = "article_lab_score_reasoning_effort", mode_id = "article_lab_score_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_TITLE_SCORING_REASONING_EFFORT", "low"), default_mode = article_lab_generation_env("OPENAI_TITLE_SCORING_REASONING_MODE", "standard")),
   subtitles = list(model_id = "article_lab_subtitle_model", reasoning_id = "article_lab_subtitle_reasoning_effort", mode_id = "article_lab_subtitle_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_SUBTITLE_GENERATION_REASONING_EFFORT", "low"), default_mode = article_lab_generation_env("OPENAI_SUBTITLE_GENERATION_REASONING_MODE", "standard")),
-  thumbnails = list(model_id = "article_lab_thumbnail_model", reasoning_id = "article_lab_thumbnail_reasoning_effort", mode_id = "article_lab_thumbnail_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_THUMBNAIL_GENERATION_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_THUMBNAIL_GENERATION_REASONING_MODE", "standard")),
+  thumbnails = list(model_id = "article_lab_thumbnail_model", reasoning_id = "article_lab_thumbnail_reasoning_effort", mode_id = "article_lab_thumbnail_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_THUMBNAIL_GENERATION_REASONING_EFFORT", "none"), default_mode = article_lab_generation_env("OPENAI_THUMBNAIL_GENERATION_REASONING_MODE", "standard")),
   outlines = list(model_id = "article_lab_outline_model", reasoning_id = "article_lab_outline_reasoning_effort", mode_id = "article_lab_outline_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_OUTLINE_GENERATION_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_OUTLINE_GENERATION_REASONING_MODE", "standard")),
   full_text = list(model_id = "article_lab_full_text_model", reasoning_id = "article_lab_full_text_reasoning_effort", mode_id = "article_lab_full_text_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_FULL_TEXT_GENERATION_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_FULL_TEXT_GENERATION_REASONING_MODE", "standard")),
   research_summary = list(model_id = "research_summary_model", reasoning_id = "research_summary_reasoning_effort", mode_id = "research_summary_reasoning_mode", default_reasoning = article_lab_generation_env("OPENAI_RESEARCH_SUMMARY_REASONING_EFFORT", "medium"), default_mode = article_lab_generation_env("OPENAI_RESEARCH_SUMMARY_REASONING_MODE", "standard")),
@@ -141,7 +141,7 @@ article_lab_default_subtitle_model <- local({
   configured
 })
 article_lab_subtitle_model_choices <- article_lab_model_choices_with_default(article_lab_default_subtitle_model)
-article_lab_builtin_thumbnail_model <- "gpt-5.5"
+article_lab_builtin_thumbnail_model <- "gpt-5.4-mini"
 article_lab_default_thumbnail_model <- local({
   configured <- Sys.getenv("OPENAI_THUMBNAIL_GENERATION_MODEL", unset = "")
   source_name <- "OPENAI_THUMBNAIL_GENERATION_MODEL"
@@ -159,6 +159,14 @@ article_lab_default_thumbnail_model <- local({
   )
 })
 article_lab_thumbnail_model_choices <- article_lab_image_generation_models
+article_lab_thumbnail_size_choices <- c("Landscape (1536x1024)" = "1536x1024", "Square (1024x1024)" = "1024x1024", "Portrait (1024x1536)" = "1024x1536", "OpenAI API default" = "auto")
+article_lab_thumbnail_quality_choices <- c("Low" = "low", "Medium" = "medium", "High" = "high", "OpenAI API default" = "auto")
+article_lab_thumbnail_output_format_choices <- c("PNG" = "png", "WebP" = "webp", "JPEG" = "jpeg")
+article_lab_thumbnail_background_choices <- c("OpenAI API default" = "auto", "Opaque" = "opaque", "Transparent" = "transparent")
+article_lab_default_thumbnail_size <- "1536x1024"
+article_lab_default_thumbnail_quality <- "low"
+article_lab_default_thumbnail_output_format <- "png"
+article_lab_default_thumbnail_background <- "auto"
 article_lab_default_outline_model <- local({
   configured <- Sys.getenv("OPENAI_OUTLINE_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_SUBTITLE_GENERATION_MODEL", unset = "")

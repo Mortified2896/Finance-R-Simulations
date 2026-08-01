@@ -45,6 +45,18 @@ expect(inherits(invalid_request_error, "try-error"), "The server boundary must r
 expect(!api_called, "Image capability validation must run before API setup or execution.")
 expect(grepl("gpt-5-mini", as.character(invalid_request_error), fixed = TRUE), "Server rejection must report the selected invalid model without falling back.")
 
+payload <- article_lab_thumbnail_request_payload(
+  data.frame(subtitle_id = "sub_1", candidate_id = "candidate_1", batch_id = "batch_1", title = "Title", subtitle = "Subtitle"),
+  variants_per_package = 2L, model = "gpt-5.4-mini", reasoning_effort = "none", reasoning_mode = "standard",
+  prompt = "{{input_context}} variant {{variant_index}}/{{variants_per_package}}",
+  size = "1536x1024", quality = "low", output_format = "webp", output_compression = 81L, background = "opaque"
+)
+expect(identical(payload$size, "1536x1024") && identical(payload$quality, "low"), "Image size or quality did not reach the canonical helper payload.")
+expect(identical(payload$output_format, "webp") && identical(payload$output_compression, 81L) && identical(payload$background, "opaque"), "Image output settings did not reach the canonical helper payload.")
+expect(identical(payload$streaming, FALSE) && is.null(payload$partial_images), "Fixed non-streaming settings changed unexpectedly.")
+disabled_mode_payload <- article_lab_thumbnail_request_payload(payload$packages |> as.data.frame(), 1L, "gpt-5.4-mini", "none", "__unsupported__")
+expect(identical(disabled_mode_payload$reasoning_mode, "standard"), "A disabled execution-mode sentinel must be omitted rather than sent to validation or the API.")
+
 test_db <- tempfile(pattern = "article_lab_generation_preferences_", fileext = ".sqlite")
 on.exit(unlink(test_db, force = TRUE), add = TRUE)
 con <- dbConnect(SQLite(), test_db)

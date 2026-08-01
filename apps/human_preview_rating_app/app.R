@@ -917,7 +917,12 @@ server <- function(input, output, session) {
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
             article_lab_generation_control_ui(con, "thumbnails", article_lab_thumbnail_model_choices, article_lab_default_thumbnail_model, "Responses generation model"),
-            div(class = "lab-field", numericInput("article_lab_thumbnail_variants_per_package", "Thumbnail candidates per package", value = article_lab_default_thumbnail_variants, min = 1L, max = 4L, width = "100%"))
+            div(class = "lab-field", numericInput("article_lab_thumbnail_variants_per_package", "Thumbnail candidates per package", value = article_lab_default_thumbnail_variants, min = 1L, max = 4L, width = "100%")),
+            div(class = "lab-field", selectInput("article_lab_thumbnail_size", "Image size", choices = article_lab_thumbnail_size_choices, selected = article_lab_default_thumbnail_size, width = "100%")),
+            div(class = "lab-field", selectInput("article_lab_thumbnail_quality", "Image quality", choices = article_lab_thumbnail_quality_choices, selected = article_lab_default_thumbnail_quality, width = "100%")),
+            div(class = "lab-field", selectInput("article_lab_thumbnail_output_format", "Output format", choices = article_lab_thumbnail_output_format_choices, selected = article_lab_default_thumbnail_output_format, width = "100%")),
+            uiOutput("article_lab_thumbnail_compression_control"),
+            div(class = "lab-field", selectInput("article_lab_thumbnail_background", "Background", choices = article_lab_thumbnail_background_choices, selected = article_lab_default_thumbnail_background, width = "100%"), p(class = "lab-status-copy", "Transparent backgrounds require PNG or WebP. Invalid combinations are rejected before execution."))
           ),
           article_lab_action_bar(
             actionButton("article_lab_refresh_thumbnails", "Refresh", class = "lab-secondary")
@@ -3573,12 +3578,6 @@ server <- function(input, output, session) {
     } else {
       packages[0, , drop = FALSE]
     }
-    request_additions <- paste(
-      sprintf("Model: %s", article_lab_input_string(input$article_lab_thumbnail_model) %||% article_lab_default_thumbnail_model),
-      "Image generation: Responses API built-in image_generation tool",
-      sprintf("Thumbnail candidates per package: %s", variants_per_package),
-      sep = "\n"
-    )
     package_list <- if (nrow(selected_packages) == 0) {
       "(No selected eligible title/subtitle packages. Select package checkboxes to see the exact package context that will be sent.)"
     } else {
@@ -3594,36 +3593,59 @@ server <- function(input, output, session) {
         )
       }, character(1)), collapse = "\n\n")
     }
-    exact_prompt <- if (nrow(selected_packages) == 0) {
-      article_lab_render_prompt_template(base_prompt, list(input_context = package_list, variant_index = "(variant index)", variants_per_package = variants_per_package))
+    preview <- if (nrow(selected_packages) == 0) NULL else tryCatch(
+      article_lab_thumbnail_api_preview(
+        selected_packages, variants_per_package,
+        model = input$article_lab_thumbnail_model,
+        reasoning_effort = input$article_lab_thumbnail_reasoning_effort,
+        reasoning_mode = input$article_lab_thumbnail_reasoning_mode %||% "standard",
+        prompt = base_prompt,
+        size = input$article_lab_thumbnail_size,
+        quality = input$article_lab_thumbnail_quality,
+        output_format = input$article_lab_thumbnail_output_format,
+        output_compression = if (input$article_lab_thumbnail_output_format %in% c("webp", "jpeg")) input$article_lab_thumbnail_output_compression else NULL,
+        background = input$article_lab_thumbnail_background
+      ),
+      error = identity
+    )
+    preview_body <- if (inherits(preview, "error")) {
+      div(class = "lab-error-alert", strong("Request validation failed"), p(conditionMessage(preview)))
+    } else if (is.null(preview)) {
+      p(class = "lab-status-copy", package_list)
     } else {
-      paste(unlist(lapply(seq_len(nrow(selected_packages)), function(i) {
-        package_context <- paste(
-          sprintf("subtitle_id: %s", selected_packages$subtitle_id[[i]]),
-          sprintf("candidate_id: %s", selected_packages$candidate_id[[i]]),
-          sprintf("batch_id: %s", selected_packages$batch_id[[i]]),
-          sprintf("Title: %s", selected_packages$title[[i]]),
-          sprintf("Subtitle: %s", selected_packages$subtitle[[i]]),
-          sep = "\n"
-        )
-        vapply(seq_len(variants_per_package), function(variant_index) article_lab_render_prompt_template(base_prompt, list(input_context = package_context, variant_index = variant_index, variants_per_package = variants_per_package)), character(1))
-      })), collapse = "\n\n---\n\n")
+      tagList(
+        p(class = "lab-selection-summary", sprintf("%s API request%s will be made.", preview$request_count, ifelse(preview$request_count == 1L, "", "s"))),
+        tags$pre(class = "lab-status-copy", sprintf("Operation: %s\nEndpoint: %s", preview$operation, preview$endpoint)),
+        lapply(seq_along(preview$requests), function(i) {
+          item <- preview$requests[[i]]
+          tags$details(
+            open = i == 1L,
+            tags$summary(sprintf("Variant %s · package %s", item$variant_index, item$subtitle_id)),
+            h4("Sanitized canonical request"),
+            tags$pre(class = "lab-status-copy", toJSON(item$sanitized_request, auto_unbox = TRUE, pretty = TRUE, null = "null")),
+            h4("Optional-property status"),
+            tags$pre(class = "lab-status-copy", paste(sprintf("%s: %s", names(item$property_status), unlist(item$property_status, use.names = FALSE)), collapse = "\n"))
+          )
+        })
+      )
     }
 
     div(
       class = "lab-card",
-      h3("Prompt that will be sent to the API"),
-      p(class = "lab-status-copy", "Thumbnail generation sends this prompt plus the selected title/subtitle package context to the selected Responses model, which calls the built-in image_generation tool."),
+      h3("Exact API request"),
+      p(class = "lab-status-copy", "Generated by the same canonical request builder used for execution. Secrets and base64 image data are excluded."),
       tags$details(
-        tags$summary("Show exact thumbnail API prompt"),
-        h4("Exact input_text sent to the API"),
-        tags$pre(class = "lab-status-copy", exact_prompt),
-        h4("Request fields"),
-        tags$pre(class = "lab-status-copy", request_additions),
-        h4("Selected title/subtitle packages"),
-        tags$pre(class = "lab-status-copy", package_list)
+        tags$summary("Show exact API request"),
+        preview_body
       )
     )
+  })
+
+  output$article_lab_thumbnail_compression_control <- renderUI({
+    output_format <- article_lab_input_string(input$article_lab_thumbnail_output_format) %||% article_lab_default_thumbnail_output_format
+    control <- numericInput("article_lab_thumbnail_output_compression", "Output compression", value = 85L, min = 0L, max = 100L, step = 1L, width = "100%")
+    if (identical(output_format, "png")) control <- htmltools::tagQuery(control)$find("input")$addAttrs(disabled = "disabled")$allTags()
+    div(class = "lab-field", control, p(class = "lab-status-copy", if (identical(output_format, "png")) "Not supported for PNG; omitted from the request." else "Included for WebP and JPEG; 0–100."))
   })
 
   output$article_lab_outline_context_toggle <- renderUI({
@@ -4314,8 +4336,8 @@ server <- function(input, output, session) {
 
     tagList(
       article_lab_section_card(
-        "1. Title/subtitle packages awaiting thumbnail generation",
-        "These approved title/subtitle packages do not have active thumbnail candidates yet.",
+        "1. Title/subtitle packages available for thumbnail generation",
+        "Approved packages remain here until you approve a thumbnail. Generate additional batches whenever the current candidates are not ideal.",
         tagList(
           div(
             class = "lab-actions",
@@ -5230,7 +5252,12 @@ server <- function(input, output, session) {
         reasoning_effort = input$article_lab_thumbnail_reasoning_effort,
         reasoning_mode = input$article_lab_thumbnail_reasoning_mode %||% "standard",
         prompt = input$article_lab_thumbnail_prompt,
-        variants_per_package = variants_per_package
+        variants_per_package = variants_per_package,
+        size = input$article_lab_thumbnail_size,
+        quality = input$article_lab_thumbnail_quality,
+        output_format = input$article_lab_thumbnail_output_format,
+        output_compression = if (input$article_lab_thumbnail_output_format %in% c("webp", "jpeg")) input$article_lab_thumbnail_output_compression else NULL,
+        background = input$article_lab_thumbnail_background
       ),
       error = function(e) e
     )
@@ -5243,16 +5270,19 @@ server <- function(input, output, session) {
       comparison
     )
     if (inherits(result, "error")) {
+      article_lab_debug_log("thumbnail_generate_error", list(message = conditionMessage(result), model = input$article_lab_thumbnail_model, selected_ids = selected_ids, elapsed_seconds = actual_seconds))
       article_lab_state$notice <- paste(timing_copy, "Thumbnail generation failed:", conditionMessage(result))
       article_lab_state$last_thumbnail_generate_error <- list(kind = "exception", reason = conditionMessage(result), mode = "failed", model = input$article_lab_thumbnail_model %||% article_lab_default_thumbnail_model, selected_ids = selected_ids)
       article_lab_state$last_thumbnail_generate_error_at <- Sys.time()
       session$sendCustomMessage("articleLabStopThumbnailTimer", list(message = article_lab_state$notice))
     } else if (identical(result$mode, "failed") || (!is.null(result$fallback_reason) && result$generated_n == 0L)) {
+      article_lab_debug_log("thumbnail_generate_failed", list(reason = result$fallback_reason %||% "Thumbnail generation returned no usable rows.", model = result$model, selected_ids = selected_ids, elapsed_seconds = actual_seconds))
       article_lab_state$notice <- paste(timing_copy, "Thumbnail generation failed. No thumbnail candidates were saved.")
       article_lab_state$last_thumbnail_generate_error <- list(kind = "api_failed", reason = result$fallback_reason %||% "Thumbnail generation returned no usable rows.", mode = result$mode %||% "failed", model = result$model %||% article_lab_default_thumbnail_model, selected_ids = selected_ids)
       article_lab_state$last_thumbnail_generate_error_at <- Sys.time()
       session$sendCustomMessage("articleLabStopThumbnailTimer", list(message = article_lab_state$notice))
     } else {
+      article_lab_debug_log("thumbnail_generate_succeeded", list(generated_n = result$generated_n, package_n = result$package_n, model = result$model, selected_ids = selected_ids, elapsed_seconds = actual_seconds))
       article_lab_state$last_thumbnail_generate_error <- NULL
       article_lab_state$last_thumbnail_generate_error_at <- NULL
       mode_label <- result$mode %||% "unknown"

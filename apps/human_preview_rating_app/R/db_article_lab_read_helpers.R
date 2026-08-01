@@ -246,7 +246,7 @@ load_article_lab_thumbnail_packages <- function(con, batch_id) {
   rows <- if (all_batches) dbGetQuery(con, query) else dbGetQuery(con, query, params = list(batch_id))
   if (nrow(rows) == 0) return(rows)
   rows <- article_lab_normalize_candidate_rows(rows)
-  rows[rows$approved_thumbnail_n <= 0 & rows$generated_thumbnail_n <= 0, , drop = FALSE]
+  rows[rows$approved_thumbnail_n <= 0, , drop = FALSE]
 }
 
 load_article_lab_thumbnail_rows <- function(con, batch_id) {
@@ -267,6 +267,16 @@ load_article_lab_thumbnail_rows <- function(con, batch_id) {
       t.notes,
       t.model,
       t.generation_mode,
+      t.reasoning_effort,
+      t.reasoning_mode,
+      t.submitted_prompt,
+      t.revised_prompt,
+      t.response_id,
+      t.image_generation_call_id,
+      t.variant_index,
+      t.image_settings_json,
+      t.local_asset_path,
+      t.generation_run_id,
       t.approved_at,
       t.rejected_at,
       s.subtitle,
@@ -294,6 +304,16 @@ load_article_lab_thumbnail_rows <- function(con, batch_id) {
       t.notes,
       t.model,
       t.generation_mode,
+      t.reasoning_effort,
+      t.reasoning_mode,
+      t.submitted_prompt,
+      t.revised_prompt,
+      t.response_id,
+      t.image_generation_call_id,
+      t.variant_index,
+      t.image_settings_json,
+      t.local_asset_path,
+      t.generation_run_id,
       t.approved_at,
       t.rejected_at,
       s.subtitle,

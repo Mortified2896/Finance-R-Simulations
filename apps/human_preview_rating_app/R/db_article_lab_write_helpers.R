@@ -944,7 +944,7 @@ article_lab_dismiss_thumbnail_packages <- function(con, subtitle_ids) {
   list(dismissed_n = nrow(eligible_rows), skipped_n = skipped_n, candidate_ids = candidate_ids, batch_ids = batch_ids)
 }
 
-article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, variants_per_package = article_lab_default_thumbnail_variants) {
+article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, variants_per_package = article_lab_default_thumbnail_variants, size = article_lab_default_thumbnail_size, quality = article_lab_default_thumbnail_quality, output_format = article_lab_default_thumbnail_output_format, output_compression = NULL, background = article_lab_default_thumbnail_background) {
   subtitle_ids <- clean_text(subtitle_ids)
   subtitle_ids <- unique(subtitle_ids[!is.na(subtitle_ids)])
   if (length(subtitle_ids) == 0) {
@@ -991,7 +991,6 @@ article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, mode
   rows <- article_lab_normalize_candidate_rows(rows)
   eligible <- rows[
     rows$subtitle_status == "approved" &
-      rows$generated_thumbnail_n <= 0 &
       rows$approved_thumbnail_n <= 0,
     c("subtitle_id", "candidate_id", "batch_id", "title", "subtitle"),
     drop = FALSE
@@ -1001,29 +1000,26 @@ article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, mode
     return(list(generated_n = 0L, package_n = 0L, skipped_n = skipped_n, batch_ids = unique(rows$batch_id), mode = "none", model = article_lab_default_thumbnail_model))
   }
 
-  existing_rows <- if (dbExistsTable(con, "article_lab_thumbnail_candidates")) {
-    dbGetQuery(
-      con,
-      sprintf("SELECT subtitle_id, thumbnail_label FROM article_lab_thumbnail_candidates WHERE subtitle_id IN (%s)", paste(rep("?", nrow(eligible)), collapse = ", ")),
-      params = as.list(eligible$subtitle_id)
-    )
-  } else {
-    data.frame()
-  }
-
-  generated <- generate_thumbnail_candidates(eligible, variants_per_package = variants_per_package, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt)
+  generated <- generate_thumbnail_candidates(eligible, variants_per_package = variants_per_package, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt, size = size, quality = quality, output_format = output_format, output_compression = output_compression, background = background)
   thumbnail_rows <- generated$rows
   if (nrow(thumbnail_rows) == 0) {
-    return(list(generated_n = 0L, package_n = 0L, skipped_n = skipped_n + nrow(eligible), batch_ids = unique(rows$batch_id), mode = generated$mode %||% "none", model = generated$model %||% article_lab_default_thumbnail_model))
+    return(list(generated_n = 0L, package_n = 0L, skipped_n = skipped_n + nrow(eligible), batch_ids = unique(rows$batch_id), mode = generated$mode %||% "none", model = generated$model %||% article_lab_default_thumbnail_model, fallback_reason = generated$fallback_reason %||% NULL))
   }
 
-  if (nrow(existing_rows) > 0) {
-    existing_keys <- paste(existing_rows$subtitle_id, tolower(existing_rows$thumbnail_label))
-    thumbnail_rows <- thumbnail_rows[!(paste(thumbnail_rows$subtitle_id, tolower(thumbnail_rows$thumbnail_label)) %in% existing_keys), , drop = FALSE]
-  }
-  if (nrow(thumbnail_rows) == 0) {
-    return(list(generated_n = 0L, package_n = 0L, skipped_n = skipped_n + nrow(eligible), batch_ids = unique(rows$batch_id), mode = generated$mode %||% "none", model = generated$model %||% article_lab_default_thumbnail_model))
-  }
+  asset_dir <- file.path(project_root, ".local_gitignored", "article_lab_thumbnails")
+  if (!dir.exists(asset_dir)) dir.create(asset_dir, recursive = TRUE, showWarnings = FALSE)
+  thumbnail_rows$local_asset_path <- vapply(seq_len(nrow(thumbnail_rows)), function(i) {
+    data_uri <- thumbnail_rows$thumbnail_data_uri[[i]]
+    matched <- regexec("^data:image/(png|webp|jpeg);base64,(.+)$", data_uri, perl = TRUE)
+    parts <- regmatches(data_uri, matched)[[1]]
+    if (length(parts) != 3L) stop("Generated thumbnail did not contain a supported image data URI.", call. = FALSE)
+    extension <- if (identical(parts[[2]], "jpeg")) "jpg" else parts[[2]]
+    response_suffix <- substr(gsub("[^A-Za-z0-9]", "", thumbnail_rows$response_id[[i]] %||% "response"), 1L, 20L)
+    asset_name <- sprintf("%s_variant_%s_%s.%s", gsub("[^A-Za-z0-9_-]", "_", thumbnail_rows$subtitle_id[[i]]), thumbnail_rows$variant_index[[i]] %||% i, response_suffix, extension)
+    absolute_path <- file.path(asset_dir, asset_name)
+    writeBin(jsonlite::base64_dec(parts[[3]]), absolute_path)
+    file.path(".local_gitignored", "article_lab_thumbnails", asset_name)
+  }, character(1))
 
   dbBegin(con)
   tryCatch({
@@ -1033,8 +1029,8 @@ article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, mode
         con,
         "
         INSERT INTO article_lab_thumbnail_candidates
-        (thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, thumbnail_label, thumbnail_data_uri, status, notes, model, reasoning_effort, reasoning_mode, generation_mode, raw_json, approved_at, rejected_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', NULL, ?, ?, ?, ?, ?, NULL, NULL)
+        (thumbnail_id, subtitle_id, candidate_id, batch_id, created_at, thumbnail_label, thumbnail_data_uri, status, notes, model, reasoning_effort, reasoning_mode, generation_mode, raw_json, approved_at, rejected_at, submitted_prompt, revised_prompt, response_id, image_generation_call_id, variant_index, image_settings_json, local_asset_path, generation_run_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', NULL, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
         ",
         params = list(
           article_lab_thumbnail_id(row$subtitle_id[[1]], i),
@@ -1048,7 +1044,15 @@ article_lab_generate_thumbnails_for_packages <- function(con, subtitle_ids, mode
           row$reasoning_effort[[1]],
           row$reasoning_mode[[1]],
           row$generation_mode[[1]] %||% generated$mode %||% "generated",
-          row$raw_json[[1]]
+          row$raw_json[[1]],
+          row$submitted_prompt[[1]],
+          row$revised_prompt[[1]],
+          row$response_id[[1]],
+          row$image_generation_call_id[[1]],
+          row$variant_index[[1]],
+          row$image_settings_json[[1]],
+          row$local_asset_path[[1]],
+          row$generation_run_id[[1]]
         )
       )
     }

@@ -494,21 +494,28 @@ article_lab_manual_subtitle_choice_map <- function(target_rows, pending_rows) {
   choices
 }
 
-article_lab_thumbnail_api_request <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_) {
+article_lab_thumbnail_request_payload <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, size = article_lab_default_thumbnail_size, quality = article_lab_default_thumbnail_quality, output_format = article_lab_default_thumbnail_output_format, output_compression = NULL, background = article_lab_default_thumbnail_background) {
   requested_model <- article_lab_input_string(model) %||% article_lab_default_thumbnail_model
   article_lab_validate_image_generation_model(requested_model, "Selected Images-tab model")
-  helper_path <- file.path("scripts", "writing_api", "generate_thumbnails.mjs")
-  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_thumbnails.mjs", call. = FALSE)
-  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
-  if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_thumbnail_model, mode = "api", raw_json = NULL))
-
-  settings <- article_lab_validate_generation_settings(requested_model, reasoning_effort, reasoning_mode)
-  request_payload <- list(
+  effective_reasoning_mode <- article_lab_input_string(reasoning_mode) %||% "standard"
+  if (!article_lab_supports_pro_mode(requested_model) && effective_reasoning_mode %in% c("__unsupported__", "standard")) effective_reasoning_mode <- "standard"
+  settings <- article_lab_validate_generation_settings(requested_model, reasoning_effort, effective_reasoning_mode)
+  compression <- suppressWarnings(as.integer(output_compression))
+  if (length(compression) == 0L || is.na(compression)) compression <- NULL
+  list(
     model = settings$model,
     reasoning_effort = settings$reasoning_effort,
-    reasoning_mode = settings$reasoning_mode,
+    reasoning_mode = if (article_lab_supports_pro_mode(settings$model)) settings$reasoning_mode else "standard",
+    execution_mode_supported = article_lab_supports_pro_mode(settings$model),
     prompt = article_lab_input_string(prompt) %||% article_lab_default_thumbnail_prompt,
     variants_per_package = max(1L, min(4L, suppressWarnings(as.integer(variants_per_package)) %||% article_lab_default_thumbnail_variants)),
+    size = article_lab_input_string(size) %||% article_lab_default_thumbnail_size,
+    quality = article_lab_input_string(quality) %||% article_lab_default_thumbnail_quality,
+    output_format = article_lab_input_string(output_format) %||% article_lab_default_thumbnail_output_format,
+    output_compression = compression,
+    background = article_lab_input_string(background) %||% article_lab_default_thumbnail_background,
+    streaming = FALSE,
+    partial_images = NULL,
     packages = unname(lapply(seq_len(nrow(packages)), function(i) {
       list(
         subtitle_id = packages$subtitle_id[[i]],
@@ -519,6 +526,11 @@ article_lab_thumbnail_api_request <- function(packages, variants_per_package = a
       )
     }))
   )
+}
+
+article_lab_thumbnail_helper_call <- function(request_payload, preview_only = FALSE) {
+  helper_path <- file.path("scripts", "writing_api", "generate_thumbnails.mjs")
+  if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_thumbnails.mjs", call. = FALSE)
 
   request_file <- tempfile(pattern = "article_lab_thumbnail_request_", fileext = ".json")
   stdout_file <- tempfile(pattern = "article_lab_thumbnail_stdout_", fileext = ".json")
@@ -531,7 +543,7 @@ article_lab_thumbnail_api_request <- function(packages, variants_per_package = a
   setwd(project_root)
   status <- system2(
     "node",
-    args = c(helper_path, request_file),
+    args = c(helper_path, if (isTRUE(preview_only)) "--preview" else character(), request_file),
     stdout = stdout_file,
     stderr = stderr_file
   )
@@ -541,6 +553,25 @@ article_lab_thumbnail_api_request <- function(packages, variants_per_package = a
     stop(clean_text(stderr_text) %||% clean_text(stdout_text) %||% "Thumbnail generation helper failed.", call. = FALSE)
   }
   if (!nzchar(trimws(stdout_text))) stop("Thumbnail generation helper returned no output.", call. = FALSE)
+  stdout_text
+}
+
+article_lab_thumbnail_api_preview <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, size = article_lab_default_thumbnail_size, quality = article_lab_default_thumbnail_quality, output_format = article_lab_default_thumbnail_output_format, output_compression = NULL, background = article_lab_default_thumbnail_background) {
+  if (nrow(packages) == 0) return(NULL)
+  payload <- article_lab_thumbnail_request_payload(packages, variants_per_package, model, reasoning_effort, reasoning_mode, prompt, size, quality, output_format, output_compression, background)
+  fromJSON(article_lab_thumbnail_helper_call(payload, preview_only = TRUE), simplifyVector = FALSE)
+}
+
+article_lab_thumbnail_api_request <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, size = article_lab_default_thumbnail_size, quality = article_lab_default_thumbnail_quality, output_format = article_lab_default_thumbnail_output_format, output_compression = NULL, background = article_lab_default_thumbnail_background) {
+  requested_model <- article_lab_input_string(model) %||% article_lab_default_thumbnail_model
+  article_lab_validate_image_generation_model(requested_model, "Selected Images-tab model")
+  if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
+  if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_thumbnail_model, mode = "api", raw_json = NULL))
+  request_payload <- article_lab_thumbnail_request_payload(packages, variants_per_package, model, reasoning_effort, reasoning_mode, prompt, size, quality, output_format, output_compression, background)
+  effective_reasoning_mode <- article_lab_input_string(reasoning_mode) %||% "standard"
+  if (!article_lab_supports_pro_mode(requested_model) && effective_reasoning_mode %in% c("__unsupported__", "standard")) effective_reasoning_mode <- "standard"
+  settings <- article_lab_validate_generation_settings(requested_model, reasoning_effort, effective_reasoning_mode)
+  stdout_text <- article_lab_thumbnail_helper_call(request_payload, preview_only = FALSE)
 
   parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
   result_rows <- lapply(parsed$results %||% list(), function(entry) {
@@ -560,6 +591,13 @@ article_lab_thumbnail_api_request <- function(packages, variants_per_package = a
         reasoning_effort = article_lab_input_string(thumbnail$reasoning_effort) %||% settings$reasoning_effort,
         reasoning_mode = article_lab_input_string(thumbnail$reasoning_mode) %||% settings$reasoning_mode,
         generation_mode = article_lab_input_string(thumbnail$generation_mode) %||% "api",
+        submitted_prompt = article_lab_input_multiline(thumbnail$submitted_prompt),
+        revised_prompt = article_lab_input_multiline(thumbnail$revised_prompt),
+        response_id = article_lab_input_string(thumbnail$response_id),
+        image_generation_call_id = article_lab_input_string(thumbnail$image_generation_call_id),
+        variant_index = suppressWarnings(as.integer(thumbnail$variant_index)),
+        generation_run_id = article_lab_input_string(thumbnail$generation_run_id),
+        image_settings_json = toJSON(thumbnail$image_settings %||% list(), auto_unbox = TRUE, null = "null"),
         raw_json = if (is.null(thumbnail$raw_json)) stdout_text else toJSON(thumbnail$raw_json, auto_unbox = TRUE, null = "null"),
         stringsAsFactors = FALSE,
         check.names = FALSE
@@ -577,9 +615,9 @@ article_lab_thumbnail_api_request <- function(packages, variants_per_package = a
   )
 }
 
-generate_thumbnail_candidates <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_) {
+generate_thumbnail_candidates <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_, size = article_lab_default_thumbnail_size, quality = article_lab_default_thumbnail_quality, output_format = article_lab_default_thumbnail_output_format, output_compression = NULL, background = article_lab_default_thumbnail_background) {
   tryCatch(
-    article_lab_thumbnail_api_request(packages, variants_per_package = variants_per_package, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt),
+    article_lab_thumbnail_api_request(packages, variants_per_package = variants_per_package, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt, size = size, quality = quality, output_format = output_format, output_compression = output_compression, background = background),
     error = function(e) {
       list(
         rows = data.frame(),
