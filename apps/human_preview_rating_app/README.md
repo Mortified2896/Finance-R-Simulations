@@ -32,3 +32,9 @@ Selections are stored in the local `article_lab_generation_preferences` table un
 Defaults are configured with each workflow's existing `OPENAI_*_MODEL` variable plus matching `OPENAI_*_REASONING_EFFORT` and `OPENAI_*_REASONING_MODE` variables. Title generation defaults to `gpt-5.6-terra`, `low`, and `standard`; short generation/scoring workflows otherwise default to low reasoning, while research and long-form workflows default to medium reasoning.
 
 New workflows must use `article_lab_generation_control_ui()` and the centralized capability validation rather than introducing a standalone model selector or constructing unvalidated reasoning parameters.
+
+## Prompt template management
+
+Every user-facing AI workflow uses `article_lab_prompt_manager_ui()` and `article_lab_prompt_manager_server()`. Templates are persisted under a stable workflow key, and selectors must never expose templates belonging to another workflow. The shared manager provides selection, create/save-as, update, rename, confirmed deletion, dirty-state feedback, and persistent validation errors.
+
+Each workflow must declare its allowed `{{variable_name}}` placeholders. Unknown or unresolved variables block saving or execution, and exact-prompt preview and runtime execution must use the same renderer and selected template. A workflow may have an empty template library, but generation must remain unavailable until a valid template is created or selected. Do not introduce standalone editable prompt textareas for AI requests.

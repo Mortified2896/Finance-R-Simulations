@@ -423,6 +423,18 @@ article_lab_prompt_variable_help <- function(...) {
 }
 article_lab_default_score_prompt_version <- "v2_2"
 article_lab_default_score_scope <- "title_only"
+article_lab_default_score_prompt <- paste(
+  "Score the reader-facing pre-click appeal of this Medium finance title.",
+  "Use only the supplied title. Do not infer a subtitle or use performance history.",
+  "Do not estimate click-through rate. Calibrate scores relative to typical Medium personal-finance articles and use the full 1-5 scale.",
+  "Score curiosity, emotional_pull, medium_comment_potential, overall_article_potential, and trust_risk.",
+  "Return JSON matching the supplied response schema exactly; short_reason must be one short sentence.",
+  "",
+  "Prompt version: {{prompt_version}}",
+  "Score scope: {{scope}}",
+  "Title: {{title}}",
+  sep = "\n"
+)
 article_lab_all_batches_value <- "__all_article_lab_batches__"
 article_lab_default_thumbnail_variants <- 3L
 article_lab_publish_target_choices <- c(

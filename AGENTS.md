@@ -37,6 +37,8 @@ Show the fully resolved prompt exactly as it is sent to the API, alongside the m
 
 Reject unknown or unresolved template variables with a clear, persistent user-facing error. Do not silently send placeholder text or hide appended instructions or context from the exact-prompt preview.
 
+Every user-facing AI prompt must use the shared, workflow-scoped prompt-template manager. Users must be able to select, create, edit, rename, save, and delete templates inline. Do not add standalone editable prompt textareas or unscoped prompt selectors. If a workflow has no valid template, show a persistent error and disable or reject generation until the user creates or selects one.
+
 ## Keep AI Generation Controls Complete
 
 Every user-selectable OpenAI model control must use the complete, capability-aware Model / Reasoning / Execution-mode control group. Persist all three settings per workflow and record them with generated outputs; keep unsupported controls visible and disabled rather than sending invalid API parameters. Follow the implementation conventions in `apps/human_preview_rating_app/README.md`.

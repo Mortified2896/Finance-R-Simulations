@@ -359,7 +359,7 @@ article_lab_score_user_prompt <- function(prompt_version, scope, title) {
   )
 }
 
-article_lab_score_api_request <- function(candidates, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt_version = NA_character_, scope = NA_character_) {
+article_lab_score_api_request <- function(candidates, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt_version = NA_character_, scope = NA_character_, prompt = article_lab_default_score_prompt) {
   helper_path <- file.path("scripts", "writing_api", "score_article_lab_titles.py")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/score_article_lab_titles.py", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
@@ -373,6 +373,7 @@ article_lab_score_api_request <- function(candidates, model = NA_character_, rea
     reasoning_mode = settings$reasoning_mode,
     prompt_version = article_lab_input_string(prompt_version) %||% article_lab_default_score_prompt_version,
     scope = article_lab_input_string(scope) %||% article_lab_default_score_scope,
+    prompt_template = article_lab_input_multiline(prompt) %||% article_lab_default_score_prompt,
     candidates = unname(lapply(seq_len(nrow(candidates)), function(i) {
       list(
         candidate_id = candidates$candidate_id[[i]],

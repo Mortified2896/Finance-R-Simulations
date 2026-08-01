@@ -131,7 +131,14 @@ def prompt_content(prompt_version: str, title: str, scope: str) -> str:
     )
 
 
-def build_payload(model: str, title: str, prompt_version: str, scope: str, reasoning_effort: str | None = None, reasoning_mode: str = "standard") -> dict[str, Any]:
+def render_prompt_template(template: str, *, title: str, prompt_version: str, scope: str) -> str:
+    rendered = template.replace("{{title}}", title).replace("{{prompt_version}}", prompt_version).replace("{{scope}}", scope)
+    if "{{" in rendered or "}}" in rendered:
+        raise ValueError("Scoring prompt contains an unknown or unresolved template variable")
+    return rendered
+
+
+def build_payload(model: str, title: str, prompt_version: str, scope: str, reasoning_effort: str | None = None, reasoning_mode: str = "standard", prompt_template: str | None = None) -> dict[str, Any]:
     schema_name = f"article_lab_title_scores_{prompt_version}_{scope}".replace("-", "_")
     request = {
         "model": model,
@@ -146,7 +153,7 @@ def build_payload(model: str, title: str, prompt_version: str, scope: str, reaso
             },
             {
                 "role": "user",
-                "content": prompt_content(prompt_version, title, scope),
+                "content": render_prompt_template(prompt_template, title=title, prompt_version=prompt_version, scope=scope) if prompt_template else prompt_content(prompt_version, title, scope),
             },
         ],
         "text": {
@@ -230,6 +237,7 @@ def main() -> int:
     scope = clean_text(payload.get("scope")) or DEFAULT_SCOPE
     reasoning_effort = clean_text(payload.get("reasoning_effort"))
     reasoning_mode = clean_text(payload.get("reasoning_mode")) or "standard"
+    prompt_template = clean_text(payload.get("prompt_template"))
     if scope not in VALID_SCOPES:
         print(f"Unsupported scope: {scope}", file=sys.stderr)
         return 1
@@ -275,7 +283,7 @@ def main() -> int:
                 try:
                     response = call_openai(
                         client,
-                        build_payload(model, title, prompt_version, scope, reasoning_effort, reasoning_mode),
+                        build_payload(model, title, prompt_version, scope, reasoning_effort, reasoning_mode, prompt_template),
                         name="score-article-lab-title",
                         metadata={
                             "candidate_id": candidate_id,

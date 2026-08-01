@@ -29,6 +29,7 @@ source("R/scoring_helpers.R", local = app_env)
 source("R/title_subtitle_helpers.R", local = app_env)
 source("R/id_helpers.R", local = app_env)
 source("R/article_lab_config.R", local = app_env)
+source("R/prompt_template_helpers.R", local = app_env)
 source("R/schema_rating.R", local = app_env)
 source("R/schema_article_lab.R", local = app_env)
 source("R/schema_research.R", local = app_env)
@@ -79,6 +80,23 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   con <- connect_db()
   onStop(function() dbDisconnect(con))
+  prompt_managers <- list(
+    titles = article_lab_prompt_manager_server("prompt_titles", con, "titles", c("idea_context", "article_summary", "batch_size", "seed_topic", "inspiration_source", "example_titles", "max_title_chars", "preferred_title_length")),
+    scoring = article_lab_prompt_manager_server("prompt_scoring", con, "scoring", c("prompt_version", "scope", "title")),
+    subtitles = article_lab_prompt_manager_server("prompt_subtitles", con, "subtitles", c("input_context", "variants_per_title", "max_subtitle_chars")),
+    thumbnails = article_lab_prompt_manager_server("prompt_thumbnails", con, "thumbnails", c("input_context", "variant_index", "variants_per_package")),
+    outlines = article_lab_prompt_manager_server("prompt_outlines", con, "outlines", c("input_context", "context_notes")),
+    full_text = article_lab_prompt_manager_server("prompt_full_text", con, "full_text", "input_context"),
+    research_summary = article_lab_prompt_manager_server("prompt_research_summary", con, "research_summary", "input_context"),
+    research_claims = article_lab_prompt_manager_server("prompt_research_claims", con, "research_claims", c("max_claims", "research_source_id", "source_title", "summary_id", "summary_sentence_payload_json")),
+    research_evidence = article_lab_prompt_manager_server("prompt_research_evidence", con, "research_evidence", "claim_candidate_payload_json"),
+    medium_tags = article_lab_prompt_manager_server("prompt_medium_tags", con, "medium_tags", "input_context")
+  )
+  require_prompt_template <- function(manager, workflow_label) {
+    if (isTRUE(manager$valid())) return(TRUE)
+    article_lab_state$notice <- sprintf("%s cannot run: create or select a valid prompt template first.", workflow_label)
+    FALSE
+  }
   rating_session_id <- if (is_dimension_mode) NULL else tryCatch(
     resume_or_create_session(con, target_n = default_target_n),
     error = function(err) NULL
@@ -355,14 +373,6 @@ server <- function(input, output, session) {
     })
   }, ignoreInit = TRUE)
 
-  observeEvent(input$research_summary_prompt_version, {
-    updateTextAreaInput(
-      session,
-      "research_summary_api_prompt",
-      value = load_research_summary_prompt(con, input$research_summary_prompt_version)
-    )
-  }, ignoreInit = FALSE)
-
   output$article_lab_prompt_save_button <- renderUI({
     current_prompt <- article_lab_input_multiline(input$article_lab_prompt) %||% article_lab_default_prompt
     saved_prompt <- article_lab_input_multiline(saved_article_lab_prompt()) %||% article_lab_default_prompt
@@ -620,23 +630,7 @@ server <- function(input, output, session) {
       generate_prompt_card <- div(
         class = "lab-card lab-setup-card",
         h2("Generation prompt"),
-        div(
-          class = "lab-grid",
-          div(class = "lab-field", uiOutput("article_lab_prompt_selector")),
-          div(class = "lab-field", textInput("article_lab_prompt_key", "Prompt key", value = article_lab_manual_prompt_key, width = "100%"))
-        ),
-        div(
-          class = "lab-field",
-          textAreaInput(
-            "article_lab_prompt",
-            label = "Editable prompt template",
-            value = saved_article_lab_prompt(),
-            width = "100%",
-            height = if (article_lab_design_v2) "170px" else "230px"
-          )
-        ),
-        p(class = "lab-status-copy", "Available variables: {{idea_context}}, {{article_summary}}, {{batch_size}}, {{seed_topic}}, {{inspiration_source}}, {{example_titles}}, {{max_title_chars}}, {{preferred_title_length}}. Empty optional variables are removed from the resolved prompt."),
-        div(class = "lab-actions", uiOutput("article_lab_prompt_save_button")),
+        article_lab_prompt_manager_ui("prompt_titles", height = if (article_lab_design_v2) "170px" else "230px", variables = c("idea_context", "article_summary", "batch_size", "seed_topic", "inspiration_source", "example_titles", "max_title_chars", "preferred_title_length")),
         div(
           class = "lab-grid",
           div(
@@ -737,23 +731,7 @@ server <- function(input, output, session) {
           div(
             class = "lab-card",
           h2("Generation prompt"),
-          div(
-            class = "lab-grid",
-            div(class = "lab-field", uiOutput("article_lab_prompt_selector")),
-            div(class = "lab-field", textInput("article_lab_prompt_key", "Prompt key", value = article_lab_manual_prompt_key, width = "100%"))
-          ),
-          div(
-            class = "lab-field",
-            textAreaInput(
-              "article_lab_prompt",
-              label = "Editable prompt template",
-              value = saved_article_lab_prompt(),
-              width = "100%",
-              height = "230px"
-            )
-          ),
-          p(class = "lab-status-copy", "Available variables: {{idea_context}}, {{article_summary}}, {{batch_size}}, {{seed_topic}}, {{inspiration_source}}, {{example_titles}}, {{max_title_chars}}, {{preferred_title_length}}. Empty optional variables are removed from the resolved prompt."),
-          div(class = "lab-actions", uiOutput("article_lab_prompt_save_button")),
+          article_lab_prompt_manager_ui("prompt_titles", height = "230px", variables = c("idea_context", "article_summary", "batch_size", "seed_topic", "inspiration_source", "example_titles", "max_title_chars", "preferred_title_length")),
           div(
             class = "lab-grid",
             div(
@@ -832,6 +810,7 @@ server <- function(input, output, session) {
         div(
           class = "lab-card",
           h2("Controls"),
+          article_lab_prompt_manager_ui("prompt_scoring", height = "170px", variables = c("prompt_version", "scope", "title")),
           div(class = "lab-grid", uiOutput("article_lab_batch_selector"), article_lab_generation_control_ui(con, "scoring", article_lab_score_model_choices, article_lab_default_score_model), div(class = "lab-field", textInput("article_lab_score_prompt_version", "Prompt version", value = article_lab_default_score_prompt_version, width = "100%")), div(class = "lab-field", textInput("article_lab_score_scope", "Scope", value = article_lab_default_score_scope, width = "100%"))),
           article_lab_action_bar(
             uiOutput("article_lab_score_button"),
@@ -849,17 +828,7 @@ server <- function(input, output, session) {
           class = "lab-card",
           h2("Subtitle generation settings"),
           p(class = "lab-section-copy", "Configure the prompt and model here. Then check one or more titles in Step 1 below; only checked titles are included in the exact prompt and generated request."),
-          div(
-            class = "lab-field",
-            textAreaInput(
-              "article_lab_subtitle_prompt",
-              "Editable prompt template",
-              value = article_lab_default_subtitle_prompt,
-              width = "100%",
-              height = "190px"
-            )
-          ),
-          p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context", "variants_per_title", "max_subtitle_chars")),
+          article_lab_prompt_manager_ui("prompt_subtitles", height = "190px", variables = c("input_context", "variants_per_title", "max_subtitle_chars")),
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
@@ -902,17 +871,7 @@ server <- function(input, output, session) {
         div(
           class = "lab-card",
           h2("Controls"),
-          div(
-            class = "lab-field",
-            textAreaInput(
-              "article_lab_thumbnail_prompt",
-              "Editable prompt template",
-              value = article_lab_default_thumbnail_prompt,
-              width = "100%",
-              height = "170px"
-            )
-          ),
-          p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context", "variant_index", "variants_per_package")),
+          article_lab_prompt_manager_ui("prompt_thumbnails", height = "170px", variables = c("input_context", "variant_index", "variants_per_package")),
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
@@ -940,17 +899,7 @@ server <- function(input, output, session) {
         div(
           class = "lab-card",
           h2("Controls"),
-          div(
-            class = "lab-grid",
-            div(class = "lab-field", uiOutput("article_lab_outline_prompt_selector")),
-            div(class = "lab-field", textInput("article_lab_outline_prompt_key", "Prompt key", value = article_lab_outline_prompt_key, width = "100%"))
-          ),
-          div(
-            class = "lab-field",
-            textAreaInput("article_lab_outline_prompt", "Editable prompt template", value = saved_article_lab_outline_prompt(), width = "100%", height = "150px")
-          ),
-          p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context", "context_notes")),
-          div(class = "lab-actions", uiOutput("article_lab_outline_prompt_save_button")),
+          article_lab_prompt_manager_ui("prompt_outlines", height = "150px", variables = c("input_context", "context_notes")),
           div(
             class = "lab-field",
             uiOutput("article_lab_outline_context_notes_ui"),
@@ -981,17 +930,7 @@ server <- function(input, output, session) {
         div(
           class = "lab-card",
           h2("Controls"),
-          div(
-            class = "lab-grid",
-            div(class = "lab-field", uiOutput("article_lab_full_text_prompt_selector")),
-            div(class = "lab-field", textInput("article_lab_full_text_prompt_key", "Prompt key", value = article_lab_full_text_prompt_key, width = "100%"))
-          ),
-          div(
-            class = "lab-field",
-            textAreaInput("article_lab_full_text_prompt", "Editable prompt template", value = saved_article_lab_full_text_prompt(), width = "100%", height = "170px")
-          ),
-          p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context")),
-          div(class = "lab-actions", uiOutput("article_lab_full_text_prompt_save_button")),
+          article_lab_prompt_manager_ui("prompt_full_text", height = "170px", variables = "input_context"),
           div(
             class = "lab-grid",
             uiOutput("article_lab_batch_selector"),
@@ -1116,11 +1055,9 @@ server <- function(input, output, session) {
             h3("API summary generation"),
             div(
               class = "lab-grid",
-              article_lab_generation_control_ui(con, "research_summary", article_lab_research_summary_model_choices, article_lab_default_research_summary_model),
-              div(class = "lab-field", selectInput("research_summary_prompt_version", "Prompt version", choices = article_lab_research_summary_prompt_version_choices, selected = article_lab_default_research_summary_prompt_version, width = "100%"))
+              article_lab_generation_control_ui(con, "research_summary", article_lab_research_summary_model_choices, article_lab_default_research_summary_model)
             ),
-            div(class = "lab-field lab-editor-textarea", textAreaInput("research_summary_api_prompt", "Editable API prompt template", value = article_lab_default_research_summary_prompt, width = "100%", height = "260px")),
-            p(class = "lab-status-copy", article_lab_prompt_variable_help("input_context")),
+            article_lab_prompt_manager_ui("prompt_research_summary", "Editable API prompt template", "260px", "input_context"),
             uiOutput("research_summary_effective_prompt"),
             div(class = "lab-actions", actionButton("research_generate_summary_draft", "Generate summary draft", class = "lab-primary"))
           ),
@@ -1144,13 +1081,11 @@ server <- function(input, output, session) {
             ),
             h4("Claim sentence marking"),
             article_lab_generation_control_ui(con, "research_claims", article_lab_claim_extraction_model_choices, article_lab_default_claim_extraction_model),
-            div(class = "lab-field lab-editor-textarea", textAreaInput("research_claim_prompt", "Claim sentence marking prompt template", value = article_lab_default_claim_extraction_prompt, width = "100%", height = "210px")),
-            p(class = "lab-status-copy", article_lab_prompt_variable_help("max_claims", "research_source_id", "source_title", "summary_id", "summary_sentence_payload_json")),
+            article_lab_prompt_manager_ui("prompt_research_claims", "Claim sentence marking prompt template", "210px", c("max_claims", "research_source_id", "source_title", "summary_id", "summary_sentence_payload_json")),
             h4("Evidence sentence selection"),
             article_lab_generation_control_ui(con, "research_evidence", article_lab_evidence_selection_model_choices, article_lab_default_evidence_selection_model),
             article_lab_generation_control_ui(con, "research_evidence_fallback", article_lab_evidence_fallback_model_choices, article_lab_default_evidence_fallback_model, "Fallback model"),
-            div(class = "lab-field lab-editor-textarea", textAreaInput("research_evidence_prompt", "Evidence selection prompt template", value = article_lab_default_evidence_selection_prompt, width = "100%", height = "210px")),
-            p(class = "lab-status-copy", article_lab_prompt_variable_help("claim_candidate_payload_json")),
+            article_lab_prompt_manager_ui("prompt_research_evidence", "Evidence selection prompt template", "210px", "claim_candidate_payload_json"),
             uiOutput("research_evidence_effective_prompts"),
             div(
               class = "lab-actions",
@@ -1711,7 +1646,7 @@ server <- function(input, output, session) {
         context_error = context_result$error,
         mode = "research_summary",
         prompt = research_summary_prompt(selected_summary),
-        manual_prompt = input$article_lab_prompt %||% article_lab_default_prompt,
+        manual_prompt = prompt_managers$titles$prompt(),
         seed_topic = selected_summary$source_title[[1]],
         inspiration_source = paste0("research_summary:", selected_summary$summary_id[[1]]),
         summary_id = selected_summary$summary_id[[1]],
@@ -1723,7 +1658,7 @@ server <- function(input, output, session) {
       valid = context_result$valid,
       context_error = context_result$error,
       mode = "manual",
-      prompt = input$article_lab_prompt %||% article_lab_default_prompt,
+      prompt = prompt_managers$titles$prompt(),
       manual_prompt = "",
       seed_topic = article_lab_input_string(input$article_lab_seed_topic) %||% if (nrow(project) > 0) project$working_title[[1]] else "",
       inspiration_source = input$article_lab_inspiration_source %||% "",
@@ -2343,6 +2278,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   mark_research_claim_sentences <- function() {
+    if (!require_prompt_template(prompt_managers$research_claims, "Claim extraction")) return(invisible(NULL))
     source <- selected_research_source()
     if (nrow(source) == 0) {
       article_lab_state$notice <- "Select a source before marking claim sentences."
@@ -2361,7 +2297,7 @@ server <- function(input, output, session) {
     timestamp <- now_utc()
     summary_sentence_payload <- research_summary_sentence_payload(summary$summary_text[[1]])
     summary_sentence_payload_json <- toJSON(summary_sentence_payload, auto_unbox = TRUE, null = "null")
-    claim_template <- article_lab_input_multiline(input$research_claim_prompt) %||% article_lab_default_claim_extraction_prompt
+    claim_template <- prompt_managers$research_claims$prompt()
     claim_prompt <- research_evidence_render_template(claim_template, list(
       max_claims = max_claims,
       research_source_id = source$research_source_id[[1]],
@@ -2438,6 +2374,7 @@ server <- function(input, output, session) {
   }
 
   find_research_source_sentences <- function(use_fallback = FALSE) {
+    if (!require_prompt_template(prompt_managers$research_evidence, "Evidence selection")) return(invisible(NULL))
     source <- selected_research_source()
     asset <- selected_research_pdf_asset()
     if (nrow(source) == 0) {
@@ -2488,7 +2425,7 @@ server <- function(input, output, session) {
     allowed_sentence_ids <- setNames(lapply(candidate_payload, function(entry) {
       vapply(entry$candidates, function(candidate) as.integer(candidate$sentence_id), integer(1))
     }), vapply(candidate_payload, function(entry) as.character(entry$claim_id), character(1)))
-    evidence_template <- article_lab_input_multiline(input$research_evidence_prompt) %||% article_lab_default_evidence_selection_prompt
+    evidence_template <- prompt_managers$research_evidence$prompt()
     evidence_payload_json <- toJSON(candidate_payload, auto_unbox = TRUE, null = "null")
     evidence_prompt <- research_evidence_render_template(evidence_template, list(claim_candidate_payload_json = evidence_payload_json))
     evidence_model <- if (isTRUE(use_fallback)) article_lab_input_string(input$research_evidence_fallback_model) %||% article_lab_default_evidence_fallback_model else article_lab_input_string(input$research_evidence_model) %||% article_lab_default_evidence_selection_model
@@ -2768,11 +2705,11 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$research_generate_summary_draft, {
+    if (!require_prompt_template(prompt_managers$research_summary, "Research summary generation")) return(invisible(NULL))
     source <- selected_research_source()
     asset <- selected_research_pdf_asset()
-    prompt_version <- input$research_summary_prompt_version
-    prompt_text <- article_lab_input_multiline(input$research_summary_api_prompt) %||% article_lab_default_research_summary_prompt
-    save_research_summary_prompt(con, prompt_version, prompt_text)
+    prompt_version <- prompt_managers$research_summary$template_name() %||% article_lab_default_research_summary_prompt_version
+    prompt_text <- prompt_managers$research_summary$prompt()
     result <- tryCatch(
       research_summary_api_request(
         source = source,
@@ -3049,8 +2986,8 @@ server <- function(input, output, session) {
       summary_sentence_payload_json = toJSON(research_summary_sentence_payload(summary_text), auto_unbox = TRUE, null = "null"),
       claim_candidate_payload_json = sprintf("(Generated after local retrieval: up to %s candidate sentences per claim.)", candidates_per_claim)
     )
-    claim_template <- article_lab_input_multiline(input$research_claim_prompt) %||% article_lab_default_claim_extraction_prompt
-    evidence_template <- article_lab_input_multiline(input$research_evidence_prompt) %||% article_lab_default_evidence_selection_prompt
+    claim_template <- prompt_managers$research_claims$prompt()
+    evidence_template <- prompt_managers$research_evidence$prompt()
     list(
       claim_prompt = research_evidence_render_template(claim_template, variables),
       evidence_prompt = research_evidence_render_template(evidence_template, variables),
@@ -3402,13 +3339,13 @@ server <- function(input, output, session) {
   output$research_summary_effective_prompt <- renderUI({
     source <- selected_research_source()
     asset <- selected_research_pdf_asset()
-    prompt_text <- article_lab_input_multiline(input$research_summary_api_prompt) %||% article_lab_default_research_summary_prompt
+    prompt_text <- prompt_managers$research_summary$prompt()
     pdf_status <- if (nrow(asset) == 0) "missing" else research_input_default(asset$status[[1]], "missing")
     local_pdf_path <- if (nrow(asset) == 0) NA_character_ else research_input_value(asset$local_path[[1]])
     resolved_pdf_path <- research_resolve_local_pdf_path(local_pdf_path)
     request_fields <- paste(
       sprintf("Model: %s", article_lab_input_string(input$research_summary_model) %||% article_lab_default_research_summary_model),
-      sprintf("Prompt version: %s", article_lab_input_string(input$research_summary_prompt_version) %||% article_lab_default_research_summary_prompt_version),
+      sprintf("Prompt template: %s", prompt_managers$research_summary$template_name() %||% "(none)"),
       sprintf("PDF attachment status: %s", pdf_status),
       sprintf("PDF attachment filename/path: %s", resolved_pdf_path %||% "(none)"),
       sep = "\n"
@@ -3478,7 +3415,7 @@ server <- function(input, output, session) {
       paste(vapply(seq_len(nrow(selected_rows)), function(i) {
         paste(
           sprintf("candidate_id=%s | batch_id=%s", selected_rows$candidate_id[[i]], selected_rows$batch_id[[i]]),
-          article_lab_score_user_prompt(prompt_version, scope, selected_rows$title[[i]]),
+          article_lab_render_prompt_template(prompt_managers$scoring$prompt(), list(prompt_version = prompt_version, scope = scope, title = selected_rows$title[[i]])),
           sep = "\n\n"
         )
       }, character(1)), collapse = "\n\n---\n\n")
@@ -3507,7 +3444,7 @@ server <- function(input, output, session) {
     summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(selected_targets$batch_id))
     has_summary <- nrow(summary_contexts) > 0
     variants_per_title <- max(1L, min(8L, suppressWarnings(as.integer(input$article_lab_subtitle_variants_per_title)) %||% 4L))
-    base_prompt <- article_lab_input_multiline(input$article_lab_subtitle_prompt) %||% article_lab_default_subtitle_prompt
+    base_prompt <- prompt_managers$subtitles$prompt()
     request_additions <- paste(
       sprintf("Model: %s", article_lab_input_string(input$article_lab_subtitle_model) %||% article_lab_default_subtitle_model),
       sprintf("Subtitle candidates per title: %s", variants_per_title),
@@ -3566,7 +3503,7 @@ server <- function(input, output, session) {
   output$article_lab_thumbnail_effective_prompt <- renderUI({
     packages <- article_lab_thumbnail_package_rows()
     variants_per_package <- max(1L, min(4L, suppressWarnings(as.integer(input$article_lab_thumbnail_variants_per_package)) %||% article_lab_default_thumbnail_variants))
-    base_prompt <- article_lab_input_multiline(input$article_lab_thumbnail_prompt) %||% article_lab_default_thumbnail_prompt
+    base_prompt <- prompt_managers$thumbnails$prompt()
     selected_ids <- collect_selected_ids(
       packages,
       "article_lab_thumbnail_package_select",
@@ -3698,7 +3635,7 @@ server <- function(input, output, session) {
     }
     summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(packages$batch_id))
     include_context <- isTRUE(input$article_lab_outline_include_context)
-    base_prompt <- article_lab_input_multiline(input$article_lab_outline_prompt) %||% article_lab_default_outline_prompt
+    base_prompt <- prompt_managers$outlines$prompt()
     request_additions <- paste(
       sprintf("Model: %s", article_lab_input_string(input$article_lab_outline_model) %||% article_lab_default_outline_model),
       sprintf("Include available research context: %s", if (include_context) "yes" else "no"),
@@ -3778,8 +3715,8 @@ server <- function(input, output, session) {
     selected_packages <- if (length(selected_ids) > 0 && nrow(packages) > 0) packages[packages$outline_id %in% selected_ids, , drop = FALSE] else packages[0, , drop = FALSE]
     summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(packages$batch_id))
     include_context <- isTRUE(input$article_lab_full_text_include_context)
-    base_prompt <- article_lab_input_multiline(input$article_lab_full_text_prompt) %||% article_lab_default_full_text_prompt
-    prompt_key <- article_lab_input_string(input$article_lab_full_text_prompt_key) %||% article_lab_full_text_prompt_key
+    base_prompt <- prompt_managers$full_text$prompt()
+    prompt_key <- prompt_managers$full_text$template_name() %||% ""
     request_additions <- paste(
       sprintf("Model: %s", article_lab_input_string(input$article_lab_full_text_model) %||% article_lab_default_full_text_model),
       sprintf("Prompt key/version: %s", prompt_key),
@@ -4406,7 +4343,7 @@ server <- function(input, output, session) {
   output$article_lab_medium_tags_effective_prompt <- renderUI({
     row <- article_lab_selected_review_publish_row()
     model <- article_lab_input_string(input$article_lab_medium_tags_model) %||% article_lab_default_medium_tags_model
-    prompt <- article_lab_input_multiline(input$article_lab_medium_tags_prompt) %||% article_lab_default_medium_tags_prompt
+    prompt <- prompt_managers$medium_tags$prompt()
     exact_prompt <- article_lab_medium_tags_effective_prompt(row, prompt)
     div(
       class = "lab-card",
@@ -4457,6 +4394,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$article_lab_generate, {
+    if (!require_prompt_template(prompt_managers$titles, "Title generation")) return(invisible(NULL))
     article_lab_state$is_generating <- TRUE
     on.exit({
       article_lab_state$is_generating <- FALSE
@@ -4684,7 +4622,7 @@ server <- function(input, output, session) {
 
     batch_id <- save_article_lab_batch(
       con,
-      prompt = draft_meta$prompt %||% input$article_lab_prompt,
+      prompt = draft_meta$prompt %||% prompt_managers$titles$prompt(),
       seed_topic = draft_meta$seed_topic %||% input$article_lab_seed_topic,
       inspiration_source = draft_meta$inspiration_source %||% input$article_lab_inspiration_source,
       requested_batch_size = input$article_lab_batch_size,
@@ -4872,6 +4810,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_score_titles, {
+    if (!require_prompt_template(prompt_managers$scoring, "Title scoring")) return(invisible(NULL))
     batch_id <- article_lab_selected_batch_id()
     if (is.na(batch_id) || !nzchar(batch_id)) {
       article_lab_state$notice <- "Select a saved batch before scoring."
@@ -4905,6 +4844,7 @@ server <- function(input, output, session) {
         reasoning_mode = input$article_lab_score_reasoning_mode %||% "standard",
         prompt_version = input$article_lab_score_prompt_version,
         scope = input$article_lab_score_scope,
+        prompt = prompt_managers$scoring$prompt(),
         candidate_ids = selected_ids
       ),
       error = function(e) e
@@ -5040,6 +4980,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_generate_subtitles, {
+    if (!require_prompt_template(prompt_managers$subtitles, "Subtitle generation")) return(invisible(NULL))
     article_lab_state$is_generating_subtitles <- TRUE
     on.exit({
       article_lab_state$is_generating_subtitles <- FALSE
@@ -5067,7 +5008,7 @@ server <- function(input, output, session) {
         model = input$article_lab_subtitle_model,
         reasoning_effort = input$article_lab_subtitle_reasoning_effort,
         reasoning_mode = input$article_lab_subtitle_reasoning_mode %||% "standard",
-        prompt = input$article_lab_subtitle_prompt,
+        prompt = prompt_managers$subtitles$prompt(),
         variants_per_title = input$article_lab_subtitle_variants_per_title
       ),
       error = function(e) e
@@ -5196,6 +5137,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_generate_thumbnails, {
+    if (!require_prompt_template(prompt_managers$thumbnails, "Thumbnail generation")) return(invisible(NULL))
     article_lab_state$is_generating_thumbnails <- TRUE
     on.exit({
       article_lab_state$is_generating_thumbnails <- FALSE
@@ -5251,7 +5193,7 @@ server <- function(input, output, session) {
         model = input$article_lab_thumbnail_model,
         reasoning_effort = input$article_lab_thumbnail_reasoning_effort,
         reasoning_mode = input$article_lab_thumbnail_reasoning_mode %||% "standard",
-        prompt = input$article_lab_thumbnail_prompt,
+        prompt = prompt_managers$thumbnails$prompt(),
         variants_per_package = variants_per_package,
         size = input$article_lab_thumbnail_size,
         quality = input$article_lab_thumbnail_quality,
@@ -5392,6 +5334,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_generate_outlines, {
+    if (!require_prompt_template(prompt_managers$outlines, "Outline generation")) return(invisible(NULL))
     started_at <- Sys.time()
     article_lab_debug_log("outline_generate_clicked", list(model = input$article_lab_outline_model, include_context = isTRUE(input$article_lab_outline_include_context)))
     article_lab_state$notice <- "Generating selected outline draft(s). Waiting for OpenAI; this can take a while."
@@ -5437,7 +5380,7 @@ server <- function(input, output, session) {
             model = input$article_lab_outline_model,
             reasoning_effort = input$article_lab_outline_reasoning_effort,
             reasoning_mode = input$article_lab_outline_reasoning_mode %||% "standard",
-            prompt = input$article_lab_outline_prompt,
+            prompt = prompt_managers$outlines$prompt(),
             include_context = isTRUE(input$article_lab_outline_include_context),
             context_notes = input$article_lab_outline_context_notes
           )
@@ -5712,8 +5655,8 @@ server <- function(input, output, session) {
         model = input$article_lab_full_text_model,
         reasoning_effort = input$article_lab_full_text_reasoning_effort,
         reasoning_mode = input$article_lab_full_text_reasoning_mode %||% "standard",
-        prompt = input$article_lab_full_text_prompt,
-        prompt_key = input$article_lab_full_text_prompt_key,
+        prompt = prompt_managers$full_text$prompt(),
+        prompt_key = prompt_managers$full_text$template_name(),
         include_context = isTRUE(input$article_lab_full_text_include_context)
       )
       article_lab_debug_log("full_text_generate_drafts_returned", list(mode = generated$mode %||% "unknown", model = generated$model %||% article_lab_default_full_text_model, generated_rows = nrow(generated$rows), fallback_reason = generated$fallback_reason %||% NA_character_))
@@ -5722,7 +5665,7 @@ server <- function(input, output, session) {
       } else if (nrow(generated$rows) == 0) {
         list(ok = FALSE, notice = "Full article API call returned no usable draft rows. No draft was saved.", error = list(kind = "no_rows", reason = "OpenAI returned an empty or unparseable full article response. No full article draft was saved.", mode = generated$mode %||% "unknown", model = generated$model %||% article_lab_default_full_text_model, selected_ids = result$selected_ids))
       } else {
-        inserted_n <- article_lab_insert_full_text_drafts(con, generated$rows, prompt_key = input$article_lab_full_text_prompt_key, prompt_version = input$article_lab_full_text_prompt_key)
+        inserted_n <- article_lab_insert_full_text_drafts(con, generated$rows, prompt_key = prompt_managers$full_text$template_name(), prompt_version = prompt_managers$full_text$template_name())
         article_lab_debug_log("full_text_generate_inserted", list(inserted_n = inserted_n))
         warning_copy <- if (length(generated$warnings %||% list()) > 0) paste0(" ", length(generated$warnings), " validation warning(s); see helper stderr for details.") else ""
         list(ok = TRUE, notice = sprintf("Generated %s full article draft%s using model %s in %s mode in %s.%s", inserted_n, ifelse(inserted_n == 1L, "", "s"), generated$model %||% article_lab_default_full_text_model, generated$mode %||% "unknown", article_lab_format_duration(as.numeric(difftime(Sys.time(), started_at, units = "secs"))), warning_copy))
@@ -5744,10 +5687,12 @@ server <- function(input, output, session) {
   }
 
   observeEvent(input$article_lab_generate_full_text, {
+    if (!require_prompt_template(prompt_managers$full_text, "Full article generation")) return(invisible(NULL))
     generate_selected_full_text(variant = FALSE)
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_generate_full_text_variant, {
+    if (!require_prompt_template(prompt_managers$full_text, "Full article generation")) return(invisible(NULL))
     generate_selected_full_text(variant = TRUE)
   }, ignoreInit = TRUE)
 
@@ -5894,6 +5839,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_generate_medium_tags, {
+    if (!require_prompt_template(prompt_managers$medium_tags, "Medium tag generation")) return(invisible(NULL))
     row <- article_lab_selected_review_publish_row()
     if (nrow(row) == 0) {
       article_lab_state$notice <- "Select an approved full article draft before generating Medium tags."
@@ -5906,7 +5852,7 @@ server <- function(input, output, session) {
         model = input$article_lab_medium_tags_model %||% article_lab_default_medium_tags_model,
         reasoning_effort = input$article_lab_medium_tags_reasoning_effort,
         reasoning_mode = input$article_lab_medium_tags_reasoning_mode %||% "standard",
-        prompt = input$article_lab_medium_tags_prompt %||% article_lab_default_medium_tags_prompt
+        prompt = prompt_managers$medium_tags$prompt()
       ),
       error = function(e) list(error = conditionMessage(e))
     )

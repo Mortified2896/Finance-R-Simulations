@@ -11,6 +11,7 @@ source(file.path(app_dir, "R", "db_helpers.R"))
 source(file.path(app_dir, "R", "id_helpers.R"))
 project_root <- normalizePath(".", mustWork = TRUE)
 source(file.path(app_dir, "R", "article_lab_config.R"))
+source(file.path(app_dir, "R", "prompt_template_helpers.R"))
 source(file.path(app_dir, "R", "schema_article_lab.R"))
 source(file.path(app_dir, "R", "api_helpers.R"))
 

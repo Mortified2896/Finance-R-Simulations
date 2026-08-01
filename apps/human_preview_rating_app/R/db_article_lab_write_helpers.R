@@ -1346,7 +1346,7 @@ article_lab_upsert_score <- function(con, score_row) {
   combined_score
 }
 
-article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope, reasoning_effort = NA_character_, reasoning_mode = "standard", candidate_ids = NULL) {
+article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope, reasoning_effort = NA_character_, reasoning_mode = "standard", candidate_ids = NULL, prompt = article_lab_default_score_prompt) {
   article_lab_recover_api_pending_candidates(con, batch_id = batch_id)
   batch_label <- if (identical(batch_id, article_lab_all_batches_value)) "all titles" else paste("batch", batch_id)
   selected_ids <- clean_text(candidate_ids)
@@ -1421,7 +1421,7 @@ article_lab_score_batch <- function(con, batch_id, model, prompt_version, scope,
     )
 
     result <- tryCatch(
-      article_lab_score_api_request(api_rows, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt_version = prompt_version, scope = scope),
+      article_lab_score_api_request(api_rows, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt_version = prompt_version, scope = scope, prompt = prompt),
       error = function(e) e
     )
     if (inherits(result, "error")) {

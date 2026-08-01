@@ -19,6 +19,63 @@ ensure_article_lab_schema <- function(con) {
       prompt_text TEXT NOT NULL
     )
   ")
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_prompt_templates (
+      template_id TEXT PRIMARY KEY,
+      workflow_key TEXT NOT NULL,
+      template_name TEXT NOT NULL,
+      prompt_text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(workflow_key, template_name COLLATE NOCASE)
+    )
+  ")
+  dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_article_lab_prompt_templates_workflow ON article_lab_prompt_templates (workflow_key, updated_at DESC)")
+  dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS article_lab_prompt_selections (
+      workflow_key TEXT PRIMARY KEY,
+      template_id TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(template_id) REFERENCES article_lab_prompt_templates(template_id) ON DELETE CASCADE
+    )
+  ")
+  dbExecute(con, "CREATE TABLE IF NOT EXISTS article_lab_prompt_workflow_state (workflow_key TEXT PRIMARY KEY, initialized_at TEXT NOT NULL)")
+
+  shipped_prompts <- list(
+    titles = c("Default" = article_lab_default_prompt),
+    scoring = c("Default" = article_lab_default_score_prompt),
+    subtitles = c("Default" = article_lab_default_subtitle_prompt),
+    thumbnails = c("Default" = article_lab_default_thumbnail_prompt),
+    outlines = c("Default" = article_lab_default_outline_prompt),
+    full_text = c("Default" = article_lab_default_full_text_prompt),
+    research_summary = c("Default" = article_lab_default_research_summary_prompt),
+    research_claims = c("Default" = article_lab_default_claim_extraction_prompt),
+    research_evidence = c("Default" = article_lab_default_evidence_selection_prompt),
+    medium_tags = c("Default" = article_lab_default_medium_tags_prompt)
+  )
+  for (workflow in names(shipped_prompts)) {
+    initialized <- dbGetQuery(con, "SELECT 1 FROM article_lab_prompt_workflow_state WHERE workflow_key = ?", params = list(workflow))
+    if (nrow(initialized) == 0 && nrow(article_lab_prompt_template_rows(con, workflow)) == 0) {
+      article_lab_create_prompt_template(con, workflow, names(shipped_prompts[[workflow]])[[1]], shipped_prompts[[workflow]][[1]])
+    }
+    dbExecute(con, "INSERT OR IGNORE INTO article_lab_prompt_workflow_state (workflow_key, initialized_at) VALUES (?, ?)", params = list(workflow, now_utc()))
+  }
+
+  migration_done <- dbGetQuery(con, "SELECT 1 FROM article_lab_prompt_templates WHERE workflow_key = '__legacy_migration__' LIMIT 1")
+  if (nrow(migration_done) == 0 && dbExistsTable(con, "article_lab_prompts")) {
+    legacy <- dbGetQuery(con, "SELECT prompt_key, prompt_text FROM article_lab_prompts")
+    for (i in seq_len(nrow(legacy))) {
+      key <- legacy$prompt_key[[i]]
+      targets <- if (identical(key, article_lab_outline_prompt_key)) "outlines" else if (identical(key, article_lab_full_text_prompt_key)) "full_text" else if (identical(key, article_lab_manual_prompt_key)) "titles" else c("titles", "outlines", "full_text")
+      for (workflow in targets) try(article_lab_create_prompt_template(con, workflow, key, legacy$prompt_text[[i]]), silent = TRUE)
+    }
+    timestamp <- now_utc()
+    dbExecute(con, "INSERT INTO article_lab_prompt_templates (template_id, workflow_key, template_name, prompt_text, created_at, updated_at) VALUES ('__legacy_migration__', '__legacy_migration__', 'complete', 'complete', ?, ?)", params = list(timestamp, timestamp))
+  }
+  if (dbExistsTable(con, "research_summary_prompts")) {
+    legacy_summaries <- dbGetQuery(con, "SELECT prompt_version, prompt_text FROM research_summary_prompts")
+    for (i in seq_len(nrow(legacy_summaries))) try(article_lab_create_prompt_template(con, "research_summary", legacy_summaries$prompt_version[[i]], legacy_summaries$prompt_text[[i]]), silent = TRUE)
+  }
 
   dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_lab_title_batches (
