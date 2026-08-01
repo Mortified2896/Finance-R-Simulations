@@ -625,8 +625,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("Playwright public stats collector failed.");
-  console.error(error.message);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Playwright public stats collector failed.");
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}

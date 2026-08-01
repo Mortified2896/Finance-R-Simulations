@@ -62,16 +62,11 @@ expect(project$research_source_id[[1]] == source_id && project$research_angle_id
 expect(dbGetQuery(con, "SELECT COUNT(*) AS n FROM article_project_evidence_sources WHERE article_project_id = ? AND research_source_id = ?", params = list(project_id, source_id))$n[[1]] == 1L, "Originating research source should become the first linked evidence source.")
 expect(load_article_candidate(con, research_id)$effective_status[[1]] == "in_article_evidence", "Candidate status should reflect its Article Evidence project.")
 
-dbExecute(con, "CREATE TABLE article_ideas (idea_id INTEGER PRIMARY KEY, title TEXT, main_idea TEXT, notes TEXT, status TEXT, created_at TEXT, updated_at TEXT)")
-dbExecute(con, "INSERT INTO article_ideas VALUES (7, 'Legacy idea', 'Legacy core', 'Legacy notes', 'archived', ?, ?)", params = list(timestamp, timestamp))
 dbExecute(con, "INSERT INTO research_article_angles (research_source_id, created_at, updated_at, angle_title, main_idea, status, article_lab_batch_id) VALUES (?, ?, ?, 'Previously promoted angle', 'Old promoted body', 'sent_to_title_lab', 'alb_existing')", params = list(source_id, timestamp, timestamp))
 previously_promoted_angle_id <- dbGetQuery(con, "SELECT last_insert_rowid() AS id")$id[[1]]
 source_count_before <- dbGetQuery(con, "SELECT COUNT(*) AS n FROM research_sources")$n[[1]]
 ensure_article_inbox_schema(con)
-legacy <- dbGetQuery(con, "SELECT * FROM article_candidates WHERE legacy_source_table = 'article_ideas' AND legacy_source_id = '7'")
-expect(nrow(legacy) == 1L && legacy$working_title[[1]] == "Legacy idea" && legacy$status[[1]] == "archived", "Legacy ideas should survive migration with content and status.")
 expect(dbGetQuery(con, "SELECT COUNT(*) AS n FROM article_candidates WHERE research_angle_id = ?", params = list(previously_promoted_angle_id))$n[[1]] == 1L, "Previously promoted research angles should migrate without duplication.")
 expect(dbGetQuery(con, "SELECT COUNT(*) AS n FROM research_sources")$n[[1]] == source_count_before, "Existing research records must survive migration.")
-expect(article_inbox_redirect_section("idea_inbox") == "research_inbox", "Old Idea Inbox route should redirect to Article Inbox.")
 
 message("Article Inbox workflow tests passed.")

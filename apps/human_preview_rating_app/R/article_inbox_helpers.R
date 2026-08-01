@@ -2,10 +2,6 @@ article_inbox_candidate_id <- function() {
   paste0("ac_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", sample.int(999999L, 1))
 }
 
-article_inbox_redirect_section <- function(section) {
-  if (identical(section, "idea_inbox")) "research_inbox" else section
-}
-
 article_inbox_clean_optional <- function(value) {
   value <- if (length(value) == 0 || is.null(value) || is.na(value[[1]])) "" else trimws(as.character(value[[1]]))
   if (nzchar(value)) value else NA_character_

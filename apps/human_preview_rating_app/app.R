@@ -374,21 +374,12 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$sidebar_nav, {
-    valid_sections <- c("home", "idea_inbox", article_lab_workflow_sections, "settings")
+    valid_sections <- c("home", article_lab_workflow_sections)
     if (is.character(input$sidebar_nav) && input$sidebar_nav %in% valid_sections) {
-      requested <- article_inbox_redirect_section(input$sidebar_nav)
-      active_section(if (identical(requested, "title_lab")) "generate" else requested)
+      active_section(if (identical(input$sidebar_nav, "title_lab")) "generate" else input$sidebar_nav)
       if (identical(input$sidebar_nav, "home")) refresh_current()
     }
   }, ignoreInit = TRUE)
-
-  observeEvent(session$clientData$url_search, {
-    query <- session$clientData$url_search %||% ""
-    if (grepl("(^|[?&])(section|page)=idea_inbox(&|$)", query)) {
-      active_section("research_inbox")
-      updateQueryString("?section=research_inbox", mode = "replace", session = session)
-    }
-  }, ignoreInit = FALSE)
 
   observeEvent(input$title_lab_nav, {
     if (is.character(input$title_lab_nav) && input$title_lab_nav %in% c("generate", "api_scoring")) {
@@ -511,16 +502,12 @@ server <- function(input, output, session) {
         nav_button("outline", "\u2263", "Outline", "Create article outline"),
         nav_button("full_text", "\u270e", "Full Text", "Write full article"),
         nav_button("review_publish", "\u2611", "Review & Publish", "Review and publish")
-      ),
-      div(
-        class = "sidebar-nav-group",
-        nav_button("settings", "\u2699", "Settings", "App settings")
       )
     )
   })
 
   output$sidebar_status_card <- renderUI({
-    if (article_lab_is_workflow_section(active_section()) || identical(active_section(), "settings")) {
+    if (article_lab_is_workflow_section(active_section())) {
       return(div(
         class = "daily-goal static-card",
         div(
@@ -543,7 +530,7 @@ server <- function(input, output, session) {
 
   output$main_panel <- renderUI({
     current_section <- active_section()
-    if (article_lab_is_workflow_section(current_section) || identical(current_section, "settings")) {
+    if (article_lab_is_workflow_section(current_section)) {
       page_meta <- article_lab_nav_meta(current_section)
       if (current_section %in% c("generate", "api_scoring")) page_meta <- article_lab_nav_meta("title_lab")
       generate_has_rows <- {
@@ -952,24 +939,6 @@ server <- function(input, output, session) {
         uiOutput("article_lab_review_publish_workspace")
       )
 
-      placeholder_panel <- function(copy) {
-        div(
-          class = "lab-card step-placeholder",
-          p(copy),
-          p(class = "shortcut-copy", "This step is present in the workflow navigation, but its deeper implementation is intentionally left untouched in this pass.")
-        )
-      }
-
-      disabled_placeholder_button <- function(label, primary = FALSE) {
-        tags$button(
-          type = "button",
-          class = paste("btn btn-default action-button", if (primary) "lab-primary" else "lab-secondary", "placeholder-action"),
-          disabled = "disabled",
-          title = "Available in a later implementation stage",
-          label
-        )
-      }
-
       article_evidence_panel <- tagList(
         uiOutput("article_evidence_workspace")
       )
@@ -1145,7 +1114,6 @@ server <- function(input, output, session) {
         outline = outline_panel,
         full_text = full_text_panel,
         review_publish = review_publish_panel,
-        settings = placeholder_panel("Settings remain available from the sidebar."),
         generate_panel
       )
 
@@ -5799,7 +5767,7 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   output$guide_content <- renderUI({
-    if (article_lab_is_workflow_section(active_section()) || identical(active_section(), "settings")) {
+    if (article_lab_is_workflow_section(active_section())) {
       return(NULL)
     }
 
