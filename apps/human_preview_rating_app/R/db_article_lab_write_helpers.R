@@ -352,7 +352,7 @@ article_lab_full_text_api_request <- function(con, packages, model = NA_characte
   if (!nzchar(trimws(stdout_text))) stop("Full article generation helper returned no output.", call. = FALSE)
 
   parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
-  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id), request_id = article_lab_input_string(parsed$request_id))
+  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id), request_id = article_lab_input_string(parsed$request_id), canonical_request = parsed$sanitized_request)
   result_rows <- lapply(parsed$results %||% list(), function(entry) {
     citation_map <- entry$citation_map %||% list()
     citation_map_json <- if (length(citation_map) == 0) NA_character_ else toJSON(citation_map, auto_unbox = TRUE, null = "null")

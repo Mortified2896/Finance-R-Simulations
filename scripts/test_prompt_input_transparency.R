@@ -61,6 +61,22 @@ for (i in seq_along(payload$requests)) {
   expect(!grepl("OPENAI_API_KEY|sk-[A-Za-z0-9]", toJSON(preview$requests[[i]]$sanitized_request), perl = TRUE), "A secret appeared in request preview.")
 }
 
+# Sanitization must preserve unnamed JSON arrays used by Responses structured
+# input while still redacting secret-bearing named fields.
+structured_request <- list(
+  model = "gpt-5-mini",
+  input = list(list(role = "user", content = list(
+    list(type = "input_text", text = "Visible prompt"),
+    list(type = "input_file", file_id = "file_fixture")
+  ))),
+  authorization = "Bearer secret"
+)
+sanitized_structured_request <- article_lab_sanitize_canonical_request(structured_request)
+expect(length(sanitized_structured_request$input) == 1L && length(sanitized_structured_request$input[[1]]$content) == 2L, "Canonical request sanitizer dropped structured input arrays.")
+expect(identical(sanitized_structured_request$input[[1]]$content[[1]]$text, "Visible prompt"), "Canonical request sanitizer changed input_text.")
+expect(identical(sanitized_structured_request$input[[1]]$content[[2]]$file_id, "file_fixture"), "Canonical request sanitizer dropped the structured attachment identifier.")
+expect(identical(sanitized_structured_request$authorization, "[REDACTED]"), "Canonical request sanitizer did not redact a secret-bearing field.")
+
 # Retry code must reuse the exact same resolved prompt and settings.
 title_helper <- paste(readLines(file.path("scripts", "writing_api", "generate_titles.mjs"), warn = FALSE), collapse = "\n")
 expect(grepl("input: builtPrompt", title_helper, fixed = TRUE), "Title retry does not reuse the resolved prompt.")

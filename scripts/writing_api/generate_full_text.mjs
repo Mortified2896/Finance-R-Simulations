@@ -287,6 +287,7 @@ async function main() {
       },
       async () => {
         let response;
+        let request;
         try {
           const client = await createOpenAIClient(apiKey, {
             generationName: "generate-medium-full-text",
@@ -294,7 +295,7 @@ async function main() {
             tags: ["writing-api", "full-text-generation"],
             sessionId: requestPath
           });
-          const request = { model, input: await buildResponsesInput({ client, prompt, packages }) };
+          request = { model, input: await buildResponsesInput({ client, prompt, packages }) };
           if (reasoningEffort) request.reasoning = { effort: reasoningEffort };
           if (reasoningMode === "pro") request.reasoning = { ...(request.reasoning ?? {}), mode: "pro" };
           response = await client.responses.create(request);
@@ -332,6 +333,7 @@ async function main() {
           prompt_key: promptKey,
           request_id: response._request_id ?? response.request_id ?? null,
           response_id: response.id ?? null,
+          sanitized_request: request,
           results,
           warnings: globalWarnings,
           raw_text: rawText,

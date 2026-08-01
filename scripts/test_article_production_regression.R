@@ -21,6 +21,7 @@ source(file.path(app_dir, "R", "schema_article_inbox.R"))
 source(file.path(app_dir, "R", "schema_article_lab.R"))
 source(file.path(app_dir, "R", "article_inbox_helpers.R"))
 source(file.path(app_dir, "R", "api_helpers.R"))
+source(file.path(app_dir, "R", "research_helpers.R"))
 source(file.path(app_dir, "R", "db_article_lab_read_helpers.R"))
 source(file.path(app_dir, "R", "db_article_lab_write_helpers.R"))
 thumbnail_queue_path <- tempfile(pattern = "missing_thumbnail_queue_")
@@ -100,6 +101,22 @@ batch_b <- save_article_lab_batch(con, article_lab_default_prompt, "Project B", 
 expect(identical(load_article_lab_batches(con, project_a)$batch_id, batch_a), "Project A batch lookup leaked another project's batch.")
 expect(identical(load_article_lab_batches(con, project_b)$batch_id, batch_b), "Project B batch lookup leaked another project's batch.")
 expect(identical(load_latest_article_lab_batch(con, project_a)$article_context_notes[[1]], all_context), "Saved title batch did not preserve the exact composed article context snapshot.")
+
+# A trusted project-linked PDF must remain attachable even when the user has not
+# generated a research summary. Full-text and outline workflows resolve this
+# metadata from the project link, never from browser-supplied paths.
+source_pdf <- tempfile(pattern = "article_source_", fileext = ".pdf")
+writeBin(charToRaw("%PDF-1.4\n% regression fixture\n"), source_pdf)
+on.exit(unlink(source_pdf, force = TRUE), add = TRUE)
+dbExecute(con, "INSERT INTO research_sources (research_source_id, created_at, updated_at, source_title, source_type, status) VALUES (1, ?, ?, 'Project A trusted paper', 'paper', 'new')", params = list(timestamp, timestamp))
+dbExecute(con, "INSERT INTO article_project_evidence_sources (article_project_id, research_source_id, link_type, source_title_snapshot, created_at) VALUES (?, 1, 'origin', 'Project A trusted paper', ?)", params = list(project_a, timestamp))
+dbExecute(con, "INSERT INTO research_source_assets (research_source_id, created_at, updated_at, asset_type, local_path, original_filename, status) VALUES (1, ?, ?, 'pdf', ?, 'trusted-paper.pdf', 'downloaded')", params = list(timestamp, timestamp, source_pdf))
+project_source_context <- load_article_lab_batch_summary_contexts(con, batch_a)
+expect(nrow(project_source_context) == 1L, "Project-linked source without a summary was not resolved for generation.")
+expect(identical(project_source_context$source_title[[1]], "Project A trusted paper"), "Generation resolved the wrong project source.")
+expect(identical(project_source_context$pdf_local_path[[1]], source_pdf), "Generation did not use the trusted asset path from database metadata.")
+expect(is.na(project_source_context$summary_id[[1]]) && is.na(project_source_context$article_summary[[1]]), "A missing summary was silently fabricated.")
+expect(nrow(load_article_lab_batch_summary_contexts(con, batch_b)) == 0L, "A project-linked source leaked into another project's batch.")
 
 title_a <- dbGetQuery(con, "SELECT candidate_id FROM article_lab_title_candidates WHERE batch_id = ?", params = list(batch_a))$candidate_id[[1]]
 dbExecute(con, "UPDATE article_lab_title_candidates SET status = 'approved_for_subtitle' WHERE candidate_id = ?", params = list(title_a))

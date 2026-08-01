@@ -197,25 +197,61 @@ load_article_lab_batch_summary_contexts <- function(con, batch_ids) {
     }
   }
 
-  batches <- batches[!is.na(batches$summary_id), , drop = FALSE]
-  if (nrow(batches) == 0 || !dbExistsTable(con, "research_source_summaries") || !dbExistsTable(con, "research_sources")) return(data.frame())
+  contexts <- data.frame()
+  summary_batches <- batches[!is.na(batches$summary_id), , drop = FALSE]
+  if (nrow(summary_batches) > 0 && dbExistsTable(con, "research_source_summaries") && dbExistsTable(con, "research_sources")) {
+    summary_ids <- unique(summary_batches$summary_id)
+    summary_placeholders <- paste(rep("?", length(summary_ids)), collapse = ", ")
+    summaries <- dbGetQuery(
+      con,
+      sprintf(
+        "SELECT ss.summary_id, ss.summary_text, ss.research_source_id, s.source_title, s.source_url, s.pdf_url
+         FROM research_source_summaries ss
+         JOIN research_sources s ON s.research_source_id = ss.research_source_id
+         WHERE ss.summary_id IN (%s)",
+        summary_placeholders
+      ),
+      params = as.list(summary_ids)
+    )
+    if (nrow(summaries) > 0) {
+      contexts <- merge(summary_batches[, c("batch_id", "summary_id"), drop = FALSE], summaries, by = "summary_id", all.x = FALSE, all.y = FALSE)
+    }
+  }
 
-  summary_ids <- unique(batches$summary_id)
-  summary_placeholders <- paste(rep("?", length(summary_ids)), collapse = ", ")
-  summaries <- dbGetQuery(
-    con,
-    sprintf(
-      "SELECT ss.summary_id, ss.summary_text, ss.research_source_id, s.source_title, s.source_url, s.pdf_url
-       FROM research_source_summaries ss
-       JOIN research_sources s ON s.research_source_id = ss.research_source_id
-       WHERE ss.summary_id IN (%s)",
-      summary_placeholders
-    ),
-    params = as.list(summary_ids)
-  )
-  if (nrow(summaries) == 0) return(data.frame())
+  resolved_batch_ids <- if (nrow(contexts) == 0) character() else contexts$batch_id
+  unresolved_batches <- batches[!(batches$batch_id %in% resolved_batch_ids), , drop = FALSE]
+  if (
+    nrow(unresolved_batches) > 0 &&
+    dbExistsTable(con, "article_project_evidence_sources") &&
+    dbExistsTable(con, "research_sources")
+  ) {
+    unresolved_placeholders <- paste(rep("?", nrow(unresolved_batches)), collapse = ", ")
+    project_sources <- dbGetQuery(
+      con,
+      sprintf(
+        "SELECT b.batch_id, pes.research_source_id, s.source_title, s.source_url, s.pdf_url,
+                (SELECT ss.summary_id FROM research_source_summaries ss
+                 WHERE ss.research_source_id = pes.research_source_id
+                 ORDER BY CASE ss.status WHEN 'confirmed' THEN 0 ELSE 1 END, ss.updated_at DESC, ss.summary_id DESC LIMIT 1) AS summary_id,
+                (SELECT ss.summary_text FROM research_source_summaries ss
+                 WHERE ss.research_source_id = pes.research_source_id
+                 ORDER BY CASE ss.status WHEN 'confirmed' THEN 0 ELSE 1 END, ss.updated_at DESC, ss.summary_id DESC LIMIT 1) AS summary_text
+         FROM article_lab_title_batches b
+         JOIN article_project_evidence_sources pes ON pes.article_project_id = b.article_project_id
+         JOIN research_sources s ON s.research_source_id = pes.research_source_id
+         WHERE b.batch_id IN (%s)
+         ORDER BY b.batch_id, CASE pes.link_type WHEN 'origin' THEN 0 ELSE 1 END, pes.created_at, pes.research_source_id",
+        unresolved_placeholders
+      ),
+      params = as.list(unresolved_batches$batch_id)
+    )
+    if (nrow(project_sources) > 0) {
+      project_sources <- project_sources[!duplicated(project_sources$batch_id), , drop = FALSE]
+      contexts <- if (nrow(contexts) == 0) project_sources else rbind(contexts, project_sources)
+    }
+  }
 
-  contexts <- merge(batches[, c("batch_id", "summary_id"), drop = FALSE], summaries, by = "summary_id", all.x = FALSE, all.y = FALSE)
+  if (nrow(contexts) == 0) return(data.frame())
   contexts$pdf_status <- NA_character_
   contexts$pdf_local_path <- NA_character_
   if (dbExistsTable(con, "research_source_assets")) {
@@ -239,7 +275,11 @@ load_article_lab_batch_summary_contexts <- function(con, batch_ids) {
       contexts$pdf_local_path <- assets$local_path[matched_assets]
     }
   }
-  contexts$article_summary <- vapply(seq_len(nrow(contexts)), function(i) research_summary_prompt(contexts[i, , drop = FALSE]), character(1))
+  contexts$article_summary <- vapply(seq_len(nrow(contexts)), function(i) {
+    summary_text <- article_lab_input_multiline(contexts$summary_text[[i]])
+    if (is.null(summary_text) || is.na(summary_text)) return(NA_character_)
+    research_summary_prompt(contexts[i, , drop = FALSE])
+  }, character(1))
   contexts[, c("batch_id", "summary_id", "source_title", "source_url", "pdf_url", "article_summary", "pdf_status", "pdf_local_path"), drop = FALSE]
 }
 

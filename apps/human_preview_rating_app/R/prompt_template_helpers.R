@@ -76,7 +76,11 @@ article_lab_prompt_registry_help <- function(workflow_key) {
 article_lab_sanitize_canonical_request <- function(request) {
   scrub <- function(value, key = "") {
     if (grepl("api[_-]?key|authorization|secret|credential", key, ignore.case = TRUE)) return("[REDACTED]")
-    if (is.list(value)) return(setNames(lapply(names(value), function(name) scrub(value[[name]], name)), names(value)))
+    if (is.list(value)) {
+      value_names <- names(value)
+      if (is.null(value_names)) return(lapply(value, scrub))
+      return(setNames(lapply(value_names, function(name) scrub(value[[name]], name)), value_names))
+    }
     value
   }
   scrub(request)
@@ -120,11 +124,18 @@ article_lab_record_current_attempt <- function(workflow_key, prompt_template, re
     attachments, status = status)
 }
 
-article_lab_finish_generation_attempt <- function(attempt_id, status, response_id = NA_character_, request_id = NA_character_, error_message = NA_character_) {
+article_lab_finish_generation_attempt <- function(attempt_id, status, response_id = NA_character_, request_id = NA_character_, error_message = NA_character_, canonical_request = NULL) {
   con <- getOption("article_lab.generation_connection")
   if (is.null(attempt_id) || is.na(attempt_id) || is.null(con) || !DBI::dbIsValid(con)) return(invisible(FALSE))
-  DBI::dbExecute(con, "UPDATE article_lab_generation_attempts SET status = ?, openai_response_id = ?, openai_request_id = ?, error_message = ?, updated_at = ? WHERE attempt_id = ?",
-    params = list(status, response_id, request_id, error_message, now_utc(), attempt_id))
+  if (is.null(canonical_request)) {
+    DBI::dbExecute(con, "UPDATE article_lab_generation_attempts SET status = ?, openai_response_id = ?, openai_request_id = ?, error_message = ?, updated_at = ? WHERE attempt_id = ?",
+      params = list(status, response_id, request_id, error_message, now_utc(), attempt_id))
+  } else {
+    DBI::dbExecute(con, "UPDATE article_lab_generation_attempts SET status = ?, openai_response_id = ?, openai_request_id = ?, error_message = ?, canonical_request_json = ?, updated_at = ? WHERE attempt_id = ?",
+      params = list(status, response_id, request_id, error_message,
+        jsonlite::toJSON(article_lab_sanitize_canonical_request(canonical_request), auto_unbox = TRUE, null = "null"),
+        now_utc(), attempt_id))
+  }
   invisible(TRUE)
 }
 
