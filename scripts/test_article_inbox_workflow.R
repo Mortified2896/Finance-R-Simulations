@@ -1,0 +1,77 @@
+suppressPackageStartupMessages({
+  library(DBI)
+  library(RSQLite)
+  library(jsonlite)
+})
+
+app_dir <- file.path("apps", "human_preview_rating_app")
+source(file.path(app_dir, "R", "text_helpers.R"))
+source(file.path(app_dir, "R", "db_helpers.R"))
+source(file.path(app_dir, "R", "input_helpers.R"))
+source(file.path(app_dir, "R", "schema_research.R"))
+source(file.path(app_dir, "R", "schema_article_inbox.R"))
+source(file.path(app_dir, "R", "article_inbox_helpers.R"))
+
+expect <- function(condition, message) if (!isTRUE(condition)) stop(message, call. = FALSE)
+con <- dbConnect(SQLite(), ":memory:")
+on.exit(dbDisconnect(con), add = TRUE)
+dbExecute(con, "PRAGMA foreign_keys = ON")
+ensure_research_workflow_schema(con)
+ensure_article_inbox_schema(con)
+
+timestamp <- "2026-08-01T10:00:00Z"
+blank_error <- tryCatch({ create_quick_idea_candidate(con, "   "); NULL }, error = identity)
+expect(inherits(blank_error, "error") && grepl("required", conditionMessage(blank_error)), "Quick Idea should visibly reject a missing working title.")
+quick_id <- create_quick_idea_candidate(con, "Quick candidate", timestamp = timestamp)
+quick <- load_article_candidate(con, quick_id)
+expect(nrow(quick) == 1L && quick$origin_type[[1]] == "quick_idea", "Quick Idea should create one canonical candidate.")
+expect(is.na(quick$core_idea[[1]]) && is.na(quick$notes[[1]]), "Optional Quick Idea fields should remain empty.")
+
+dbExecute(con, "INSERT INTO research_sources (created_at, updated_at, source_title, main_idea, status) VALUES (?, ?, ?, ?, 'new')", params = list(timestamp, timestamp, "Source A", "Source thesis"))
+source_id <- dbGetQuery(con, "SELECT last_insert_rowid() AS id")$id[[1]]
+dbExecute(con, "INSERT INTO research_source_summaries (research_source_id, created_at, updated_at, summary_text, status, confirmed_at) VALUES (?, ?, ?, ?, 'confirmed', ?)", params = list(source_id, timestamp, timestamp, "Confirmed source summary", timestamp))
+dbExecute(con, "INSERT INTO research_article_angles (research_source_id, created_at, updated_at, angle_title, main_idea, status, notes) VALUES (?, ?, ?, ?, ?, 'idea', ?)", params = list(source_id, timestamp, timestamp, "Research candidate", "Selected angle body", "Angle note"))
+angle_id <- dbGetQuery(con, "SELECT last_insert_rowid() AS id")$id[[1]]
+expect(nrow(load_article_candidates(con, include_archived = TRUE)) == 1L, "Research sources and unselected angles must not become candidates.")
+
+research_id <- promote_research_angle_candidate(con, angle_id, timestamp)
+research_id_again <- promote_research_angle_candidate(con, angle_id, timestamp)
+expect(identical(research_id, research_id_again), "Repeated promotion should return the existing candidate.")
+all_candidates <- load_article_candidates(con, include_archived = TRUE)
+expect(nrow(all_candidates) == 2L, "Quick and research candidates should share one list.")
+research <- load_article_candidate(con, research_id)
+expect(research$research_source_id[[1]] == source_id && research$research_angle_id[[1]] == angle_id, "Promoted candidate should preserve research provenance.")
+
+update_article_candidate(con, quick_id, "Edited quick candidate", "Edited core", "Edited notes", "refining", timestamp)
+edited <- load_article_candidate(con, quick_id)
+expect(edited$working_title[[1]] == "Edited quick candidate" && edited$status[[1]] == "refining", "Candidate edits should persist.")
+archive_article_candidate(con, quick_id, timestamp)
+expect(!(quick_id %in% load_article_candidates(con)$candidate_id), "Archived candidates should be hidden by default.")
+restore_article_candidate(con, quick_id, timestamp)
+expect(quick_id %in% load_article_candidates(con)$candidate_id, "Archived candidates should be restorable.")
+quick_project_id <- develop_article_candidate(con, quick_id, timestamp)
+quick_project <- load_article_project(con, quick_project_id)
+expect(quick_project$origin_type[[1]] == "quick_idea" && quick_project$core_idea[[1]] == "Edited core" && quick_project$notes[[1]] == "Edited notes", "Quick Idea provenance and content should survive handoff.")
+
+project_id <- develop_article_candidate(con, research_id, timestamp)
+project_id_again <- develop_article_candidate(con, research_id, timestamp)
+expect(identical(project_id, project_id_again), "Repeated Develop Article should open one project.")
+expect(dbGetQuery(con, "SELECT COUNT(*) AS n FROM article_projects WHERE article_candidate_id = ?", params = list(research_id))$n[[1]] == 1L, "Develop Article should create only one Article Evidence workspace.")
+project <- load_article_project(con, project_id)
+expect(project$research_source_id[[1]] == source_id && project$research_angle_id[[1]] == angle_id && grepl("Confirmed source summary", project$source_summary_snapshot[[1]], fixed = TRUE), "Research provenance and summary must survive handoff.")
+expect(dbGetQuery(con, "SELECT COUNT(*) AS n FROM article_project_evidence_sources WHERE article_project_id = ? AND research_source_id = ?", params = list(project_id, source_id))$n[[1]] == 1L, "Originating research source should become the first linked evidence source.")
+expect(load_article_candidate(con, research_id)$effective_status[[1]] == "in_article_evidence", "Candidate status should reflect its Article Evidence project.")
+
+dbExecute(con, "CREATE TABLE article_ideas (idea_id INTEGER PRIMARY KEY, title TEXT, main_idea TEXT, notes TEXT, status TEXT, created_at TEXT, updated_at TEXT)")
+dbExecute(con, "INSERT INTO article_ideas VALUES (7, 'Legacy idea', 'Legacy core', 'Legacy notes', 'archived', ?, ?)", params = list(timestamp, timestamp))
+dbExecute(con, "INSERT INTO research_article_angles (research_source_id, created_at, updated_at, angle_title, main_idea, status, article_lab_batch_id) VALUES (?, ?, ?, 'Previously promoted angle', 'Old promoted body', 'sent_to_title_lab', 'alb_existing')", params = list(source_id, timestamp, timestamp))
+previously_promoted_angle_id <- dbGetQuery(con, "SELECT last_insert_rowid() AS id")$id[[1]]
+source_count_before <- dbGetQuery(con, "SELECT COUNT(*) AS n FROM research_sources")$n[[1]]
+ensure_article_inbox_schema(con)
+legacy <- dbGetQuery(con, "SELECT * FROM article_candidates WHERE legacy_source_table = 'article_ideas' AND legacy_source_id = '7'")
+expect(nrow(legacy) == 1L && legacy$working_title[[1]] == "Legacy idea" && legacy$status[[1]] == "archived", "Legacy ideas should survive migration with content and status.")
+expect(dbGetQuery(con, "SELECT COUNT(*) AS n FROM article_candidates WHERE research_angle_id = ?", params = list(previously_promoted_angle_id))$n[[1]] == 1L, "Previously promoted research angles should migrate without duplication.")
+expect(dbGetQuery(con, "SELECT COUNT(*) AS n FROM research_sources")$n[[1]] == source_count_before, "Existing research records must survive migration.")
+expect(article_inbox_redirect_section("idea_inbox") == "research_inbox", "Old Idea Inbox route should redirect to Article Inbox.")
+
+message("Article Inbox workflow tests passed.")

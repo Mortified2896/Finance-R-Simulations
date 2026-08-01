@@ -1,5 +1,4 @@
 article_lab_workflow_sections <- c(
-  "idea_inbox",
   "research_inbox",
   "summary",
   "article_evidence",
@@ -17,17 +16,11 @@ article_lab_page_meta <- list(
     nav_title = "Home",
     nav_subtitle = "Current rating workflow"
   ),
-  idea_inbox = list(
-    nav_title = "Idea Inbox",
-    nav_subtitle = "Capture and develop ideas",
-    title = "Idea Inbox",
-    subtitle = "Capture spontaneous article ideas and manage ideas created from research sources."
-  ),
   research_inbox = list(
-    nav_title = "Research Inbox",
-    nav_subtitle = "Track papers and article angles",
-    title = "Article Lab - Research Inbox",
-    subtitle = "Track papers and article angles."
+    nav_title = "Article Inbox",
+    nav_subtitle = "Capture ideas and explore research angles",
+    title = "Article Inbox",
+    subtitle = "Capture ideas and explore research angles."
   ),
   summary = list(
     nav_title = "Summary",

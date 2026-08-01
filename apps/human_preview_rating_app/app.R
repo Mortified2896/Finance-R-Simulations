@@ -32,9 +32,11 @@ source("R/article_lab_config.R", local = app_env)
 source("R/schema_rating.R", local = app_env)
 source("R/schema_article_lab.R", local = app_env)
 source("R/schema_research.R", local = app_env)
+source("R/schema_article_inbox.R", local = app_env)
 source("R/schema_startup.R", local = app_env)
 source("R/table_helpers.R", local = app_env)
 source("R/research_helpers.R", local = app_env)
+source("R/article_inbox_helpers.R", local = app_env)
 source("R/api_helpers.R", local = app_env)
 source("R/db_article_lab_read_helpers.R", local = app_env)
 source("R/db_article_lab_write_helpers.R", local = app_env)
@@ -79,6 +81,8 @@ server <- function(input, output, session) {
   onStop(function() dbDisconnect(con))
   rating_session_id <- if (is_dimension_mode) NULL else resume_or_create_session(con, target_n = default_target_n)
   active_section <- reactiveVal("home")
+  selected_article_candidate_id <- reactiveVal(NA_character_)
+  selected_article_project_id <- reactiveVal(NA_character_)
   active_dimension <- reactiveVal(if (is_dimension_mode) first_incomplete_dimension(con) else NA_character_)
   current <- reactiveVal(NULL)
   shown_started_at <- reactiveVal(Sys.time())
@@ -110,7 +114,9 @@ server <- function(input, output, session) {
     last_research_paperqa_chunks = NULL,
     last_research_paperqa_chunks_mode = NULL,
     last_research_paperqa_answer = NULL,
-    last_research_paperqa_chunks_file = NULL
+    last_research_paperqa_chunks_file = NULL,
+    last_article_inbox_error = NULL,
+    last_article_inbox_error_at = NULL
   )
   article_lab_refresh <- reactiveVal(0L)
   article_lab_active_outline_thumbnail <- reactiveVal(NULL)
@@ -213,12 +219,21 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$sidebar_nav, {
-    valid_sections <- c("home", article_lab_workflow_sections, "settings")
+    valid_sections <- c("home", "idea_inbox", article_lab_workflow_sections, "settings")
     if (is.character(input$sidebar_nav) && input$sidebar_nav %in% valid_sections) {
-      active_section(if (identical(input$sidebar_nav, "title_lab")) "generate" else input$sidebar_nav)
+      requested <- article_inbox_redirect_section(input$sidebar_nav)
+      active_section(if (identical(requested, "title_lab")) "generate" else requested)
       if (identical(input$sidebar_nav, "home")) refresh_current()
     }
   }, ignoreInit = TRUE)
+
+  observeEvent(session$clientData$url_search, {
+    query <- session$clientData$url_search %||% ""
+    if (grepl("(^|[?&])(section|page)=idea_inbox(&|$)", query)) {
+      active_section("research_inbox")
+      updateQueryString("?section=research_inbox", mode = "replace", session = session)
+    }
+  }, ignoreInit = FALSE)
 
   observeEvent(input$title_lab_nav, {
     if (is.character(input$title_lab_nav) && input$title_lab_nav %in% c("generate", "api_scoring")) {
@@ -228,6 +243,15 @@ server <- function(input, output, session) {
 
   observeEvent(input$research_open_summary, {
     if (nrow(selected_research_source()) > 0) active_section("summary")
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_evidence_back_to_inbox, {
+    active_section("research_inbox")
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_evidence_project_select, {
+    value <- article_inbox_clean_optional(input$article_evidence_project_select)
+    if (!is.na(value)) selected_article_project_id(value)
   }, ignoreInit = TRUE)
 
   observe({
@@ -311,8 +335,7 @@ server <- function(input, output, session) {
       div(
         class = "sidebar-nav-group",
         div(class = "sidebar-nav-label", "Article Inputs"),
-        nav_button("idea_inbox", "I", "Idea Inbox", "Capture and develop ideas"),
-        nav_button("research_inbox", "R", "Research Inbox", "Explore sources and angles", active_when = c("research_inbox", "summary"))
+        nav_button("research_inbox", "I", "Article Inbox", "Capture ideas and explore research angles", active_when = c("research_inbox", "summary"))
       ),
       div(
         class = "sidebar-nav-group",
@@ -787,68 +810,8 @@ server <- function(input, output, session) {
         )
       }
 
-      idea_inbox_panel <- tagList(
-        div(
-          class = "lab-card stage-one-hero",
-          div(
-            div(class = "stage-one-kicker", "Idea-first entry point"),
-            h2("Turn a thought into an evidence-ready article"),
-            p("Capture spontaneous article ideas and manage ideas created from research sources.")
-          ),
-          disabled_placeholder_button("+ Quick Idea", primary = TRUE)
-        ),
-        div(
-          class = "lab-card placeholder-list",
-          div(
-            class = "lab-section-header",
-            div(h3("Article ideas"), p(class = "lab-section-copy", "Ideas will appear here after persistence is introduced in a later stage.")),
-            span(class = "stage-one-count", "0 ideas")
-          ),
-          div(
-            class = "stage-one-empty",
-            div(class = "stage-one-empty-icon", "I"),
-            h3("No article ideas yet"),
-            p("Quick Idea will eventually create an idea here without requiring a research source first."),
-            div(
-              class = "placeholder-record",
-              div(class = "placeholder-record-title", "Future idea card metadata"),
-              div(
-                class = "placeholder-meta-grid",
-                div(span("Origin"), strong("Spontaneous or research-created")),
-                div(span("Linked sources"), strong("0 sources")),
-                div(span("Evidence status"), strong("Not started")),
-                div(span("Production stage"), strong("Idea"))
-              )
-            )
-          )
-        )
-      )
-
       article_evidence_panel <- tagList(
-        div(
-          class = "lab-card evidence-idea-header",
-          div(
-            div(class = "stage-one-kicker", "Selected article idea"),
-            h2("No article idea selected"),
-            p("Choose an idea from Idea Inbox to build its evidence package. Idea selection is deferred to a later stage.")
-          ),
-          div(class = "evidence-readiness", span("Evidence readiness"), strong("Not started"))
-        ),
-        div(
-          class = "evidence-action-bar",
-          disabled_placeholder_button("Attach existing source", primary = TRUE),
-          disabled_placeholder_button("Add source"),
-          disabled_placeholder_button("Find supporting research"),
-          disabled_placeholder_button("Find counterarguments")
-        ),
-        div(
-          class = "evidence-grid",
-          div(class = "lab-card evidence-section", h3("Linked sources"), p("Research sources attached to the selected idea will appear here."), div(class = "evidence-empty-line", "No sources attached")),
-          div(class = "lab-card evidence-section", h3("Claims and evidence"), p("Map draft claims to supporting evidence and assess evidence quality."), div(class = "evidence-empty-line", "No claims mapped")),
-          div(class = "lab-card evidence-section", h3("Counterarguments"), p("Track credible challenges, alternative explanations, and responses."), div(class = "evidence-empty-line", "No counterarguments captured")),
-          div(class = "lab-card evidence-section", h3("Research gaps / open questions"), p("Record what still needs to be verified before article production."), div(class = "evidence-empty-line", "No research gaps recorded"))
-        ),
-        div(class = "stage-one-note", strong("Stage 1 placeholder"), " These controls are intentionally disabled. No source linking, claim persistence, or readiness state is written yet.")
+        uiOutput("article_evidence_workspace")
       )
 
       title_lab_tabs <- div(
@@ -866,6 +829,22 @@ server <- function(input, output, session) {
 
       research_inbox_panel <- tagList(
         div(
+          class = "lab-card article-inbox-capture",
+          div(class = "lab-section-header", div(h2("Quick Idea"), p(class = "lab-section-copy", "Capture an article candidate now; refine it when you are ready."))),
+          div(class = "lab-field", textInput("article_candidate_quick_title", "Working title *", width = "100%", placeholder = "A clear working title")),
+          div(class = "lab-grid", div(class = "lab-field", textAreaInput("article_candidate_quick_core", "Core idea / angle (optional)", width = "100%", height = "76px")), div(class = "lab-field", textAreaInput("article_candidate_quick_notes", "Notes (optional)", width = "100%", height = "76px"))),
+          div(class = "lab-actions", actionButton("article_candidate_quick_create", "Add Quick Idea", class = "lab-primary"), tags$a(class = "btn btn-default action-button lab-secondary", href = "#research-new-source", "Add Research Source")),
+          uiOutput("article_inbox_error")
+        ),
+        div(
+          class = "lab-card",
+          div(class = "lab-section-header", div(h2("Article Candidates"), p(class = "lab-section-copy", "Quick ideas and deliberately selected research angles share this canonical list.")), uiOutput("article_candidate_count")),
+          div(class = "lab-grid", div(class = "lab-field", selectInput("article_candidate_origin_filter", "Origin", choices = c("All origins" = "__all__", "Quick Idea" = "quick_idea", "Research" = "research_angle"), selected = "__all__", width = "100%")), div(class = "lab-field", checkboxInput("article_candidate_include_archived", "Show archived", value = FALSE, width = "100%"))),
+          DT::DTOutput("article_candidates_table"),
+          uiOutput("article_candidate_editor")
+        ),
+        div(class = "article-inbox-divider", span("Research Sources & Angles")),
+        div(
           class = "lab-card",
           h2("Ranked Queue"),
           div(class = "lab-status-copy", "Ranked sources have a manual sort order. Finished and archived sources are hidden unless that status is selected."),
@@ -874,6 +853,7 @@ server <- function(input, output, session) {
           DT::DTOutput("research_ranked_sources_table")
         ),
         div(
+          id = "research-new-source",
           class = "lab-card",
           h2("Selected Source / Angle Workspace"),
           uiOutput("research_selected_source_summary"),
@@ -994,7 +974,6 @@ server <- function(input, output, session) {
 
       page_body <- switch(
         current_section,
-        idea_inbox = idea_inbox_panel,
         research_inbox = research_inbox_panel,
         summary = summary_panel,
         article_evidence = article_evidence_panel,
@@ -1332,9 +1311,109 @@ server <- function(input, output, session) {
   })
 
   research_refresh <- reactiveVal(0L)
+  article_inbox_refresh <- reactiveVal(0L)
   selected_research_source_id <- reactiveVal(NA_integer_)
   selected_research_evidence_claim_id <- reactiveVal(NA_integer_)
   selected_research_evidence_group_key <- reactiveVal(NA_character_)
+
+  article_candidates <- reactive({
+    article_inbox_refresh()
+    load_article_candidates(
+      con,
+      origin = input$article_candidate_origin_filter %||% "__all__",
+      include_archived = isTRUE(input$article_candidate_include_archived)
+    )
+  })
+
+  selected_article_candidate <- reactive({
+    article_inbox_refresh()
+    load_article_candidate(con, selected_article_candidate_id())
+  })
+
+  article_inbox_fail <- function(action, reason, affected_id = NULL) {
+    article_lab_state$last_article_inbox_error <- list(action = action, reason = conditionMessage(reason), affected_id = affected_id)
+    article_lab_state$last_article_inbox_error_at <- Sys.time()
+  }
+
+  article_inbox_succeed <- function(notice) {
+    article_lab_state$last_article_inbox_error <- NULL
+    article_lab_state$last_article_inbox_error_at <- NULL
+    article_lab_state$notice <- notice
+    article_inbox_refresh(article_inbox_refresh() + 1L)
+    research_refresh(research_refresh() + 1L)
+  }
+
+  observeEvent(input$article_candidates_table_rows_selected, {
+    rows <- article_candidates()
+    selected <- input$article_candidates_table_rows_selected
+    if (nrow(rows) == 0 || length(selected) == 0 || selected[[1]] > nrow(rows)) return()
+    selected_article_candidate_id(rows$candidate_id[[selected[[1]]]])
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_candidate_quick_create, {
+    tryCatch({
+      candidate_id <- create_quick_idea_candidate(con, input$article_candidate_quick_title, input$article_candidate_quick_core, input$article_candidate_quick_notes)
+      selected_article_candidate_id(candidate_id)
+      updateTextInput(session, "article_candidate_quick_title", value = "")
+      updateTextAreaInput(session, "article_candidate_quick_core", value = "")
+      updateTextAreaInput(session, "article_candidate_quick_notes", value = "")
+      article_inbox_succeed("Quick Idea added to Article Candidates.")
+    }, error = function(err) article_inbox_fail("Create Quick Idea", err))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_candidate_save, {
+    candidate_id <- selected_article_candidate_id()
+    tryCatch({
+      update_article_candidate(con, candidate_id, input$article_candidate_edit_title, input$article_candidate_edit_core, input$article_candidate_edit_notes, input$article_candidate_edit_status)
+      article_inbox_succeed("Article candidate edits saved.")
+    }, error = function(err) article_inbox_fail("Save article candidate", err, candidate_id))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_candidate_archive, {
+    candidate_id <- selected_article_candidate_id()
+    tryCatch({
+      archive_article_candidate(con, candidate_id)
+      selected_article_candidate_id(NA_character_)
+      article_inbox_succeed("Article candidate archived. Turn on Show archived to restore it.")
+    }, error = function(err) article_inbox_fail("Archive article candidate", err, candidate_id))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_candidate_restore, {
+    candidate_id <- selected_article_candidate_id()
+    tryCatch({
+      restore_article_candidate(con, candidate_id)
+      article_inbox_succeed("Article candidate restored.")
+    }, error = function(err) article_inbox_fail("Restore article candidate", err, candidate_id))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_candidate_develop, {
+    candidate_id <- selected_article_candidate_id()
+    tryCatch({
+      project_id <- develop_article_candidate(con, candidate_id)
+      selected_article_project_id(project_id)
+      article_inbox_succeed("Article Evidence workspace opened.")
+      active_section("article_evidence")
+    }, error = function(err) article_inbox_fail("Develop Article", err, candidate_id))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_promote_angle, {
+    row <- selected_research_angle()
+    angle_id <- if (nrow(row) == 0) NA_integer_ else row$research_angle_id[[1]]
+    tryCatch({
+      candidate_id <- promote_research_angle_candidate(con, angle_id)
+      selected_article_candidate_id(candidate_id)
+      article_inbox_succeed("Research angle added to Article Candidates.")
+    }, error = function(err) article_inbox_fail("Add research angle to Article Candidates", err, angle_id))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_open_candidate, {
+    candidate_id <- article_inbox_clean_optional(input$research_open_candidate)
+    if (!is.na(candidate_id)) {
+      selected_article_candidate_id(candidate_id)
+      active_section("research_inbox")
+      article_inbox_refresh(article_inbox_refresh() + 1L)
+    }
+  }, ignoreInit = TRUE)
 
   research_ranked_sources <- reactive({
     research_refresh()
@@ -3592,6 +3671,92 @@ server <- function(input, output, session) {
     )
   })
 
+  article_inbox_error_alert <- function(err) {
+    if (is.null(err)) return(NULL)
+    elapsed <- if (is.null(article_lab_state$last_article_inbox_error_at)) "" else format(article_lab_state$last_article_inbox_error_at, "%Y-%m-%d %H:%M:%S")
+    div(
+      class = "lab-alert lab-alert-error",
+      role = "alert",
+      div(class = "lab-alert-title", span(class = "lab-alert-icon", HTML("&#9888;")), strong(paste(err$action %||% "Article Inbox action", "failed")), if (nzchar(elapsed)) span(class = "lab-alert-time", paste("at", elapsed))),
+      div(class = "lab-alert-body", p(err$reason %||% "Unknown database error."), tags$ul(if (!is.null(err$affected_id) && !is.na(err$affected_id)) tags$li(paste("Affected record:", err$affected_id)), tags$li("No partial result should be assumed. The previous persisted records remain available; fix the issue and retry.")))
+    )
+  }
+
+  output$article_inbox_error <- renderUI({
+    err <- article_lab_state$last_article_inbox_error
+    if (is.null(err) || !identical(err$action, "Create Quick Idea")) return(NULL)
+    article_inbox_error_alert(err)
+  })
+
+  output$article_candidate_error <- renderUI({
+    err <- article_lab_state$last_article_inbox_error
+    if (is.null(err) || !(err$action %in% c("Save article candidate", "Archive article candidate", "Restore article candidate", "Develop Article"))) return(NULL)
+    article_inbox_error_alert(err)
+  })
+
+  output$research_angle_promotion_error <- renderUI({
+    err <- article_lab_state$last_article_inbox_error
+    if (is.null(err) || !identical(err$action, "Add research angle to Article Candidates")) return(NULL)
+    article_inbox_error_alert(err)
+  })
+
+  output$article_candidate_count <- renderUI({
+    rows <- article_candidates()
+    span(class = "stage-one-count", sprintf("%s candidate%s", nrow(rows), if (nrow(rows) == 1L) "" else "s"))
+  })
+
+  output$article_candidates_table <- DT::renderDT({
+    rows <- article_candidates()
+    display <- if (nrow(rows) == 0) {
+      data.frame(candidate_id = character(), `Working title` = character(), `Core idea` = character(), Origin = character(), Source = character(), Status = character(), Updated = character(), check.names = FALSE)
+    } else {
+      data.frame(
+        candidate_id = rows$candidate_id,
+        `Working title` = vapply(rows$working_title, research_truncate, character(1), max_chars = 90L),
+        `Core idea` = vapply(rows$core_idea, research_truncate, character(1), max_chars = 110L),
+        Origin = ifelse(rows$origin_type == "quick_idea", "Quick Idea", "Research"),
+        Source = ifelse(is.na(rows$source_title), "", rows$source_title),
+        Status = gsub("_", " ", rows$effective_status),
+        Updated = rows$updated_at,
+        check.names = FALSE
+      )
+    }
+    DT::datatable(display, rownames = FALSE, escape = TRUE, selection = list(mode = "single", target = "row"), options = list(pageLength = 10, scrollX = TRUE, order = list(), columnDefs = list(list(targets = 0, visible = FALSE))))
+  })
+
+  output$article_candidate_editor <- renderUI({
+    row <- selected_article_candidate()
+    if (nrow(row) == 0) return(div(class = "article-inbox-empty", h3("Select a candidate"), p("Choose a row to review, edit, archive, restore, or develop it in Article Evidence.")))
+    is_archived <- identical(row$status[[1]], "archived")
+    has_project <- !is.na(row$article_project_id[[1]]) && nzchar(row$article_project_id[[1]])
+    div(
+      class = "article-candidate-editor",
+      div(class = "lab-section-header", div(h3("Selected candidate"), p(class = "lab-section-copy", paste(if (row$origin_type[[1]] == "quick_idea") "Quick Idea" else "Research angle", "·", row$candidate_id[[1]]))), if (has_project) span(class = "lab-chip green", "In Article Evidence") else NULL),
+      div(class = "lab-field", textInput("article_candidate_edit_title", "Working title *", value = row$working_title[[1]], width = "100%")),
+      div(class = "lab-grid", div(class = "lab-field", textAreaInput("article_candidate_edit_core", "Core idea / angle", value = if (is.na(row$core_idea[[1]])) "" else row$core_idea[[1]], width = "100%", height = "86px")), div(class = "lab-field", textAreaInput("article_candidate_edit_notes", "Notes", value = if (is.na(row$notes[[1]])) "" else row$notes[[1]], width = "100%", height = "86px"))),
+      div(class = "lab-grid", div(class = "lab-field", selectInput("article_candidate_edit_status", "Progress status", choices = c("Captured" = "captured", "Refining" = "refining", "Ready for evidence" = "ready_for_evidence"), selected = if (row$status[[1]] %in% c("captured", "refining", "ready_for_evidence")) row$status[[1]] else "ready_for_evidence", width = "100%")), if (!is.na(row$source_title[[1]])) div(class = "lab-field candidate-provenance", span("Originating source"), strong(row$source_title[[1]])) else NULL),
+      div(class = "lab-actions", if (!is_archived) actionButton("article_candidate_save", "Save candidate", class = "lab-secondary") else NULL, if (!is_archived) actionButton("article_candidate_develop", if (has_project) "Open Article Evidence" else "Develop Article", class = "lab-primary") else NULL, if (!is_archived) actionButton("article_candidate_archive", "Archive", class = "lab-danger") else actionButton("article_candidate_restore", "Restore candidate", class = "lab-primary")),
+      uiOutput("article_candidate_error"),
+      if (is_archived) div(class = "lab-status-copy", "Archived candidates are excluded from the default list and cannot be developed until restored.") else NULL
+    )
+  })
+
+  output$article_evidence_workspace <- renderUI({
+    article_inbox_refresh()
+    projects <- dbGetQuery(con, "SELECT article_project_id, working_title, updated_at FROM article_projects ORDER BY updated_at DESC")
+    if (nrow(projects) == 0) return(div(class = "lab-card article-inbox-empty", h2("No Article Evidence workspace yet"), p("Choose an Article Candidate in Article Inbox and select Develop Article."), actionButton("article_evidence_back_to_inbox", "Open Article Inbox", class = "lab-primary")))
+    choices <- setNames(projects$article_project_id, paste(projects$working_title, "·", projects$updated_at))
+    project_id <- article_inbox_clean_optional(selected_article_project_id())
+    if (is.na(project_id) || !(project_id %in% projects$article_project_id)) project_id <- projects$article_project_id[[1]]
+    project <- load_article_project(con, article_project_id = project_id)
+    evidence_sources <- dbGetQuery(con, "SELECT * FROM article_project_evidence_sources WHERE article_project_id = ? ORDER BY created_at", params = list(project_id))
+    div(
+      div(class = "lab-card", div(class = "lab-field", selectInput("article_evidence_project_select", "Article project", choices = choices, selected = project_id, width = "100%")), div(class = "evidence-idea-header", div(div(class = "stage-one-kicker", "Article candidate provenance"), h2(project$working_title[[1]]), p(if (is.na(project$core_idea[[1]])) "No core idea recorded." else project$core_idea[[1]])), div(class = "evidence-readiness", span("Evidence workspace"), strong("Active"))), div(class = "lab-actions", actionButton("article_evidence_back_to_inbox", "Back to Article Inbox", class = "lab-secondary"))),
+      div(class = "evidence-grid", div(class = "lab-card evidence-section", h3("Linked sources"), if (nrow(evidence_sources) == 0) div(class = "evidence-empty-line", "No sources attached") else lapply(seq_len(nrow(evidence_sources)), function(i) div(class = "evidence-source-row", strong(evidence_sources$source_title_snapshot[[i]] %||% paste("Research source", evidence_sources$research_source_id[[i]])), span("Origin source")))), div(class = "lab-card evidence-section", h3("Claims and evidence"), div(class = "evidence-empty-line", "No claims mapped")), div(class = "lab-card evidence-section", h3("Counterarguments"), div(class = "evidence-empty-line", "No counterarguments captured")), div(class = "lab-card evidence-section", h3("Research gaps / open questions"), div(class = "evidence-empty-line", "No research gaps recorded"))),
+      if (!is.na(project$source_summary_snapshot[[1]]) && nzchar(project$source_summary_snapshot[[1]])) div(class = "lab-card evidence-section", h3("Origin source summary snapshot"), p(class = "research-inline-summary", project$source_summary_snapshot[[1]])) else NULL
+    )
+  })
+
   output$research_selected_source_editor <- renderUI({
     row <- selected_research_source()
     if (nrow(row) == 0) return(div(class = "lab-status-copy", "Select a ranked or unranked source to edit details and create angles."))
@@ -3631,12 +3796,20 @@ server <- function(input, output, session) {
     row <- selected_research_angle()
     if (nrow(row) == 0) return(div(class = "lab-status-copy", "Select an angle from the table to edit it, or create a new angle below."))
     id <- row$research_angle_id[[1]]
+    promoted <- dbGetQuery(con, "SELECT candidate_id FROM article_candidates WHERE research_angle_id = ? LIMIT 1", params = list(id))
     div(
       h3("Selected angle"),
       div(class = "lab-grid", div(class = "lab-field", textInput("research_edit_angle_title", "Angle title", value = row$angle_title[[1]], width = "100%")), div(class = "lab-field", numericInput("research_edit_angle_sort", "Sort order", value = research_numeric_default(row$manual_sort_order[[1]]), width = "100%")), div(class = "lab-field", textInput("research_edit_angle_status", "Status", value = row$status[[1]], width = "100%")), div(class = "lab-field", textInput("research_edit_angle_batch", "Article Lab batch", value = row$article_lab_batch_id[[1]] %||% "", width = "100%"))),
       div(class = "lab-field", textAreaInput("research_edit_angle_main", "Main idea", value = row$main_idea[[1]] %||% "", width = "100%", height = "80px")),
       div(class = "lab-field", textAreaInput("research_edit_angle_notes", "Notes", value = row$notes[[1]] %||% "", width = "100%", height = "70px")),
-      div(class = "lab-actions", actionButton("research_save_angle", "Save angle edits", class = "lab-secondary"), tags$button(type = "button", class = "btn btn-default action-button lab-primary", onclick = sprintf("Shiny.setInputValue('research_send_to_title_lab', '%s', {priority: 'event'})", id), "Send to Title Lab"))
+      div(
+        class = "lab-actions",
+        actionButton("research_save_angle", "Save angle edits", class = "lab-secondary"),
+        if (nrow(promoted) == 0) actionButton("research_promote_angle", "Add to Article Candidates", class = "lab-primary") else tags$button(type = "button", class = "btn btn-default action-button lab-primary", onclick = sprintf("Shiny.setInputValue('research_open_candidate', '%s', {priority: 'event'})", promoted$candidate_id[[1]]), "Open Article Candidate"),
+        tags$button(type = "button", class = "btn btn-default action-button lab-secondary", onclick = sprintf("Shiny.setInputValue('research_send_to_title_lab', '%s', {priority: 'event'})", id), "Send to Title Lab")
+      ),
+      uiOutput("research_angle_promotion_error"),
+      if (nrow(promoted) > 0) div(class = "lab-status-copy", "This angle has already been added to Article Candidates. Promotion is idempotent and will not create another record.") else div(class = "lab-status-copy", "This research angle remains research-only until you deliberately add it to Article Candidates.")
     )
   })
 

@@ -72,6 +72,7 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `test_medium_search_tags_parser.mjs`: parser test for Medium search/tag snapshots.
 - `test_medium_tag_bookmarklet_extraction.js`: bookmarklet extraction test.
 - `test_medium_tag_snapshot_watcher_helpers.mjs`: watcher helper test.
+- `test_article_inbox_workflow.R`: in-memory SQLite integration coverage for Quick Ideas, research-angle promotion, the unified candidate lifecycle, Article Evidence handoff, provenance, migration, and the legacy route redirect.
 - `print_medium_search_tags_fixture.mjs`: prints search/tag fixture diagnostics.
 
 ## Writing Helpers
@@ -79,6 +80,7 @@ This is a navigation aid for future maintenance sessions. It is not an exhaustiv
 - `writing_setup/apply_article_lab_schema.R`: creates or updates the Article Lab title-generation and title-scoring tables and indexes with a database backup first.
 - `writing_setup/apply_writing_lab_schema.R`: creates or updates the broader writing-lab schema objects.
 - `writing_setup/apply_research_workflow_schema.R`: creates or updates the lightweight Research Inbox tables for curated sources and article angles, with a database backup first.
+- `writing_setup/apply_article_inbox_schema.R`: creates or updates the unified Article Inbox candidate/project tables, migrates compatible legacy Idea Inbox rows and already-promoted research angles, and backs up the database first.
 - `writing_setup/import_vanguard_papers_to_research_sources.R`: idempotently copies Vanguard rows from `research_papers` into the curated `research_sources` inbox; supports `--dry-run` and backs up before writing by default.
 - `writing_api/generate_titles.mjs`: live OpenAI title-generation helper for the Article Lab Generate tab.
 - `writing_api/generate_subtitles.mjs`: live OpenAI subtitle-generation helper for the Article Lab Subtitle Generation tab.

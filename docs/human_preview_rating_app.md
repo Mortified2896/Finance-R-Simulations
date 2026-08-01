@@ -82,6 +82,16 @@ The Outline tab's "Regenerate outline" button is the canonical example. When the
 
 Apply the same pattern to every other long-running workflow step in the app: title generation, subtitle generation, thumbnail generation, full article generation, Medium tag generation, API scoring, evidence fetch, summary confirmation, PaperQA2 chunk retrieval, and any other action that can silently fail today. When in doubt, do not ship a feature without a loud, persistent, dedicated error alert wired to a dedicated error state.
 
+## Unified Article Inbox
+
+The former Idea Inbox and Research Inbox now share one top-level `Article Inbox`. Quick Idea capture writes directly to the canonical `article_candidates` table; a research source or unselected research angle remains research-only until the user explicitly chooses `Add to Article Candidates`.
+
+Candidate origins are controlled as `quick_idea` or `research_angle`. Candidate progress is controlled as `captured`, `refining`, `ready_for_evidence`, `in_article_evidence`, or `archived`; archived rows are hidden by default and can be restored. Promotion is unique by `research_angle_id`, so repeated clicks open the same candidate.
+
+`Develop Article` creates or opens one `article_projects` row per candidate and navigates to the separate Article Evidence stage. The project stores a one-way provenance snapshot. For research-derived candidates it also snapshots the chosen angle/source summary and adds the origin research source to `article_project_evidence_sources`. Downstream edits never overwrite the original research angle.
+
+The app initializer applies the schema idempotently. `scripts/writing_setup/apply_article_inbox_schema.R` is the backup-first manual migration. It preserves all research records, imports compatible rows from legacy `article_ideas` or `idea_inbox_items` tables when present, and maps research angles previously sent to Title Lab via `article_lab_batch_id` without duplicates. The obsolete `idea_inbox` section/query URL redirects to `research_inbox`, whose visible title is Article Inbox.
+
 ## Summary Tab PaperQA2 Retrieval
 
 The Summary tab includes a "PaperQA2 retrieval" card below the evidence markers. It is a Stage 1, one-PDF experiment: the user selects a research source with a downloaded/uploaded PDF, enters a claim or question, and clicks "Run PaperQA2 retrieval".

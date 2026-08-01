@@ -9,6 +9,7 @@ initialize_app_database <- local({
     ensure_rating_schema(con)
     ensure_article_lab_schema(con)
     ensure_research_workflow_schema(con)
+    ensure_article_inbox_schema(con)
     article_lab_recover_api_pending_candidates(con)
     if (is_dimension_mode) ensure_dimension_pass_queues(con, target_n = default_target_n)
 

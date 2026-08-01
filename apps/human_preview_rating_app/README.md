@@ -10,7 +10,8 @@ Extracted helpers:
 - `R/db_helpers.R`: database connection and low-level add-column helper.
 - `R/ui_helpers.R`: small reusable Article Lab UI wrappers such as section cards, empty states, prompt blocks, buttons, and table footers.
 - `R/ui_assets.R`: CSS and JavaScript assets for the local Shiny UI, including the compact workflow sidebar and wide-table layout rules.
-- `R/schema_rating.R`, `R/schema_article_lab.R`, and `R/schema_research.R`: database schema setup helpers for rating, Article Lab, and research workflow tables.
+- `R/schema_rating.R`, `R/schema_article_lab.R`, `R/schema_research.R`, and `R/schema_article_inbox.R`: database schema setup helpers for rating, Article Lab production, research workflow, and the unified Article Inbox / Article Evidence handoff.
+- `R/article_inbox_helpers.R`: canonical article-candidate capture, promotion, edit/archive/restore, route redirect, and idempotent Article Evidence handoff helpers.
 - `R/schema_startup.R`: app database initialization orchestration that runs schema setup, recovery, and dimension queue preparation once per process.
 - `R/table_helpers.R`: Article Lab table/card rendering helpers extracted from `app.R`.
 
