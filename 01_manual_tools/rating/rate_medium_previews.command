@@ -19,7 +19,7 @@ if ! Rscript -e 'quit(status = ifelse(requireNamespace("shiny", quietly = TRUE),
   exit 1
 fi
 
-MEDIUM_PROJECT_ROOT="$PWD" Rscript -e 'shiny::runApp("apps/human_preview_rating_app", launch.browser = TRUE, host = "127.0.0.1", port = 3838)'
+MEDIUM_PROJECT_ROOT="$PWD" Rscript -e 'shiny::runApp("apps/human_preview_rating_app", launch.browser = TRUE, host = "127.0.0.1", port = 3840)'
 status=$?
 
 echo

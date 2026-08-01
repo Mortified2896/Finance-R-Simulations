@@ -333,7 +333,7 @@ if (nrow(bad) > 0) {
 message("\nStored thumbnail path audit:")
 stored_counts <- do.call(rbind, list(
   audit_stored_paths(con, "human_preview_ratings", audit),
-  audit_stored_paths(con, "human_preview_dimension_ratings", audit),
+  audit_stored_paths(con, "human_preview_dimension_ratings_v2", audit),
   audit_stored_paths(con, "medium_thumbnail_api_scores", audit)
 ))
 print(stored_counts, row.names = FALSE)

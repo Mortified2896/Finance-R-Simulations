@@ -203,6 +203,47 @@ article_lab_top_title_examples <- function(con, limit = 8L) {
   unique(titles[!is.na(titles)])
 }
 
+article_lab_effective_title_prompt_text <- function(prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, example_titles = character(), manual_prompt = NA_character_, context_notes = NA_character_) {
+  requested_n <- suppressWarnings(as.integer(batch_size))
+  if (length(requested_n) == 0L || is.na(requested_n)) requested_n <- 12L
+  requested_n <- max(1L, min(25L, requested_n))
+  sections <- c(
+    "You generate Medium-style article title candidates for personal finance and investing.",
+    "Return valid JSON only in the shape {\"titles\": [\"...\", \"...\"]}.",
+    sprintf("Return exactly %s titles.", requested_n),
+    sprintf("Every title must be at most %s characters, including spaces.", article_lab_title_max_chars),
+    sprintf("Prefer %s-%s characters when possible. Do not make titles long unless the extra words clearly improve clarity or curiosity.", article_lab_title_preferred_min_chars, article_lab_title_preferred_max_chars),
+    "Do not include explanations, numbering, markdown, or code fences.",
+    "Do not copy any example title verbatim.",
+    "Keep the titles credible, science-based, beginner-friendly, and not clickbait.",
+    "If a title would exceed the limit, rewrite it shorter instead of truncating it."
+  )
+  optional_scalar <- function(value, multiline = FALSE) {
+    cleaned <- if (multiline) article_lab_input_multiline(value) else article_lab_input_string(value)
+    if (length(cleaned) == 0L || is.na(cleaned[[1]])) NA_character_ else cleaned[[1]]
+  }
+  seed <- optional_scalar(seed_topic)
+  inspiration <- optional_scalar(inspiration_source)
+  manual <- optional_scalar(manual_prompt, multiline = TRUE)
+  context <- optional_scalar(context_notes, multiline = TRUE)
+  article_summary <- optional_scalar(prompt, multiline = TRUE)
+  if (is.na(article_summary)) article_summary <- article_lab_default_prompt
+  examples <- clean_text(example_titles)
+  examples <- unique(examples[!is.na(examples)])
+
+  if (!is.na(seed)) sections <- c(sections, sprintf("Seed topic: %s", seed))
+  if (!is.na(inspiration)) sections <- c(sections, sprintf("Inspiration source: %s", inspiration))
+  if (length(examples) > 0L) sections <- c(
+    sections,
+    "Reference examples from top-performing historical titles. Use them only as inspiration for tone/patterns:",
+    paste(sprintf("%s. %s", seq_along(examples), examples), collapse = "\n")
+  )
+  if (!is.na(manual)) sections <- c(sections, "Manual/default prompt:", manual)
+  sections <- c(sections, "Article summary:", article_summary)
+  base_prompt <- paste(sections, collapse = "\n\n")
+  if (!is.na(context)) sprintf("Article context:\n%s\n\n%s", context, base_prompt) else base_prompt
+}
+
 article_lab_api_request <- function(prompt, batch_size, seed_topic = NA_character_, inspiration_source = NA_character_, model = NA_character_, example_titles = character(), manual_prompt = NA_character_, context_notes = NA_character_) {
   helper_path <- file.path("scripts", "writing_api", "generate_titles.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_titles.mjs", call. = FALSE)

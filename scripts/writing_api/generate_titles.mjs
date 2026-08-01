@@ -15,6 +15,18 @@ function cleanText(value) {
   return normalized.length > 0 ? normalized : null;
 }
 
+function cleanMultilineText(value) {
+  if (value === null || value === undefined) return null;
+  const normalized = String(value)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n")
+    .trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 function extractText(response) {
   if (response.output_text) {
     return response.output_text.trim();
@@ -160,12 +172,12 @@ async function main() {
   }
 
   const payload = JSON.parse(await fs.readFile(requestPath, "utf8"));
-  const prompt = cleanText(payload.prompt);
-  const manualPrompt = cleanText(payload.manual_prompt);
+  const prompt = cleanMultilineText(payload.prompt);
+  const manualPrompt = cleanMultilineText(payload.manual_prompt);
   const model = cleanText(payload.model) ?? "gpt-5-mini";
   const seedTopic = cleanText(payload.seed_topic);
   const inspirationSource = cleanText(payload.inspiration_source);
-  const contextNotes = cleanText(payload.context_notes);
+  const contextNotes = cleanMultilineText(payload.context_notes);
   const exampleTitles = Array.isArray(payload.example_titles)
     ? payload.example_titles.map(cleanText).filter(Boolean)
     : [];

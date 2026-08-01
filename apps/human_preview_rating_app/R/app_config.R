@@ -1,23 +1,27 @@
-requested_rating_mode <- Sys.getenv("HUMAN_RATING_MODE", unset = "feed_preview_1_5")
+requested_rating_mode <- trimws(Sys.getenv("HUMAN_RATING_MODE", unset = ""))
+supported_rating_modes <- c("", "dimensions_v2")
+if (!(requested_rating_mode %in% supported_rating_modes)) {
+  stop(
+    "Invalid HUMAN_RATING_MODE: '", requested_rating_mode, "'. ",
+    "Supported values are an empty/unset value for normal stable rating or 'dimensions_v2' for dimension-v2 rating.",
+    call. = FALSE
+  )
+}
 article_lab_ui_version <- Sys.getenv("ARTICLE_LAB_UI_VERSION", unset = "v1")
 article_lab_design_v2 <- identical(tolower(article_lab_ui_version), "v2")
-is_dimension_v1_mode <- requested_rating_mode %in% c("dimensions_v1", "human_preview_dimensions_v1")
-is_dimension_v2_mode <- requested_rating_mode %in% c("dimensions_v2", "human_preview_dimensions_v2")
-is_dimension_mode <- is_dimension_v1_mode || is_dimension_v2_mode
+is_dimension_v2_mode <- identical(requested_rating_mode, "dimensions_v2")
+is_dimension_mode <- is_dimension_v2_mode
 interface_version <- if (is_dimension_mode) {
-  if (is_dimension_v2_mode) "human_preview_rating_app_v4_dimensions_v2_validated_manifest" else "human_preview_rating_app_v3_dimensions_v1"
+  "human_preview_rating_app_v4_dimensions_v2_validated_manifest"
 } else {
   "human_preview_rating_app_v2_unrated_thumbnails"
 }
 rating_mode <- if (is_dimension_v2_mode) {
   "human_preview_dimensions_v2"
-} else if (is_dimension_v1_mode) {
-  "human_preview_dimensions_v1"
 } else {
   "feed_preview_1_5"
 }
 manifest_version <- if (is_dimension_v2_mode) "human_rated_thumbnail_valid_cohort_v2" else NA_character_
-dimension_rating_table <- if (is_dimension_v2_mode) "human_preview_dimension_ratings_v2" else "human_preview_dimension_ratings"
 rating_prompt <- if (is_dimension_mode) {
   "Score only the active dimension for this pass."
 } else {
@@ -62,7 +66,7 @@ dimension_scale <- list(
 thumbnail_only_dimension_fields <- c("ai_low_effort_flag", "visual_hook")
 active_dimension_fields <- dimension_fields
 title_isolation_dimension_fields <- c("title_hook_strength")
-text_only_dimension_fields <- if (is_dimension_v2_mode) title_isolation_dimension_fields else character()
+text_only_dimension_fields <- title_isolation_dimension_fields
 title_only_placeholder_subtitle <- "[Subtitle hidden for title-only rating]"
 title_only_placeholder_thumbnail_label <- "Placeholder image\nThumbnail hidden for title-only rating"
 target_n_env <- Sys.getenv("HUMAN_RATING_TARGET_N", unset = "")
@@ -104,6 +108,6 @@ dimension_cohort_path <- file.path(
   project_root,
   "data",
   "analysis",
-  if (is_dimension_v2_mode) "medium_images" else "title_api_score_samples",
-  if (is_dimension_v2_mode) "human_rated_thumbnail_valid_cohort_v2.csv" else "human_rated_thumbnail_all_v1.csv"
+  "medium_images",
+  "human_rated_thumbnail_valid_cohort_v2.csv"
 )

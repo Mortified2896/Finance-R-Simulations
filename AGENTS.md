@@ -15,6 +15,13 @@ This repository contains local Medium collection data and generated analysis out
 
 Use `README.md` for the high-level map, `docs/script_inventory.md` to find the right script, `docs/local_only_files.md` for local-only policy, and `docs/medium_analysis_v2.md` for the current Medium analysis workflow.
 
+## App Environments
+
+- Stable/default: `http://127.0.0.1:3840/`, launched with `01_manual_tools/rating/rate_medium_previews.command`.
+- Experimental Design v2: `http://127.0.0.1:3844/`, launched with `01_manual_tools/rating/rate_medium_previews_design_v2.command`.
+- Design v2 is the same `apps/human_preview_rating_app` Shiny app with `ARTICLE_LAB_UI_VERSION=v2`.
+- Both launchers use the same local database at `data/db/medium_articles.sqlite` unless `MEDIUM_RATING_DB` is explicitly set.
+
 ## Development Workflow
 
 - Prefer small documentation updates in `docs/` over committing raw generated outputs.

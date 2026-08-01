@@ -1714,7 +1714,7 @@ save_article_lab_batch <- function(con, prompt, seed_topic, inspiration_source, 
           "Article Lab candidates stay generated until manual triage moves selected titles into ready_for_api_scoring.",
           notes_extra %||% ""
         ),
-        clean_text(article_context_notes %||% NA_character_) %||% NA_character_
+        article_lab_input_multiline(article_context_notes) %||% NA_character_
       )
     )
 

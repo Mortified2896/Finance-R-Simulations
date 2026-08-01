@@ -108,6 +108,7 @@ server <- function(input, output, session) {
     thumbnail_generation_started_at = NULL,
     thumbnail_generation_estimate = NULL,
     notice = NULL,
+    pending_article_project_id = NULL,
     last_title_generate_error = NULL,
     last_title_generate_error_at = NULL,
     last_subtitle_generate_error = NULL,
@@ -132,6 +133,48 @@ server <- function(input, output, session) {
   article_lab_refresh <- reactiveVal(0L)
   article_lab_active_outline_thumbnail <- reactiveVal(NULL)
 
+  article_lab_set_title_error <- function(kind, reason, mode = "validation", project_ids = selected_article_project_id()) {
+    affected_ids <- clean_text(as.character(project_ids %||% character()))
+    affected_ids <- affected_ids[!is.na(affected_ids)]
+    article_lab_state$last_title_generate_error <- list(
+      kind = kind,
+      reason = reason,
+      mode = mode,
+      model = article_lab_input_string(input$article_lab_model) %||% article_lab_default_model,
+      selected_ids = affected_ids
+    )
+    article_lab_state$last_title_generate_error_at <- Sys.time()
+  }
+
+  article_lab_reset_title_context_controls <- function() {
+    for (key in article_project_title_context_keys) {
+      updateCheckboxInput(session, paste0("article_lab_context_include_", key), value = TRUE)
+    }
+    updateTextAreaInput(session, "article_lab_context_notes", value = "")
+  }
+
+  article_lab_apply_project_switch <- function(project_id, clear_draft = FALSE) {
+    project_id <- article_inbox_clean_optional(project_id)
+    project <- if (is.na(project_id)) data.frame() else load_article_project(con, article_project_id = project_id)
+    if (nrow(project) != 1L) stop("The selected article project no longer exists. The current project and title draft were not changed.", call. = FALSE)
+    if (isTRUE(clear_draft)) {
+      article_lab_state$draft <- NULL
+      article_lab_state$draft_meta <- NULL
+      article_lab_state$draft_created_at <- NULL
+    }
+    selected_article_project_id(project_id)
+    article_lab_reset_title_context_controls()
+    article_lab_state$pending_article_project_id <- NULL
+    article_lab_state$last_title_generate_error <- NULL
+    article_lab_state$last_title_generate_error_at <- NULL
+    article_lab_state$notice <- if (isTRUE(clear_draft)) {
+      "Switched article project after discarding the unsaved title draft."
+    } else {
+      "Switched article project. Title batches and production artifacts now show only this project."
+    }
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }
+
   selected_article_project <- reactive({
     article_lab_refresh()
     load_article_project(con, article_project_id = selected_article_project_id())
@@ -144,20 +187,93 @@ server <- function(input, output, session) {
     choices <- setNames(projects$article_project_id, paste(projects$working_title, "·", projects$updated_at))
     selected <- article_inbox_clean_optional(selected_article_project_id())
     if (is.na(selected) || !(selected %in% projects$article_project_id)) selected <- projects$article_project_id[[1]]
-    div(class = "lab-card", div(class = "lab-section-header", div(h3("Canonical article project"), p(class = "lab-section-copy", "All production artifacts below are isolated to this project."))), div(class = "lab-field", selectInput("article_lab_project_select", "Article project", choices = choices, selected = selected, width = "100%")))
+    project <- load_article_project(con, article_project_id = selected)
+    is_title_workspace <- active_section() %in% c("title_lab", "generate")
+    if (!is_title_workspace) return(div(class = "lab-card", div(class = "lab-section-header", div(h3("Canonical article project"), p(class = "lab-section-copy", "All production artifacts below are isolated to this project."))), div(class = "lab-field", selectInput("article_lab_project_select", "Article project", choices = choices, selected = selected, width = "100%"))))
+
+    fields <- article_project_title_context_fields(project)
+    checkbox_ui <- lapply(article_project_title_context_keys, function(key) {
+      field <- fields[[key]]
+      value <- article_inbox_clean_optional(field$value)
+      div(
+        class = paste("title-context-choice", if (is.na(value)) "is-empty" else ""),
+        checkboxInput(paste0("article_lab_context_include_", key), field$label, value = TRUE),
+        p(if (is.na(value)) "Not recorded for this project." else research_truncate(value, max_chars = 180L))
+      )
+    })
+    div(
+      class = "lab-card title-project-card",
+      div(
+        class = "lab-section-header",
+        div(h3("Article idea for this title batch"), p(class = "lab-section-copy", "Choose the developed article project first. Every generated and saved title stays isolated to it.")),
+        article_lab_badge(project$origin_type[[1]] %||% "project")
+      ),
+      div(class = "lab-field", selectInput("article_lab_project_select", "Article project", choices = choices, selected = selected, width = "100%")),
+      div(class = "title-project-summary", h4(project$working_title[[1]]), if (!is.na(article_inbox_clean_optional(project$core_idea[[1]]))) p(project$core_idea[[1]]) else p(class = "lab-status-copy", "No core idea recorded.")),
+      tags$fieldset(
+        class = "title-context-fieldset",
+        tags$legend("Include in title prompt"),
+        p(class = "lab-section-copy", "All available idea fields are included by default. Uncheck anything the model should ignore for this run."),
+        div(class = "title-context-choice-grid", checkbox_ui)
+      )
+    )
   })
 
   observeEvent(input$article_lab_project_select, {
     project_id <- article_inbox_clean_optional(input$article_lab_project_select)
     if (is.na(project_id)) return()
     if (!identical(project_id, selected_article_project_id())) {
-      selected_article_project_id(project_id)
-      article_lab_state$draft <- NULL
-      article_lab_state$draft_meta <- NULL
-      article_lab_state$draft_created_at <- NULL
-      article_lab_state$notice <- "Switched article project. Unsaved title drafts were cleared to prevent cross-project leakage."
-      article_lab_refresh(article_lab_refresh() + 1L)
+      current_project_id <- selected_article_project_id()
+      project_exists <- tryCatch(nrow(load_article_project(con, article_project_id = project_id)) == 1L, error = function(err) FALSE)
+      if (!project_exists) {
+        updateSelectInput(session, "article_lab_project_select", selected = current_project_id)
+        article_lab_set_title_error("invalid_project", "The selected article project no longer exists. The current project and title draft were not changed.", project_ids = project_id)
+        return(invisible(NULL))
+      }
+      has_unsaved_draft <- !is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0L
+      if (has_unsaved_draft) {
+        article_lab_state$pending_article_project_id <- project_id
+        updateSelectInput(session, "article_lab_project_select", selected = current_project_id)
+        target <- load_article_project(con, article_project_id = project_id)
+        showModal(modalDialog(
+          title = "Discard unsaved title draft?",
+          p(sprintf("Switch to “%s”?", target$working_title[[1]])),
+          p("The unsaved generated or manually entered title candidates for the current project will be cleared. Saved batches will not be changed."),
+          footer = tagList(
+            actionButton("article_lab_cancel_project_switch", "Keep current draft", class = "lab-secondary"),
+            actionButton("article_lab_confirm_project_switch", "Discard draft and switch", class = "lab-danger")
+          ),
+          easyClose = FALSE
+        ))
+        return(invisible(NULL))
+      }
+      tryCatch(
+        article_lab_apply_project_switch(project_id),
+        error = function(err) {
+          updateSelectInput(session, "article_lab_project_select", selected = current_project_id)
+          article_lab_set_title_error("project_switch_failed", conditionMessage(err), project_ids = project_id)
+        }
+      )
     }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_cancel_project_switch, {
+    article_lab_state$pending_article_project_id <- NULL
+    updateSelectInput(session, "article_lab_project_select", selected = selected_article_project_id())
+    removeModal()
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_confirm_project_switch, {
+    pending_id <- article_lab_state$pending_article_project_id
+    tryCatch({
+      article_lab_apply_project_switch(pending_id, clear_draft = TRUE)
+      removeModal()
+    }, error = function(err) {
+      article_lab_set_title_error("project_switch_failed", conditionMessage(err), project_ids = pending_id)
+      article_lab_state$pending_article_project_id <- NULL
+      updateSelectInput(session, "article_lab_project_select", selected = selected_article_project_id())
+      removeModal()
+    })
   }, ignoreInit = TRUE)
 
   observeEvent(input$research_summary_prompt_version, {
@@ -487,11 +603,11 @@ server <- function(input, output, session) {
           class = "lab-field",
           textAreaInput(
             "article_lab_context_notes",
-            "Article context notes (optional, not saved to general prompt)",
+            "Additional directions for this title batch (optional)",
             value = "",
             width = "100%",
             height = if (article_lab_design_v2) "60px" else "80px",
-            placeholder = "Specific context for this article batch, e.g. target audience, tone, key angle"
+            placeholder = "Extra emphasis for this run, e.g. target audience, tone, or a specific angle"
           )
         ),
         uiOutput("article_lab_effective_prompt"),
@@ -605,11 +721,11 @@ server <- function(input, output, session) {
           class = "lab-field",
           textAreaInput(
             "article_lab_context_notes",
-            "Article context notes (optional, not saved to general prompt)",
+            "Additional directions for this title batch (optional)",
             value = "",
             width = "100%",
             height = "80px",
-            placeholder = "Specific context for this article batch, e.g. target audience, tone, key angle"
+            placeholder = "Extra emphasis for this run, e.g. target audience, tone, or a specific angle"
           )
         ),
         uiOutput("article_lab_effective_prompt"),
@@ -1491,21 +1607,32 @@ server <- function(input, output, session) {
     rows[match(selected_summary_id, rows$summary_id), , drop = FALSE]
   })
 
+  article_lab_selected_context_keys <- reactive({
+    article_project_title_context_keys[vapply(article_project_title_context_keys, function(key) {
+      value <- input[[paste0("article_lab_context_include_", key)]]
+      if (is.null(value)) TRUE else isTRUE(value)
+    }, logical(1))]
+  })
+
   article_lab_effective_generation_inputs <- reactive({
     selected_summary <- selected_generate_summary()
     project <- selected_article_project()
-    project_context <- if (nrow(project) == 0) "" else paste(
-      sprintf("Canonical article project: %s", project$article_project_id[[1]]),
-      sprintf("Working title: %s", project$working_title[[1]] %||% ""),
-      sprintf("Core idea / angle: %s", project$core_idea[[1]] %||% ""),
-      sprintf("Project notes: %s", project$notes[[1]] %||% ""),
-      sprintf("Evidence summary snapshot: %s", project$source_summary_snapshot[[1]] %||% ""),
-      sep = "\n"
+    context_result <- tryCatch(
+      list(
+        valid = TRUE,
+        text = article_project_build_title_context(
+          project,
+          included_keys = article_lab_selected_context_keys(),
+          additional_context = input$article_lab_context_notes
+        ),
+        error = NULL
+      ),
+      error = function(err) list(valid = FALSE, text = "", error = conditionMessage(err))
     )
-    user_context <- input$article_lab_context_notes %||% ""
-    combined_context <- paste(c(project_context, user_context)[nzchar(trimws(c(project_context, user_context)))], collapse = "\n\nAdditional user context:\n")
     if (nrow(selected_summary) > 0) {
       return(list(
+        valid = context_result$valid,
+        context_error = context_result$error,
         mode = "research_summary",
         prompt = research_summary_prompt(selected_summary),
         manual_prompt = input$article_lab_prompt %||% article_lab_default_prompt,
@@ -1513,10 +1640,12 @@ server <- function(input, output, session) {
         inspiration_source = paste0("research_summary:", selected_summary$summary_id[[1]]),
         summary_id = selected_summary$summary_id[[1]],
         source_title = selected_summary$source_title[[1]] %||% "",
-        context_notes = combined_context
+        context_notes = context_result$text
       ))
     }
     list(
+      valid = context_result$valid,
+      context_error = context_result$error,
       mode = "manual",
       prompt = input$article_lab_prompt %||% article_lab_default_prompt,
       manual_prompt = "",
@@ -1524,7 +1653,7 @@ server <- function(input, output, session) {
       inspiration_source = input$article_lab_inspiration_source %||% "",
       summary_id = NA_integer_,
       source_title = "",
-      context_notes = combined_context
+      context_notes = context_result$text
     )
   })
 
@@ -3163,42 +3292,32 @@ server <- function(input, output, session) {
     } else {
       character()
     }
+    exact_prompt <- if (isTRUE(effective$valid)) article_lab_effective_title_prompt_text(
+      prompt = effective$prompt,
+      batch_size = input$article_lab_batch_size,
+      seed_topic = effective$seed_topic,
+      inspiration_source = effective$inspiration_source,
+      example_titles = example_titles,
+      manual_prompt = effective$manual_prompt,
+      context_notes = effective$context_notes
+    ) else ""
     div(
       class = "lab-card",
       h3("Prompt that will be sent to the API"),
       p(class = "lab-status-copy", mode_copy),
+      if (!isTRUE(effective$valid)) div(
+        class = "lab-alert lab-alert-error",
+        role = "alert",
+        div(class = "lab-alert-title", span(class = "lab-alert-icon", HTML("&#9888;")), strong("Article idea context is incomplete")),
+        div(class = "lab-alert-body", p(effective$context_error %||% "Select a valid article project and at least one populated idea field."), p("Generate is disabled. Existing title drafts and saved batches were not changed."))
+      ) else NULL,
       tags$details(
         open = if (summary_mode) "open" else NULL,
         tags$summary("Show exact effective prompt"),
-        h4("Title helper wrapper"),
-        tags$pre(class = "lab-status-copy", paste(
-          "You generate Medium-style article title candidates for personal finance and investing.",
-          "Return valid JSON only in the shape {\"titles\": [\"...\", \"...\"]}.",
-          sprintf("Return exactly %s titles.", input$article_lab_batch_size %||% 12L),
-          sprintf("Every title must be at most %s characters, including spaces.", article_lab_title_max_chars),
-          sprintf("Prefer %s-%s characters when possible. Do not make titles long unless the extra words clearly improve clarity or curiosity.", article_lab_title_preferred_min_chars, article_lab_title_preferred_max_chars),
-          "Do not include explanations, numbering, markdown, or code fences.",
-          "Do not copy any example title verbatim.",
-          "Keep the titles credible, science-based, beginner-friendly, and not clickbait.",
-          "If a title would exceed the limit, rewrite it shorter instead of truncating it.",
-          sep = "\n"
-        )),
         h4("Request fields"),
         tags$pre(class = "lab-status-copy", request_additions),
-        if (summary_mode && nzchar(trimws(effective$manual_prompt %||% ""))) tagList(
-          h4("Manual/default prompt"),
-          tags$pre(class = "lab-status-copy", effective$manual_prompt)
-        ),
-        if (length(example_titles) > 0) tagList(
-          h4("Reference examples sent as inspiration"),
-          tags$pre(class = "lab-status-copy", paste(sprintf("%s. %s", seq_along(example_titles), example_titles), collapse = "\n"))
-        ),
-        h4("Article summary"),
-        tags$pre(class = "lab-status-copy", effective$prompt),
-        if (nzchar(trimws(effective$context_notes %||% ""))) tagList(
-          h4("Article context notes"),
-          tags$pre(class = "lab-status-copy", effective$context_notes)
-        )
+        h4("Exact assembled prompt"),
+        tags$pre(class = "lab-status-copy title-effective-prompt", if (nzchar(exact_prompt)) exact_prompt else "(Prompt unavailable until the article idea context is valid.)")
       )
     )
   })
@@ -3911,6 +4030,14 @@ server <- function(input, output, session) {
         span(class = "button-spinner"),
         "Generating..."
       )
+    } else if (!isTRUE(article_lab_effective_generation_inputs()$valid)) {
+      tags$button(
+        id = "article_lab_generate",
+        type = "button",
+        class = "btn btn-default action-button lab-primary",
+        disabled = "disabled",
+        "Generate titles"
+      )
     } else {
       actionButton("article_lab_generate", "Generate titles", class = "lab-primary")
     }
@@ -4217,6 +4344,15 @@ server <- function(input, output, session) {
 
     selected_summary <- selected_generate_summary()
     effective_inputs <- article_lab_effective_generation_inputs()
+    if (!isTRUE(effective_inputs$valid)) {
+      article_lab_set_title_error(
+        "invalid_project_context",
+        effective_inputs$context_error %||% "Select a valid article project and at least one populated idea field before generating titles.",
+        mode = "validation"
+      )
+      article_lab_state$notice <- "Title generation was not started. The existing draft and saved batches were not changed."
+      return(invisible(NULL))
+    }
     prompt_value <- effective_inputs$prompt
     manual_prompt_value <- effective_inputs$manual_prompt
     seed_topic_value <- effective_inputs$seed_topic
@@ -4286,6 +4422,16 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_add_manual_titles, {
+    effective_inputs <- article_lab_effective_generation_inputs()
+    if (!isTRUE(effective_inputs$valid)) {
+      article_lab_set_title_error(
+        "invalid_project_context",
+        effective_inputs$context_error %||% "Select a valid article project and at least one populated idea field before adding title candidates.",
+        mode = "validation"
+      )
+      article_lab_state$notice <- "Manual titles were not added. The existing draft and saved batches were not changed."
+      return(invisible(NULL))
+    }
     manual_titles <- article_lab_parse_manual_titles(input$article_lab_manual_titles)
     if (length(manual_titles) == 0) {
       article_lab_state$notice <- "Enter at least one manual title idea, with one title per line."
@@ -4330,9 +4476,17 @@ server <- function(input, output, session) {
       article_lab_state$draft_meta %||% list(),
       list(
         mode = next_mode,
-        raw_json = article_lab_state$draft_meta$raw_json %||% NA_character_
+        raw_json = article_lab_state$draft_meta$raw_json %||% NA_character_,
+        prompt = article_lab_state$draft_meta$prompt %||% effective_inputs$prompt,
+        manual_prompt = article_lab_state$draft_meta$manual_prompt %||% effective_inputs$manual_prompt,
+        seed_topic = article_lab_state$draft_meta$seed_topic %||% effective_inputs$seed_topic,
+        inspiration_source = article_lab_state$draft_meta$inspiration_source %||% effective_inputs$inspiration_source,
+        context_notes = article_lab_state$draft_meta$context_notes %||% effective_inputs$context_notes
       )
     )
+
+    article_lab_state$last_title_generate_error <- NULL
+    article_lab_state$last_title_generate_error_at <- NULL
 
     added_n <- sum(normalized_titles %in% new_manual_titles)
     over_limit_n <- sum(article_lab_title_length(new_manual_titles) > article_lab_title_mobile_safe_chars, na.rm = TRUE)
@@ -4395,21 +4549,14 @@ server <- function(input, output, session) {
     article_lab_state$notice <- sprintf("Saved full article prompt '%s'.", prompt_key)
   }, ignoreInit = TRUE)
 
-  observe({
-    batch <- article_lab_saved_batch()
-    current_notes <- trimws(input$article_lab_context_notes %||% "")
-    if (!is.null(batch) && nrow(batch) == 1 && !nzchar(current_notes)) {
-      saved_notes <- article_lab_input_multiline(batch$article_context_notes[[1]]) %||% ""
-      if (nzchar(saved_notes)) {
-        updateTextAreaInput(session, "article_lab_context_notes", value = saved_notes)
-      }
-    }
-  })
-
   save_current_article_lab_draft <- function() {
     draft <- article_lab_state$draft
     draft_meta <- article_lab_state$draft_meta %||% list()
     if (is.null(draft) || nrow(draft) == 0) return(NULL)
+    project <- selected_article_project()
+    if (nrow(project) != 1L) stop("The selected article project no longer exists. The title draft was not saved or changed.", call. = FALSE)
+    saved_context <- article_lab_input_multiline(draft_meta$context_notes)
+    if (is.na(saved_context)) stop("The title draft has no valid article-idea context. The draft was not saved or changed.", call. = FALSE)
 
     batch_id <- save_article_lab_batch(
       con,
@@ -4423,7 +4570,7 @@ server <- function(input, output, session) {
       generation_mode = draft_meta$mode %||% "generated",
       enforce_max_chars = !((draft_meta$mode %||% "") %in% c("manual", "mixed")),
       notes_extra = draft_meta$notes_extra,
-      article_context_notes = draft_meta$context_notes %||% NA_character_,
+      article_context_notes = saved_context,
       article_project_id = selected_article_project_id()
     )
     saved_mode <- draft_meta$mode %||% "generated"
@@ -4436,11 +4583,20 @@ server <- function(input, output, session) {
   }
 
   observeEvent(input$article_lab_save, {
-    saved <- save_current_article_lab_draft()
+    saved <- tryCatch(
+      save_current_article_lab_draft(),
+      error = function(err) {
+        article_lab_set_title_error("title_batch_save_failed", conditionMessage(err), mode = "save")
+        NULL
+      }
+    )
     if (is.null(saved)) {
-      article_lab_state$notice <- "Nothing to save yet. Generate a draft first."
+      if (is.null(article_lab_state$last_title_generate_error)) article_lab_state$notice <- "Nothing to save yet. Generate a draft first."
       return(invisible(NULL))
     }
+
+    article_lab_state$last_title_generate_error <- NULL
+    article_lab_state$last_title_generate_error_at <- NULL
 
     article_lab_state$notice <- if (saved$mode %in% c("manual", "mixed")) {
       sprintf(
@@ -4467,7 +4623,16 @@ server <- function(input, output, session) {
 
   observeEvent(input$article_lab_save_triage, {
     if (!is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
-      saved <- save_current_article_lab_draft()
+      saved <- tryCatch(
+        save_current_article_lab_draft(),
+        error = function(err) {
+          article_lab_set_title_error("title_batch_save_failed", conditionMessage(err), mode = "save")
+          NULL
+        }
+      )
+      if (is.null(saved)) return(invisible(NULL))
+      article_lab_state$last_title_generate_error <- NULL
+      article_lab_state$last_title_generate_error_at <- NULL
       article_lab_state$notice <- sprintf("Saved draft batch %s with %s title%s. You can now edit statuses or notes.", saved$batch_id, saved$title_n, ifelse(saved$title_n == 1, "", "s"))
       return(invisible(NULL))
     }
@@ -4492,7 +4657,16 @@ server <- function(input, output, session) {
         article_lab_state$notice <- "Select at least one draft title before moving it to the API queue."
         return(invisible(NULL))
       }
-      saved <- save_current_article_lab_draft()
+      saved <- tryCatch(
+        save_current_article_lab_draft(),
+        error = function(err) {
+          article_lab_set_title_error("title_batch_save_failed", conditionMessage(err), mode = "save")
+          NULL
+        }
+      )
+      if (is.null(saved)) return(invisible(NULL))
+      article_lab_state$last_title_generate_error <- NULL
+      article_lab_state$last_title_generate_error_at <- NULL
       selected_ids <- article_lab_candidate_id(saved$batch_id, selected_indexes)
       result <- article_lab_move_candidates_to_api_queue(con, selected_ids)
       article_lab_state$notice <- sprintf(

@@ -165,3 +165,62 @@ load_article_project <- function(con, article_project_id = NULL, candidate_id = 
   if (!is.na(candidate)) return(dbGetQuery(con, "SELECT * FROM article_projects WHERE article_candidate_id = ? LIMIT 1", params = list(candidate)))
   data.frame()
 }
+
+article_project_title_context_keys <- c(
+  "working_title",
+  "core_idea",
+  "project_notes",
+  "origin_details",
+  "evidence_summary"
+)
+
+article_project_title_context_fields <- function(project) {
+  if (is.null(project) || nrow(project) != 1L) {
+    stop("Select a valid article project before building title-generation context.", call. = FALSE)
+  }
+
+  row_value <- function(column) {
+    if (!(column %in% names(project))) return(NA_character_)
+    article_inbox_clean_optional(project[[column]][[1]])
+  }
+  origin_type <- row_value("origin_type")
+  origin_bits <- c(
+    if (!is.na(origin_type)) sprintf("Origin type: %s", origin_type) else NULL,
+    if (!is.na(row_value("research_source_id"))) sprintf("Research source ID: %s", row_value("research_source_id")) else NULL,
+    if (!is.na(row_value("research_angle_id"))) sprintf("Research angle ID: %s", row_value("research_angle_id")) else NULL
+  )
+  origin_bits <- origin_bits[!is.na(origin_bits) & nzchar(origin_bits)]
+
+  list(
+    working_title = list(label = "Working title", value = row_value("working_title")),
+    core_idea = list(label = "Core idea / angle", value = row_value("core_idea")),
+    project_notes = list(label = "Project notes", value = row_value("notes")),
+    origin_details = list(label = "Origin details", value = paste(origin_bits, collapse = "\n")),
+    evidence_summary = list(label = "Evidence / source summary", value = row_value("source_summary_snapshot"))
+  )
+}
+
+article_project_build_title_context <- function(project, included_keys = article_project_title_context_keys, additional_context = NULL) {
+  fields <- article_project_title_context_fields(project)
+  included <- unique(as.character(included_keys %||% character()))
+  included <- article_project_title_context_keys[article_project_title_context_keys %in% included]
+  if (length(included) == 0L) {
+    stop("Select at least one article-idea field to include in the title-generation prompt.", call. = FALSE)
+  }
+
+  sections <- vapply(included, function(key) {
+    field <- fields[[key]]
+    value <- article_inbox_clean_optional(field$value)
+    if (is.na(value)) return(NA_character_)
+    sprintf("%s:\n%s", field$label, value)
+  }, character(1))
+  sections <- sections[!is.na(sections) & nzchar(sections)]
+  if (length(sections) == 0L) {
+    stop("The selected article-idea fields are empty. Add idea information or choose fields that contain content.", call. = FALSE)
+  }
+
+  extra <- article_inbox_clean_optional(additional_context)
+  if (!is.na(extra)) sections <- c(sections, sprintf("Additional directions for this title batch:\n%s", extra))
+
+  paste(sections, collapse = "\n\n")
+}

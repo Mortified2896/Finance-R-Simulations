@@ -4,37 +4,25 @@ This local Shiny app supports blind manual ratings of Medium preview cards. It s
 
 ## Run
 
-One-score mode:
+Stable/default app (`http://127.0.0.1:3840/`):
 
 ```sh
 01_manual_tools/rating/rate_medium_previews.command
 ```
 
-Experimental laptop UI design v2:
+Experimental Design v2 (`http://127.0.0.1:3844/`):
 
 ```sh
 01_manual_tools/rating/rate_medium_previews_design_v2.command
 ```
 
-This starts the same app and local database with `ARTICLE_LAB_UI_VERSION=v2` on port `3844`, so the stable launcher remains unchanged.
+Design v2 is the same `apps/human_preview_rating_app` Shiny app with `ARTICLE_LAB_UI_VERSION=v2`. Both canonical launchers use `data/db/medium_articles.sqlite` by default; Design v2 is not a separate standalone mockup or copied-database instance.
 
-Dimension pass mode:
-
-```sh
-01_manual_tools/rating/rate_medium_preview_dimensions.command
-```
-
-Or run dimension pass mode from the project root:
-
-```sh
-HUMAN_RATING_MODE=dimensions_v1 MEDIUM_PROJECT_ROOT="$PWD" Rscript -e 'shiny::runApp("apps/human_preview_rating_app", launch.browser = TRUE, host = "127.0.0.1", port = 3838)'
-```
-
-Clean validated dimension v2 mode:
+The validated dimension-rating workflow remains available through the same app and database because it provides separate per-dimension collection and manifest-backed image provenance that the normal stable rating screen does not provide. It is a specialized data-collection mode, not another app environment or canonical launcher. Stop the stable/default process first because this command uses the stable port (`3840`):
 
 ```sh
 Rscript scripts/build_validated_thumbnail_manifest_v2.R
-HUMAN_RATING_MODE=dimensions_v2 MEDIUM_PROJECT_ROOT="$PWD" Rscript -e 'shiny::runApp("apps/human_preview_rating_app", launch.browser = TRUE, host = "127.0.0.1", port = 3838)'
+HUMAN_RATING_MODE=dimensions_v2 MEDIUM_PROJECT_ROOT="$PWD" Rscript -e 'shiny::runApp("apps/human_preview_rating_app", launch.browser = TRUE, host = "127.0.0.1", port = 3840)'
 ```
 
 Required R packages:
@@ -161,8 +149,6 @@ The tab intentionally does not perform article review, article text editing, AI 
 
 `feed_preview_1_5` is the original one-score workflow. It writes to `human_preview_ratings` and excludes articles that already have a row in that table.
 
-`human_preview_dimensions_v1` is a separate dimension pass workflow over the thumbnail cohort. It writes one inspectable row per article to `human_preview_dimension_ratings`, with nullable columns for each dimension, and uses `human_preview_dimension_pass_queue` to track completion separately for each dimension. It does not read or mutate `human_preview_ratings` except as a fallback source for the cohort if the all-cohort CSV is missing.
-
 `human_preview_dimensions_v2` is the clean validated-manifest workflow. It reads the validated manifest cohort, writes to `human_preview_dimension_ratings_v2`, and runs the full five-dimension pass order on that cohort. `title_hook_strength` remains title-only in v2 and hides subtitle and thumbnail during that pass. The thumbnail-based dimensions use the validated manifest image for the article.
 
 ## Dimension Cohort
@@ -209,7 +195,7 @@ Restart the Shiny app after any thumbnail queue/exporter or app mapping change. 
 
 ## Verification Notes
 
-When verifying this app after code changes, do not rely only on a lightweight shell probe such as `curl` or a bare browser screenshot. The Shiny server can be listening on `127.0.0.1:3838` while the actual session-backed UI state has not been exercised yet.
+When verifying this app after code changes, do not rely only on a lightweight shell probe such as `curl` or a bare browser screenshot. The Shiny server can be listening on the stable endpoint (`127.0.0.1:3840`) or Design v2 endpoint (`127.0.0.1:3844`) while the actual session-backed UI state has not been exercised yet.
 
 For app verification:
 
@@ -238,14 +224,6 @@ That audit verifies `manual_shown_image_hash == api_scored_image_hash == manifes
 The app rates one active dimension across the full cohort before moving to the next dimension.
 
 In `human_preview_dimensions_v2`, the pass order is:
-
-1. `ai_low_effort_flag`
-2. `visual_hook`
-3. `title_hook_strength`
-4. `emotional_pull_preview`
-5. `personal_click_appeal`
-
-In `human_preview_dimensions_v1`, the historical order is:
 
 1. `ai_low_effort_flag`
 2. `visual_hook`
@@ -307,11 +285,10 @@ One-score mode:
 
 Dimension pass mode:
 
-- `human_preview_dimension_ratings`
 - `human_preview_dimension_ratings_v2`
 - `human_preview_dimension_pass_queue`
 
-`human_preview_dimension_ratings` stores one row per article and `rating_mode`, with nullable columns for `personal_click_appeal`, `title_hook_strength`, `visual_hook`, `emotional_pull_preview`, and `ai_low_effort_flag`. `human_preview_dimension_pass_queue` stores per-dimension queue status, so a skip applies only to the active dimension.
+`human_preview_dimension_pass_queue` stores per-dimension queue status, so a skip applies only to the active dimension.
 
 `human_preview_dimension_ratings_v2` is the clean validated-manifest table. It stores `rating_mode = human_preview_dimensions_v2`, `manifest_version = human_rated_thumbnail_valid_cohort_v2`, `shown_thumbnail_path`, and `shown_image_sha256` so manual rows can be checked against API scores and the manifest by hash.
 
@@ -319,6 +296,6 @@ Dimension pass mode:
 
 Both manual workflows are blind rating workflows. Do not add outcome/API/performance data to the UI, tooltip text, browser console payloads intended for display, or the preview card.
 
-Old rows in `human_preview_ratings` and `human_preview_dimension_ratings` may include stale or wrong thumbnails. Old `medium_thumbnail_api_scores` rows with `prompt_version = thumbnail_v1` may also include stale or wrong thumbnails. Preserve them for audit/history, but do not use them as clean thumbnail evidence. For current manual thumbnail work and clean conclusions, use `human_preview_dimensions_v2` with the validated manifest cohort and manifest-backed image hashes.
+Old rows in `human_preview_ratings` and `medium_thumbnail_api_scores` may include stale or wrong thumbnails. Do not use them as clean thumbnail evidence. For current manual thumbnail work and clean conclusions, use `human_preview_dimensions_v2` with the validated manifest cohort and manifest-backed image hashes.
 
 Restart the Shiny app after app or manifest changes. A running Shiny process keeps loaded R code and cohort data in memory.

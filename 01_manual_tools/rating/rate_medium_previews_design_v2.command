@@ -2,7 +2,7 @@
 
 # Experimental Article Lab / rating UI design. This launches the same app and
 # database as the stable version, but opts into ARTICLE_LAB_UI_VERSION=v2 and
-# uses a separate port so the old functional app can keep running.
+# uses the experimental Design v2 port.
 
 cd "$(dirname "$0")/../.." || exit 1
 

@@ -43,10 +43,29 @@ candidate_b <- create_quick_idea_candidate(con, "E2E Isolation Control", "Projec
 project_a <- develop_article_candidate(con, candidate_a, timestamp)
 project_b <- develop_article_candidate(con, candidate_b, timestamp)
 
-batch_a <- save_article_lab_batch(con, article_lab_default_prompt, "Project A", "manual", 1L, "fixture-model", "Project A approved title", generation_mode = "fixture", article_context_notes = "Project A context", article_project_id = project_a)
+project_a_row <- load_article_project(con, article_project_id = project_a)
+all_context <- article_project_build_title_context(project_a_row, additional_context = "Prefer practical, non-alarmist framing.")
+expect(grepl("Working title:\nE2E Regression Test", all_context, fixed = TRUE), "All-fields context omitted the working title.")
+expect(grepl("Core idea / angle:\nProject A core idea", all_context, fixed = TRUE), "All-fields context omitted the core idea.")
+expect(grepl("Project notes:\nAudience: cautious beginners", all_context, fixed = TRUE), "All-fields context omitted project notes.")
+expect(grepl("Origin details:\nOrigin type: quick_idea", all_context, fixed = TRUE), "All-fields context omitted origin details.")
+expect(grepl("Additional directions for this title batch:\nPrefer practical, non-alarmist framing.", all_context, fixed = TRUE), "All-fields context omitted additional directions.")
+
+subset_context <- article_project_build_title_context(project_a_row, included_keys = c("working_title", "origin_details"), additional_context = "One extra direction")
+expect(grepl("Working title:", subset_context, fixed = TRUE) && grepl("Origin details:", subset_context, fixed = TRUE), "Selected context fields were not included.")
+expect(!grepl("Core idea / angle:", subset_context, fixed = TRUE) && !grepl("Project notes:", subset_context, fixed = TRUE), "Unchecked context fields leaked into the composed prompt.")
+expect(sum(gregexpr("One extra direction", subset_context, fixed = TRUE)[[1]] > 0L) == 1L, "Additional context was duplicated in the composed prompt.")
+
+exact_prompt <- article_lab_effective_title_prompt_text(article_lab_default_prompt, 3L, seed_topic = "Test seed", context_notes = subset_context)
+expect(startsWith(exact_prompt, paste0("Article context:\n", subset_context)), "The effective API prompt does not lead with the selected article context.")
+expect(sum(gregexpr("One extra direction", exact_prompt, fixed = TRUE)[[1]] > 0L) == 1L, "Additional context was duplicated in the effective API prompt.")
+expect(grepl("Return exactly 3 titles.", exact_prompt, fixed = TRUE), "The exact prompt preview omitted the requested batch size.")
+
+batch_a <- save_article_lab_batch(con, article_lab_default_prompt, "Project A", "manual", 1L, "fixture-model", "Project A approved title", generation_mode = "fixture", article_context_notes = all_context, article_project_id = project_a)
 batch_b <- save_article_lab_batch(con, article_lab_default_prompt, "Project B", "manual", 1L, "fixture-model", "Project B private title", generation_mode = "fixture", article_context_notes = "Project B context", article_project_id = project_b)
 expect(identical(load_article_lab_batches(con, project_a)$batch_id, batch_a), "Project A batch lookup leaked another project's batch.")
 expect(identical(load_article_lab_batches(con, project_b)$batch_id, batch_b), "Project B batch lookup leaked another project's batch.")
+expect(identical(load_latest_article_lab_batch(con, project_a)$article_context_notes[[1]], all_context), "Saved title batch did not preserve the exact composed article context snapshot.")
 
 title_a <- dbGetQuery(con, "SELECT candidate_id FROM article_lab_title_candidates WHERE batch_id = ?", params = list(batch_a))$candidate_id[[1]]
 dbExecute(con, "UPDATE article_lab_title_candidates SET status = 'approved_for_subtitle' WHERE candidate_id = ?", params = list(title_a))
