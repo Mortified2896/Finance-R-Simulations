@@ -352,7 +352,7 @@ article_lab_full_text_api_request <- function(con, packages, model = NA_characte
   if (!nzchar(trimws(stdout_text))) stop("Full article generation helper returned no output.", call. = FALSE)
 
   parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
-  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id))
+  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id), request_id = article_lab_input_string(parsed$request_id))
   result_rows <- lapply(parsed$results %||% list(), function(entry) {
     citation_map <- entry$citation_map %||% list()
     citation_map_json <- if (length(citation_map) == 0) NA_character_ else toJSON(citation_map, auto_unbox = TRUE, null = "null")
@@ -662,6 +662,7 @@ article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model 
   if (nrow(rows) == 0) {
     return(list(generated_n = 0L, title_n = 0L, skipped_n = length(candidate_ids), batch_ids = character(), mode = "none", model = article_lab_default_subtitle_model))
   }
+  rows <- rows[match(candidate_ids, rows$candidate_id, nomatch = 0L), , drop = FALSE]
   rows <- article_lab_normalize_candidate_rows(rows)
   eligible <- rows[
     rows$normalized_status == "approved_for_subtitle" &
@@ -675,7 +676,10 @@ article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model 
     return(list(generated_n = 0L, title_n = 0L, skipped_n = skipped_n, batch_ids = unique(rows$batch_id), mode = "none", model = article_lab_default_subtitle_model))
   }
 
-  summary_contexts <- load_article_lab_batch_summary_contexts(con, unique(eligible$batch_id))
+  summary_contexts <- tryCatch(
+    load_article_lab_batch_summary_contexts(con, unique(eligible$batch_id)),
+    error = function(e) stop("Could not load subtitle summary context: ", conditionMessage(e), call. = FALSE)
+  )
   eligible$article_summary <- NA_character_
   if (nrow(summary_contexts) > 0) {
     matched_summary <- summary_contexts$article_summary[match(eligible$batch_id, summary_contexts$batch_id)]
@@ -687,7 +691,10 @@ article_lab_generate_subtitles_for_titles <- function(con, candidate_ids, model 
     sprintf("SELECT candidate_id, subtitle FROM article_lab_subtitle_candidates WHERE candidate_id IN (%s)", paste(rep("?", nrow(eligible)), collapse = ", ")),
     params = as.list(eligible$candidate_id)
   )
-  generated <- generate_subtitle_candidates(eligible, variants_per_title = variants_per_title, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt)
+  generated <- tryCatch(
+    generate_subtitle_candidates(eligible, variants_per_title = variants_per_title, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt),
+    error = function(e) stop("Could not execute subtitle generation: ", conditionMessage(e), call. = FALSE)
+  )
   subtitle_rows <- generated$rows
   if (nrow(subtitle_rows) == 0) {
     return(list(generated_n = 0L, title_n = 0L, skipped_n = skipped_n + nrow(eligible), batch_ids = unique(rows$batch_id), mode = generated$mode %||% "none", model = generated$model %||% article_lab_default_subtitle_model, fallback_reason = generated$fallback_reason %||% NULL))

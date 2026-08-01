@@ -164,6 +164,7 @@ async function main() {
           model,
           reasoning_effort: reasoningEffort,
           reasoning_mode: reasoningMode,
+          request_id: response._request_id ?? response.request_id ?? null,
           response_id: response.id ?? null,
           results,
           raw_text: rawText,

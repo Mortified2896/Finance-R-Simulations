@@ -13,6 +13,7 @@ article_lab_validate_generation_settings <- function(model, reasoning_effort = N
   supported <- article_lab_reasoning_capabilities(model)
   effort <- article_lab_input_string(reasoning_effort)
   mode <- article_lab_input_string(reasoning_mode) %||% "standard"
+  if (identical(mode, "__unsupported__") && !article_lab_supports_pro_mode(model)) mode <- "standard"
   if (!is.null(effort) && !effort %in% supported) stop("Reasoning level '", effort, "' is not supported by model ", model, ".", call. = FALSE)
   if (!mode %in% c("standard", "pro")) stop("Unsupported execution mode: ", mode, call. = FALSE)
   if (identical(mode, "pro") && !article_lab_supports_pro_mode(model)) stop("Pro mode is not supported by model ", model, ".", call. = FALSE)
@@ -740,7 +741,7 @@ article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L
   title_list <- paste(vapply(seq_len(nrow(candidates)), function(i) {
     line <- sprintf("%s\nTitle: %s", aliases[[i]], candidates$title[[i]])
     summary <- if ("article_summary" %in% names(candidates)) article_lab_input_multiline(candidates$article_summary[[i]]) else NA_character_
-    if (is.na(summary)) line else paste(line, sprintf("Attached article summary:\n%s", summary), sep = "\n")
+    if (is.null(summary)) line else paste(line, sprintf("Attached article summary:\n%s", summary), sep = "\n")
   }, character(1)), collapse = "\n")
   resolved_prompt <- article_lab_render_prompt_template(
     article_lab_prompt_text_value(prompt) %||% article_lab_default_subtitle_prompt,
@@ -764,7 +765,10 @@ article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L
       )
     }))
   )
-  attempt_id <- article_lab_record_current_attempt("subtitles", prompt, resolved_prompt, request_payload)
+  attempt_id <- tryCatch(
+    article_lab_record_current_attempt("subtitles", prompt, resolved_prompt, request_payload),
+    error = function(e) stop("Could not persist the subtitle generation attempt: ", conditionMessage(e), call. = FALSE)
+  )
 
   request_file <- tempfile(pattern = "article_lab_subtitle_request_", fileext = ".json")
   stdout_file <- tempfile(pattern = "article_lab_subtitle_stdout_", fileext = ".json")
@@ -789,7 +793,7 @@ article_lab_subtitle_api_request <- function(candidates, variants_per_title = 4L
   if (!nzchar(trimws(stdout_text))) stop("Subtitle generation helper returned no output.", call. = FALSE)
 
   parsed <- fromJSON(stdout_text, simplifyVector = FALSE)
-  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id))
+  article_lab_finish_generation_attempt(attempt_id, "succeeded", response_id = article_lab_input_string(parsed$response_id), request_id = article_lab_input_string(parsed$request_id))
   result_rows <- lapply(parsed$results %||% list(), function(entry) {
     subtitles <- article_lab_normalize_subtitle(unname(unlist(entry$subtitles %||% list(), use.names = FALSE)))
     if (length(subtitles) == 0) return(NULL)
@@ -821,12 +825,15 @@ generate_subtitle_candidates <- function(candidates, variants_per_title = 4L, mo
   tryCatch(
     article_lab_subtitle_api_request(candidates, variants_per_title = variants_per_title, model = model, reasoning_effort = reasoning_effort, reasoning_mode = reasoning_mode, prompt = prompt),
     error = function(e) {
+      failed_call <- conditionCall(e)
+      failure_reason <- conditionMessage(e)
+      if (!is.null(failed_call)) failure_reason <- paste0(failure_reason, " [call: ", paste(deparse(failed_call), collapse = " "), "]")
       list(
         rows = data.frame(),
         model = article_lab_input_string(model) %||% article_lab_default_subtitle_model,
         mode = "failed",
         raw_json = article_lab_input_string(prompt) %||% article_lab_default_subtitle_prompt,
-        fallback_reason = conditionMessage(e)
+        fallback_reason = failure_reason
       )
     }
   )
