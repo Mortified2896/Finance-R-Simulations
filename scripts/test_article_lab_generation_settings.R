@@ -23,6 +23,28 @@ expect(identical(article_lab_validate_generation_settings("gpt-4.1", NA_characte
 expect(inherits(try(article_lab_validate_generation_settings("gpt-4.1", "low", "standard"), silent = TRUE), "try-error"), "Unsupported reasoning should fail before an API call.")
 expect(inherits(try(article_lab_validate_generation_settings("gpt-5.4", "medium", "pro"), silent = TRUE), "try-error"), "Unsupported Pro mode should fail before an API call.")
 
+expect(identical(article_lab_validate_image_generation_model("gpt-5.6-luna"), "gpt-5.6-luna"), "An allow-listed image-generation model should pass validation.")
+text_only_error <- try(article_lab_validate_image_generation_model("gpt-5-mini"), silent = TRUE)
+expect(inherits(text_only_error, "try-error"), "A text-only model must be rejected for image generation.")
+expect(grepl("gpt-5-mini", as.character(text_only_error), fixed = TRUE), "Image capability errors must identify the invalid model.")
+expect(identical(article_lab_thumbnail_model_choices, article_lab_image_generation_models), "The Images-tab dropdown must exactly match the canonical image-capable allow-list.")
+expect(!"gpt-5-mini" %in% article_lab_thumbnail_model_choices, "Text-only models must not appear in the Images-tab dropdown.")
+
+api_called <- FALSE
+original_has_api_key <- article_lab_has_api_key
+article_lab_has_api_key <- function() {
+  api_called <<- TRUE
+  TRUE
+}
+invalid_request_error <- try(
+  article_lab_thumbnail_api_request(data.frame(title = "Test"), model = "gpt-5-mini"),
+  silent = TRUE
+)
+article_lab_has_api_key <- original_has_api_key
+expect(inherits(invalid_request_error, "try-error"), "The server boundary must reject a non-image-capable model.")
+expect(!api_called, "Image capability validation must run before API setup or execution.")
+expect(grepl("gpt-5-mini", as.character(invalid_request_error), fixed = TRUE), "Server rejection must report the selected invalid model without falling back.")
+
 test_db <- tempfile(pattern = "article_lab_generation_preferences_", fileext = ".sqlite")
 on.exit(unlink(test_db, force = TRUE), add = TRUE)
 con <- dbConnect(SQLite(), test_db)

@@ -6,6 +6,10 @@ config_names <- c(
   "HUMAN_RATING_MODE",
   "HUMAN_RATING_TARGET_N",
   "OPENAI_EVIDENCE_REASONING_EFFORT",
+  "OPENAI_THUMBNAIL_GENERATION_MODEL",
+  "OPENAI_THUMBNAIL_RESPONSES_MODEL",
+  "OPENAI_SUBTITLE_GENERATION_MODEL",
+  "OPENAI_TITLE_GENERATION_MODEL",
   "OPENAI_FULL_TEXT_GENERATION_TIMEOUT_SECONDS",
   "OPENAI_OUTLINE_GENERATION_TIMEOUT_SECONDS"
 )
@@ -50,5 +54,57 @@ expect_error(list(HUMAN_RATING_TARGET_N = "many"), "Invalid HUMAN_RATING_TARGET_
 expect_error(list(OPENAI_OUTLINE_GENERATION_TIMEOUT_SECONDS = "10"), "Invalid OPENAI_OUTLINE_GENERATION_TIMEOUT_SECONDS", include_article_lab = TRUE)
 expect_error(list(OPENAI_FULL_TEXT_GENERATION_TIMEOUT_SECONDS = "later"), "Invalid OPENAI_FULL_TEXT_GENERATION_TIMEOUT_SECONDS", include_article_lab = TRUE)
 expect_error(list(OPENAI_EVIDENCE_REASONING_EFFORT = "extreme"), "Invalid OPENAI_EVIDENCE_REASONING_EFFORT", include_article_lab = TRUE)
+expect_error(
+  list(OPENAI_THUMBNAIL_GENERATION_MODEL = "gpt-5-mini"),
+  "Configured Images-tab default from OPENAI_THUMBNAIL_GENERATION_MODEL 'gpt-5-mini'",
+  include_article_lab = TRUE
+)
+expect_error(
+  list(OPENAI_THUMBNAIL_RESPONSES_MODEL = "gpt-4.1"),
+  "Configured Images-tab default from OPENAI_THUMBNAIL_RESPONSES_MODEL 'gpt-4.1'",
+  include_article_lab = TRUE
+)
+
+generation_precedence <- load_config(
+  list(
+    OPENAI_THUMBNAIL_GENERATION_MODEL = "gpt-5.6-luna",
+    OPENAI_THUMBNAIL_RESPONSES_MODEL = "gpt-5.4"
+  ),
+  include_article_lab = TRUE
+)
+expect(identical(generation_precedence$article_lab_default_thumbnail_model, "gpt-5.6-luna"), "OPENAI_THUMBNAIL_GENERATION_MODEL must have highest Images-model precedence.")
+
+responses_precedence <- load_config(
+  list(OPENAI_THUMBNAIL_RESPONSES_MODEL = "gpt-5.4-mini"),
+  include_article_lab = TRUE
+)
+expect(identical(responses_precedence$article_lab_default_thumbnail_model, "gpt-5.4-mini"), "OPENAI_THUMBNAIL_RESPONSES_MODEL must supply the Images default when the generation variable is absent.")
+
+built_in_images_config <- load_config(include_article_lab = TRUE)
+expect(identical(built_in_images_config$article_lab_default_thumbnail_model, built_in_images_config$article_lab_builtin_thumbnail_model), "The built-in Images default must be used when neither thumbnail-specific variable is set.")
+expect(identical(built_in_images_config$article_lab_builtin_thumbnail_model, "gpt-5.5"), "The built-in Images default changed unexpectedly.")
+
+title_isolation <- load_config(
+  list(OPENAI_TITLE_GENERATION_MODEL = "gpt-4.1"),
+  include_article_lab = TRUE
+)
+expect(identical(title_isolation$article_lab_default_thumbnail_model, title_isolation$article_lab_builtin_thumbnail_model), "Title model configuration must not influence the Images default.")
+
+subtitle_isolation <- load_config(
+  list(OPENAI_SUBTITLE_GENERATION_MODEL = "gpt-5-mini"),
+  include_article_lab = TRUE
+)
+expect(identical(subtitle_isolation$article_lab_default_thumbnail_model, subtitle_isolation$article_lab_builtin_thumbnail_model), "Subtitle model configuration must not influence the Images default.")
+
+text_config_isolation <- load_config(
+  list(
+    OPENAI_TITLE_GENERATION_MODEL = "text-only-title-model",
+    OPENAI_SUBTITLE_GENERATION_MODEL = "text-only-subtitle-model"
+  ),
+  include_article_lab = TRUE
+)
+expect(identical(text_config_isolation$article_lab_default_thumbnail_model, text_config_isolation$article_lab_builtin_thumbnail_model), "Incompatible title and subtitle models must not fail or alter Images configuration.")
+expect(identical(text_config_isolation$article_lab_thumbnail_model_choices, text_config_isolation$article_lab_image_generation_models), "Title and subtitle configuration must not mutate the Images dropdown.")
+expect(identical(generation_precedence$article_lab_thumbnail_model_choices, generation_precedence$article_lab_image_generation_models), "A configured thumbnail default must not mutate the Images dropdown contents.")
 
 message("Application configuration tests passed.")

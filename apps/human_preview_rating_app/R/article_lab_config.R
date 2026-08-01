@@ -63,6 +63,31 @@ article_lab_model_choices <- c(
   "o4-mini"
 )
 
+# Canonical capability policy for models that may coordinate the Responses API
+# built-in image_generation tool. Keep UI choices and request validation derived
+# from this single list so the two surfaces cannot drift.
+article_lab_image_generation_models <- c(
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini"
+)
+
+article_lab_validate_image_generation_model <- function(model, context = "Images-tab model") {
+  model <- trimws(as.character(model %||% "")[[1]])
+  if (!nzchar(model) || !model %in% article_lab_image_generation_models) {
+    invalid <- if (nzchar(model)) model else "<empty>"
+    stop(
+      context, " '", invalid, "' is not supported for the Responses API built-in image_generation tool. ",
+      "Allowed image-capable models: ", paste(article_lab_image_generation_models, collapse = ", "), ".",
+      call. = FALSE
+    )
+  }
+  model
+}
+
 article_lab_reasoning_capabilities <- function(model) {
   model <- trimws(as.character(model %||% "")[[1]])
   if (grepl("^gpt-5\\.6(?:-|$)", model)) return(c("none", "low", "medium", "high", "xhigh", "max"))
@@ -116,15 +141,24 @@ article_lab_default_subtitle_model <- local({
   configured
 })
 article_lab_subtitle_model_choices <- article_lab_model_choices_with_default(article_lab_default_subtitle_model)
+article_lab_builtin_thumbnail_model <- "gpt-5.5"
 article_lab_default_thumbnail_model <- local({
   configured <- Sys.getenv("OPENAI_THUMBNAIL_GENERATION_MODEL", unset = "")
-  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_THUMBNAIL_RESPONSES_MODEL", unset = "")
-  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_SUBTITLE_GENERATION_MODEL", unset = "")
-  if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_TITLE_GENERATION_MODEL", unset = "")
-  if (!nzchar(configured)) configured <- "gpt-5.5"
-  configured
+  source_name <- "OPENAI_THUMBNAIL_GENERATION_MODEL"
+  if (!nzchar(configured)) {
+    configured <- Sys.getenv("OPENAI_THUMBNAIL_RESPONSES_MODEL", unset = "")
+    source_name <- "OPENAI_THUMBNAIL_RESPONSES_MODEL"
+  }
+  if (!nzchar(configured)) {
+    configured <- article_lab_builtin_thumbnail_model
+    source_name <- "built-in Images-tab default"
+  }
+  article_lab_validate_image_generation_model(
+    configured,
+    paste0("Configured Images-tab default from ", source_name)
+  )
 })
-article_lab_thumbnail_model_choices <- article_lab_model_choices_with_default(article_lab_default_thumbnail_model, base_choices = c("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"))
+article_lab_thumbnail_model_choices <- article_lab_image_generation_models
 article_lab_default_outline_model <- local({
   configured <- Sys.getenv("OPENAI_OUTLINE_GENERATION_MODEL", unset = "")
   if (!nzchar(configured)) configured <- Sys.getenv("OPENAI_SUBTITLE_GENERATION_MODEL", unset = "")

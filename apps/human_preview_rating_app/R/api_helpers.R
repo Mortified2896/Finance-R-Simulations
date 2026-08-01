@@ -495,12 +495,14 @@ article_lab_manual_subtitle_choice_map <- function(target_rows, pending_rows) {
 }
 
 article_lab_thumbnail_api_request <- function(packages, variants_per_package = article_lab_default_thumbnail_variants, model = NA_character_, reasoning_effort = NA_character_, reasoning_mode = "standard", prompt = NA_character_) {
+  requested_model <- article_lab_input_string(model) %||% article_lab_default_thumbnail_model
+  article_lab_validate_image_generation_model(requested_model, "Selected Images-tab model")
   helper_path <- file.path("scripts", "writing_api", "generate_thumbnails.mjs")
   if (!file.exists(file.path(project_root, helper_path))) stop("Missing helper script: scripts/writing_api/generate_thumbnails.mjs", call. = FALSE)
   if (!article_lab_has_api_key()) stop("OPENAI_API_KEY is not configured in the environment or local .env file.", call. = FALSE)
   if (nrow(packages) == 0) return(list(rows = data.frame(), model = article_lab_default_thumbnail_model, mode = "api", raw_json = NULL))
 
-  settings <- article_lab_validate_generation_settings(article_lab_input_string(model) %||% article_lab_default_thumbnail_model, reasoning_effort, reasoning_mode)
+  settings <- article_lab_validate_generation_settings(requested_model, reasoning_effort, reasoning_mode)
   request_payload <- list(
     model = settings$model,
     reasoning_effort = settings$reasoning_effort,

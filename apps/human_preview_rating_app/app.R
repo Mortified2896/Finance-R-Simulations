@@ -920,7 +920,6 @@ server <- function(input, output, session) {
             div(class = "lab-field", numericInput("article_lab_thumbnail_variants_per_package", "Thumbnail candidates per package", value = article_lab_default_thumbnail_variants, min = 1L, max = 4L, width = "100%"))
           ),
           article_lab_action_bar(
-            uiOutput("article_lab_thumbnail_generate_button"),
             actionButton("article_lab_refresh_thumbnails", "Refresh", class = "lab-secondary")
           ),
           uiOutput("article_lab_thumbnail_effective_prompt"),
@@ -3386,7 +3385,6 @@ server <- function(input, output, session) {
         div(class = "lab-alert-body", p(effective$context_error %||% "Select a valid article project and at least one populated idea field."), p("Generate is disabled. Existing title drafts and saved batches were not changed."))
       ) else NULL,
       tags$details(
-        open = if (summary_mode) "open" else NULL,
         tags$summary("Show exact effective prompt"),
         h4("Request fields"),
         tags$pre(class = "lab-status-copy", request_additions),
@@ -3438,7 +3436,6 @@ server <- function(input, output, session) {
       h3("Prompt that will be sent to the API"),
       p(class = "lab-status-copy", "Summary generation sends the selected PDF as an input_file plus this text metadata/prompt payload."),
       tags$details(
-        open = if (nrow(source) > 0) "open" else NULL,
         tags$summary("Show exact research summary API prompt"),
         h4("Request fields"),
         tags$pre(class = "lab-status-copy", request_fields),
@@ -3487,7 +3484,6 @@ server <- function(input, output, session) {
       h3("Prompt that will be sent to the API"),
       p(class = "lab-status-copy", "API scoring sends one request per selected title. Each request uses this system prompt plus the per-title user prompt below."),
       tags$details(
-        open = if (nrow(selected_rows) > 0) "open" else NULL,
         tags$summary("Show exact title scoring API prompt"),
         h4("Request fields"),
         tags$pre(class = "lab-status-copy", request_fields),
@@ -3539,7 +3535,6 @@ server <- function(input, output, session) {
       p(class = "lab-selection-summary", if (nrow(selected_targets) == 0) "No titles checked" else sprintf("%s title%s checked and included", nrow(selected_targets), ifelse(nrow(selected_targets) == 1, "", "s"))),
       p(class = "lab-status-copy", summary_copy),
       tags$details(
-        open = if (nrow(selected_targets) > 0) "open" else NULL,
         tags$summary("Show exact effective prompt"),
         h4("Exact input_text sent to the API"),
         tags$pre(class = "lab-status-copy", exact_prompt),
@@ -3620,7 +3615,6 @@ server <- function(input, output, session) {
       h3("Prompt that will be sent to the API"),
       p(class = "lab-status-copy", "Thumbnail generation sends this prompt plus the selected title/subtitle package context to the selected Responses model, which calls the built-in image_generation tool."),
       tags$details(
-        open = if (nrow(selected_packages) > 0) "open" else NULL,
         tags$summary("Show exact thumbnail API prompt"),
         h4("Exact input_text sent to the API"),
         tags$pre(class = "lab-status-copy", exact_prompt),
@@ -3741,7 +3735,6 @@ server <- function(input, output, session) {
       h3("Prompt that will be sent to the API"),
       p(class = "lab-status-copy", "Outline generation sends this prompt plus selected title/subtitle/thumbnail package context. When enabled, a local PDF is attached as a file; summary text is sent only when no local PDF is available."),
       tags$details(
-        open = if (nrow(selected_packages) > 0 || nrow(summary_contexts) > 0) "open" else NULL,
         tags$summary("Show exact outline API prompt"),
         h4("Exact input_text sent to the API"),
         tags$pre(class = "lab-status-copy", exact_prompt),
@@ -3861,7 +3854,6 @@ server <- function(input, output, session) {
       h3("Prompt that will be sent to the API"),
       p(class = "lab-status-copy", "Full article generation sends this prompt plus the selected approved outline context. Use indirect citations/paraphrases only. Every reader-facing in-text citation must appear in citation_map. A local PDF is attached when available; checked evidence records from the confirmed summary ground paper-based claims."),
       tags$details(
-        open = if (nrow(selected_packages) > 0) "open" else NULL,
         tags$summary("Show exact full article API prompt"),
         div(
           class = "lab-actions",
@@ -4331,6 +4323,7 @@ server <- function(input, output, session) {
           ),
           article_lab_thumbnail_package_table_ui(package_rows),
           article_lab_action_bar(
+            uiOutput("article_lab_thumbnail_generate_button"),
             article_lab_button("article_lab_dismiss_thumbnail_packages", "Delete selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_packages');", disabled = nrow(package_rows) == 0)
           )
         ),
@@ -4398,7 +4391,6 @@ server <- function(input, output, session) {
       h3("Prompt that will be sent to the API"),
       p(class = "lab-status-copy", "Medium tag generation sends the selected approved article package and asks for JSON tags only."),
       tags$details(
-        open = if (nrow(row) > 0) "open" else NULL,
         tags$summary("Show exact Medium tags API prompt"),
         h4("Request fields"),
         tags$pre(class = "lab-status-copy", paste(sprintf("Model: %s", model), "Response format: JSON with a tags array, capped to 5 tags on save.", sep = "\n")),
