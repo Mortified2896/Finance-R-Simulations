@@ -47,7 +47,7 @@ promote_research_angle_candidate <- function(con, research_angle_id, timestamp =
 }
 
 load_article_candidates <- function(con, origin = "__all__", include_archived = FALSE) {
-  where <- if (isTRUE(include_archived)) character() else "c.status <> 'archived'"
+  where <- if (isTRUE(include_archived)) character() else "c.status IN ('captured', 'refining', 'ready_for_evidence')"
   params <- list()
   if (!is.null(origin) && length(origin) == 1 && !is.na(origin) && origin %in% article_candidate_origins) {
     where <- c(where, "c.origin_type = ?")
@@ -160,6 +160,18 @@ load_article_project <- function(con, article_project_id = NULL, candidate_id = 
   if (!is.na(project_id)) return(dbGetQuery(con, "SELECT * FROM article_projects WHERE article_project_id = ? LIMIT 1", params = list(project_id)))
   if (!is.na(candidate)) return(dbGetQuery(con, "SELECT * FROM article_projects WHERE article_candidate_id = ? LIMIT 1", params = list(candidate)))
   data.frame()
+}
+
+archive_article_project <- function(con, article_project_id, timestamp = now_utc()) {
+  project_id <- article_inbox_clean_optional(article_project_id)
+  if (is.na(project_id)) stop("Select an article project before deleting it.", call. = FALSE)
+  changed <- dbExecute(
+    con,
+    "UPDATE article_projects SET archived_at = ?, updated_at = ? WHERE article_project_id = ? AND archived_at IS NULL",
+    params = list(timestamp, timestamp, project_id)
+  )
+  if (changed != 1L) stop("The selected article project is already deleted or no longer exists.", call. = FALSE)
+  invisible(project_id)
 }
 
 article_project_title_context_keys <- c(

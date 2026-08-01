@@ -5,11 +5,13 @@ suppressPackageStartupMessages({
 })
 
 app_dir <- file.path("apps", "human_preview_rating_app")
+project_root <- normalizePath(".", mustWork = TRUE)
 source(file.path(app_dir, "R", "text_helpers.R"))
 source(file.path(app_dir, "R", "db_helpers.R"))
 source(file.path(app_dir, "R", "input_helpers.R"))
 source(file.path(app_dir, "R", "schema_research.R"))
 source(file.path(app_dir, "R", "schema_article_inbox.R"))
+source(file.path(app_dir, "R", "research_helpers.R"))
 source(file.path(app_dir, "R", "article_inbox_helpers.R"))
 
 expect <- function(condition, message) if (!isTRUE(condition)) stop(message, call. = FALSE)
@@ -52,6 +54,7 @@ expect(quick_id %in% load_article_candidates(con)$candidate_id, "Archived candid
 quick_project_id <- develop_article_candidate(con, quick_id, timestamp)
 quick_project <- load_article_project(con, quick_project_id)
 expect(quick_project$origin_type[[1]] == "quick_idea" && quick_project$core_idea[[1]] == "Edited core" && quick_project$notes[[1]] == "Edited notes", "Quick Idea provenance and content should survive handoff.")
+expect(!(quick_id %in% load_article_candidates(con)$candidate_id), "Developed candidates should leave the active Article Inbox table.")
 
 project_id <- develop_article_candidate(con, research_id, timestamp)
 project_id_again <- develop_article_candidate(con, research_id, timestamp)
@@ -61,6 +64,11 @@ project <- load_article_project(con, project_id)
 expect(project$research_source_id[[1]] == source_id && project$research_angle_id[[1]] == angle_id && grepl("Confirmed source summary", project$source_summary_snapshot[[1]], fixed = TRUE), "Research provenance and summary must survive handoff.")
 expect(dbGetQuery(con, "SELECT COUNT(*) AS n FROM article_project_evidence_sources WHERE article_project_id = ? AND research_source_id = ?", params = list(project_id, source_id))$n[[1]] == 1L, "Originating research source should become the first linked evidence source.")
 expect(load_article_candidate(con, research_id)$effective_status[[1]] == "in_article_evidence", "Candidate status should reflect its Article Evidence project.")
+archive_article_project(con, project_id, timestamp)
+expect(!is.na(load_article_project(con, article_project_id = project_id)$archived_at[[1]]), "Deleted article projects should be soft-deleted so linked production data remains intact.")
+dbExecute(con, "UPDATE research_article_angles SET status = 'sent_to_title_lab' WHERE research_angle_id = ?", params = list(angle_id))
+expect(!(angle_id %in% load_research_angles(con, source_id)$research_angle_id), "Angles sent to Title Lab should leave the active research-angle table.")
+expect(angle_id %in% load_research_angles(con, source_id, include_completed = TRUE)$research_angle_id, "Completed research angles should remain available to explicit history views.")
 
 dbExecute(con, "INSERT INTO research_article_angles (research_source_id, created_at, updated_at, angle_title, main_idea, status, article_lab_batch_id) VALUES (?, ?, ?, 'Previously promoted angle', 'Old promoted body', 'sent_to_title_lab', 'alb_existing')", params = list(source_id, timestamp, timestamp))
 previously_promoted_angle_id <- dbGetQuery(con, "SELECT last_insert_rowid() AS id")$id[[1]]

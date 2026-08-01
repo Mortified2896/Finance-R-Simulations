@@ -86,7 +86,7 @@ server <- function(input, output, session) {
   active_section <- reactiveVal("home")
   selected_article_candidate_id <- reactiveVal(NA_character_)
   selected_article_project_id <- reactiveVal(NA_character_)
-  initial_article_project <- dbGetQuery(con, "SELECT article_project_id FROM article_projects ORDER BY updated_at DESC, article_project_id DESC LIMIT 1")
+  initial_article_project <- dbGetQuery(con, "SELECT article_project_id FROM article_projects WHERE archived_at IS NULL ORDER BY updated_at DESC, article_project_id DESC LIMIT 1")
   if (nrow(initial_article_project) > 0) selected_article_project_id(initial_article_project$article_project_id[[1]])
   active_dimension <- reactiveVal(if (is_dimension_mode) first_incomplete_dimension(con) else NA_character_)
   current <- reactiveVal(NULL)
@@ -182,14 +182,14 @@ server <- function(input, output, session) {
 
   output$article_lab_project_selector <- renderUI({
     article_lab_refresh()
-    projects <- dbGetQuery(con, "SELECT article_project_id, working_title, updated_at FROM article_projects ORDER BY updated_at DESC, article_project_id DESC")
+    projects <- dbGetQuery(con, "SELECT article_project_id, working_title, updated_at FROM article_projects WHERE archived_at IS NULL ORDER BY updated_at DESC, article_project_id DESC")
     if (nrow(projects) == 0) return(div(class = "lab-alert lab-alert-error", role = "alert", strong("No article project selected"), p("Create or open an Article Inbox candidate, then choose Develop Article before using production workspaces.")))
     choices <- setNames(projects$article_project_id, paste(projects$working_title, "·", projects$updated_at))
     selected <- article_inbox_clean_optional(selected_article_project_id())
     if (is.na(selected) || !(selected %in% projects$article_project_id)) selected <- projects$article_project_id[[1]]
     project <- load_article_project(con, article_project_id = selected)
     is_title_workspace <- active_section() %in% c("title_lab", "generate")
-    if (!is_title_workspace) return(div(class = "lab-card", div(class = "lab-section-header", div(h3("Canonical article project"), p(class = "lab-section-copy", "All production artifacts below are isolated to this project."))), div(class = "lab-field", selectInput("article_lab_project_select", "Article project", choices = choices, selected = selected, width = "100%"))))
+    if (!is_title_workspace) return(div(class = "lab-card", div(class = "lab-section-header", div(h3("Canonical article project"), p(class = "lab-section-copy", "All production artifacts below are isolated to this project."))), div(class = "lab-field", selectInput("article_lab_project_select", "Article project", choices = choices, selected = selected, width = "100%")), div(class = "lab-actions", actionButton("article_lab_delete_project", "Delete project", class = "lab-danger"))))
 
     fields <- article_project_title_context_fields(project)
     checkbox_ui <- lapply(article_project_title_context_keys, function(key) {
@@ -209,6 +209,7 @@ server <- function(input, output, session) {
         article_lab_badge(project$origin_type[[1]] %||% "project")
       ),
       div(class = "lab-field", selectInput("article_lab_project_select", "Article project", choices = choices, selected = selected, width = "100%")),
+      div(class = "lab-actions", actionButton("article_lab_delete_project", "Delete project", class = "lab-danger")),
       div(class = "title-project-summary", h4(project$working_title[[1]]), if (!is.na(article_inbox_clean_optional(project$core_idea[[1]]))) p(project$core_idea[[1]]) else p(class = "lab-status-copy", "No core idea recorded.")),
       tags$fieldset(
         class = "title-context-fieldset",
@@ -255,6 +256,41 @@ server <- function(input, output, session) {
         }
       )
     }
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_delete_project, {
+    project <- selected_article_project()
+    if (nrow(project) != 1L) {
+      article_lab_set_title_error("delete_project_failed", "Select an article project before deleting it.")
+      return(invisible(NULL))
+    }
+    showModal(modalDialog(
+      title = "Delete article project?",
+      p(sprintf("Remove “%s” from Article Evidence and every production-tab project selector?", project$working_title[[1]])),
+      p("Generated titles, subtitles, thumbnails, outlines, and drafts remain stored locally; the project is hidden from the active workflow."),
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("article_lab_confirm_delete_project", "Delete project", class = "lab-danger")
+      ),
+      easyClose = TRUE
+    ))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_confirm_delete_project, {
+    project_id <- article_inbox_clean_optional(selected_article_project_id())
+    tryCatch({
+      archive_article_project(con, project_id)
+      next_project <- dbGetQuery(con, "SELECT article_project_id FROM article_projects WHERE archived_at IS NULL ORDER BY updated_at DESC, article_project_id DESC LIMIT 1")
+      selected_article_project_id(if (nrow(next_project) == 1L) next_project$article_project_id[[1]] else NA_character_)
+      article_lab_state$notice <- "Article project deleted from the active workflow."
+      article_lab_state$last_title_generate_error <- NULL
+      article_lab_state$last_title_generate_error_at <- NULL
+      article_lab_refresh(article_lab_refresh() + 1L)
+      article_inbox_refresh(article_inbox_refresh() + 1L)
+      removeModal()
+    }, error = function(err) {
+      article_lab_set_title_error("delete_project_failed", conditionMessage(err), project_ids = project_id)
+    })
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_lab_cancel_project_switch, {
@@ -633,6 +669,7 @@ server <- function(input, output, session) {
           checkboxInput("article_lab_generate_select_all", "Select all", value = FALSE),
           checkboxInput("article_lab_show_disqualified", "Show disqualified titles", value = FALSE),
           article_lab_button("article_lab_save_triage", "Save triage changes", class = "lab-secondary", disabled = !generate_has_rows),
+          article_lab_button("article_lab_delete_generate_titles", "Delete selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_generate');", disabled = !generate_has_rows),
           article_lab_button("article_lab_move_to_api_queue", "Move selected to API queue", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_generate');", disabled = !generate_has_rows)
         ),
         uiOutput("article_lab_latest_titles")
@@ -744,6 +781,7 @@ server <- function(input, output, session) {
             checkboxInput("article_lab_generate_select_all", "Select all", value = FALSE),
             checkboxInput("article_lab_show_disqualified", "Show disqualified titles", value = FALSE),
             article_lab_button("article_lab_save_triage", "Save triage changes", class = "lab-secondary", disabled = !generate_has_rows),
+            article_lab_button("article_lab_delete_generate_titles", "Delete selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_generate');", disabled = !generate_has_rows),
             article_lab_button("article_lab_move_to_api_queue", "Move selected to API queue", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_generate');", disabled = !generate_has_rows)
           ),
           uiOutput("article_lab_latest_titles")
@@ -1509,6 +1547,39 @@ server <- function(input, output, session) {
       selected_article_candidate_id(NA_character_)
       article_inbox_succeed("Article candidate archived. Turn on Show archived to restore it.")
     }, error = function(err) article_inbox_fail("Archive article candidate", err, candidate_id))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_delete_source, {
+    id <- research_input_integer(selected_research_source_id())
+    if (is.na(id)) {
+      article_lab_state$notice <- "Select a research source before deleting it."
+      return(invisible(NULL))
+    }
+    tryCatch({
+      dbExecute(con, "UPDATE research_sources SET updated_at = ?, status = 'archived', manual_sort_order = NULL WHERE research_source_id = ?", params = list(now_utc(), id))
+      selected_research_source_id(NA_integer_)
+      normalize_research_ranked_queue()
+      article_lab_state$notice <- "Research source deleted from the active tables."
+      research_refresh(research_refresh() + 1L)
+    }, error = function(err) {
+      article_lab_state$notice <- paste("Delete research source failed:", conditionMessage(err))
+    })
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$research_delete_angle, {
+    row <- selected_research_angle()
+    id <- if (nrow(row) == 0) NA_integer_ else row$research_angle_id[[1]]
+    if (is.na(id)) {
+      article_lab_state$notice <- "Select a research angle before deleting it."
+      return(invisible(NULL))
+    }
+    tryCatch({
+      dbExecute(con, "UPDATE research_article_angles SET updated_at = ?, status = 'archived' WHERE research_angle_id = ?", params = list(now_utc(), id))
+      article_lab_state$notice <- "Research angle deleted from the active table."
+      research_refresh(research_refresh() + 1L)
+    }, error = function(err) {
+      article_lab_state$notice <- paste("Delete research angle failed:", conditionMessage(err))
+    })
   }, ignoreInit = TRUE)
 
   observeEvent(input$article_candidate_restore, {
@@ -3910,7 +3981,7 @@ server <- function(input, output, session) {
       div(class = "lab-field", textInput("article_candidate_edit_title", "Working title *", value = row$working_title[[1]], width = "100%")),
       div(class = "lab-grid", div(class = "lab-field", textAreaInput("article_candidate_edit_core", "Core idea / angle", value = if (is.na(row$core_idea[[1]])) "" else row$core_idea[[1]], width = "100%", height = "86px")), div(class = "lab-field", textAreaInput("article_candidate_edit_notes", "Notes", value = if (is.na(row$notes[[1]])) "" else row$notes[[1]], width = "100%", height = "86px"))),
       div(class = "lab-grid", div(class = "lab-field", selectInput("article_candidate_edit_status", "Progress status", choices = c("Captured" = "captured", "Refining" = "refining", "Ready for evidence" = "ready_for_evidence"), selected = if (row$status[[1]] %in% c("captured", "refining", "ready_for_evidence")) row$status[[1]] else "ready_for_evidence", width = "100%")), if (!is.na(row$source_title[[1]])) div(class = "lab-field candidate-provenance", span("Originating source"), strong(row$source_title[[1]])) else NULL),
-      div(class = "lab-actions", if (!is_archived) actionButton("article_candidate_save", "Save candidate", class = "lab-secondary") else NULL, if (!is_archived) actionButton("article_candidate_develop", if (has_project) "Open Article Evidence" else "Develop Article", class = "lab-primary") else NULL, if (!is_archived) actionButton("article_candidate_archive", "Archive", class = "lab-danger") else actionButton("article_candidate_restore", "Restore candidate", class = "lab-primary")),
+      div(class = "lab-actions", if (!is_archived) actionButton("article_candidate_save", "Save candidate", class = "lab-secondary") else NULL, if (!is_archived) actionButton("article_candidate_develop", if (has_project) "Open Article Evidence" else "Develop Article", class = "lab-primary") else NULL, if (!is_archived) actionButton("article_candidate_archive", "Delete candidate", class = "lab-danger") else actionButton("article_candidate_restore", "Restore candidate", class = "lab-primary")),
       uiOutput("article_candidate_error"),
       if (is_archived) div(class = "lab-status-copy", "Archived candidates are excluded from the default list and cannot be developed until restored.") else NULL
     )
@@ -3918,7 +3989,7 @@ server <- function(input, output, session) {
 
   output$article_evidence_workspace <- renderUI({
     article_inbox_refresh()
-    projects <- dbGetQuery(con, "SELECT article_project_id, working_title, updated_at FROM article_projects ORDER BY updated_at DESC")
+    projects <- dbGetQuery(con, "SELECT article_project_id, working_title, updated_at FROM article_projects WHERE archived_at IS NULL ORDER BY updated_at DESC")
     if (nrow(projects) == 0) return(div(class = "lab-card article-inbox-empty", h2("No Article Evidence workspace yet"), p("Choose an Article Candidate in Article Inbox and select Develop Article."), actionButton("article_evidence_back_to_inbox", "Open Article Inbox", class = "lab-primary")))
     choices <- setNames(projects$article_project_id, paste(projects$working_title, "·", projects$updated_at))
     project_id <- article_inbox_clean_optional(selected_article_project_id())
@@ -3926,7 +3997,7 @@ server <- function(input, output, session) {
     project <- load_article_project(con, article_project_id = project_id)
     evidence_sources <- dbGetQuery(con, "SELECT * FROM article_project_evidence_sources WHERE article_project_id = ? ORDER BY created_at", params = list(project_id))
     div(
-      div(class = "lab-card", div(class = "lab-field", selectInput("article_evidence_project_select", "Article project", choices = choices, selected = project_id, width = "100%")), div(class = "evidence-idea-header", div(div(class = "stage-one-kicker", "Article candidate provenance"), h2(project$working_title[[1]]), p(if (is.na(project$core_idea[[1]])) "No core idea recorded." else project$core_idea[[1]])), div(class = "evidence-readiness", span("Evidence workspace"), strong("Active"))), div(class = "lab-actions", actionButton("article_evidence_back_to_inbox", "Back to Article Inbox", class = "lab-secondary"), actionButton("article_evidence_open_title_lab", "Continue to Title Lab", class = "lab-primary"))),
+      div(class = "lab-card", div(class = "lab-field", selectInput("article_evidence_project_select", "Article project", choices = choices, selected = project_id, width = "100%")), div(class = "evidence-idea-header", div(div(class = "stage-one-kicker", "Article candidate provenance"), h2(project$working_title[[1]]), p(if (is.na(project$core_idea[[1]])) "No core idea recorded." else project$core_idea[[1]])), div(class = "evidence-readiness", span("Evidence workspace"), strong("Active"))), div(class = "lab-actions", actionButton("article_evidence_back_to_inbox", "Back to Article Inbox", class = "lab-secondary"), actionButton("article_evidence_open_title_lab", "Continue to Title Lab", class = "lab-primary"), actionButton("article_lab_delete_project", "Delete project", class = "lab-danger"))),
       div(class = "evidence-grid", div(class = "lab-card evidence-section", h3("Linked sources"), if (nrow(evidence_sources) == 0) div(class = "evidence-empty-line", "No sources attached") else lapply(seq_len(nrow(evidence_sources)), function(i) div(class = "evidence-source-row", strong(evidence_sources$source_title_snapshot[[i]] %||% paste("Research source", evidence_sources$research_source_id[[i]])), span("Origin source")))), div(class = "lab-card evidence-section", h3("Claims and evidence"), div(class = "evidence-empty-line", "No claims mapped")), div(class = "lab-card evidence-section", h3("Counterarguments"), div(class = "evidence-empty-line", "No counterarguments captured")), div(class = "lab-card evidence-section", h3("Research gaps / open questions"), div(class = "evidence-empty-line", "No research gaps recorded"))),
       if (!is.na(project$source_summary_snapshot[[1]]) && nzchar(project$source_summary_snapshot[[1]])) div(class = "lab-card evidence-section", h3("Origin source summary snapshot"), p(class = "research-inline-summary", project$source_summary_snapshot[[1]])) else NULL
     )
@@ -3942,7 +4013,7 @@ server <- function(input, output, session) {
       div(class = "lab-field", textAreaInput("research_edit_source_abstract", "Abstract", value = row$abstract[[1]] %||% "", width = "100%", height = "90px")),
       div(class = "lab-field", textAreaInput("research_edit_source_used_articles", "Article(s) written from this source", value = row$used_articles[[1]] %||% "", width = "100%", height = "70px")),
       div(class = "lab-field", textAreaInput("research_edit_source_notes", "Notes", value = row$notes[[1]] %||% "", width = "100%", height = "80px")),
-      div(class = "lab-actions", actionButton("research_save_source", "Save selected source", class = "lab-primary"), actionButton("research_refresh_selected_source", "Refresh", class = "lab-secondary"))
+      div(class = "lab-actions", actionButton("research_save_source", "Save selected source", class = "lab-primary"), actionButton("research_refresh_selected_source", "Refresh", class = "lab-secondary"), actionButton("research_delete_source", "Delete source", class = "lab-danger"))
     )
   })
 
@@ -3981,7 +4052,8 @@ server <- function(input, output, session) {
         class = "lab-actions",
         actionButton("research_save_angle", "Save angle edits", class = "lab-secondary"),
         if (nrow(promoted) == 0) actionButton("research_promote_angle", "Add to Article Candidates", class = "lab-primary") else tags$button(type = "button", class = "btn btn-default action-button lab-primary", onclick = sprintf("Shiny.setInputValue('research_open_candidate', '%s', {priority: 'event'})", promoted$candidate_id[[1]]), "Open Article Candidate"),
-        tags$button(type = "button", class = "btn btn-default action-button lab-secondary", onclick = sprintf("Shiny.setInputValue('research_send_to_title_lab', '%s', {priority: 'event'})", id), "Send to Title Lab")
+        tags$button(type = "button", class = "btn btn-default action-button lab-secondary", onclick = sprintf("Shiny.setInputValue('research_send_to_title_lab', '%s', {priority: 'event'})", id), "Send to Title Lab"),
+        actionButton("research_delete_angle", "Delete angle", class = "lab-danger")
       ),
       uiOutput("research_angle_promotion_error"),
       if (nrow(promoted) > 0) div(class = "lab-status-copy", "This angle has already been added to Article Candidates. Promotion is idempotent and will not create another record.") else div(class = "lab-status-copy", "This research angle remains research-only until you deliberately add it to Article Candidates.")
@@ -4113,7 +4185,7 @@ server <- function(input, output, session) {
           ),
           article_lab_score_queue_table_ui(queue_rows),
           article_lab_action_bar(
-            article_lab_button("article_lab_archive_queue_titles", "Archive selected titles", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_queue');", disabled = nrow(queue_rows) == 0)
+            article_lab_button("article_lab_archive_queue_titles", "Delete selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_queue');", disabled = nrow(queue_rows) == 0)
           )
         ),
         count = nrow(queue_rows)
@@ -4129,7 +4201,7 @@ server <- function(input, output, session) {
           article_lab_score_table_ui(scored_rows),
           article_lab_action_bar(
             article_lab_button("article_lab_approve_for_subtitle", "Approve selected for subtitles", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_scored');", disabled = nrow(scored_rows) == 0),
-            article_lab_button("article_lab_archive_scored_titles", "Archive selected titles", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_scored');", disabled = nrow(scored_rows) == 0)
+            article_lab_button("article_lab_archive_scored_titles", "Delete selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_scored');", disabled = nrow(scored_rows) == 0)
           ),
           div(class = "lab-status-copy", "Approved titles will move to Subtitle Generation.")
         ),
@@ -4153,7 +4225,7 @@ server <- function(input, output, session) {
           ),
           article_lab_subtitle_target_table_ui(target_rows),
           article_lab_action_bar(
-            article_lab_button("article_lab_archive_subtitle_titles", "Archive selected titles", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_subtitle_titles');", disabled = nrow(target_rows) == 0)
+            article_lab_button("article_lab_archive_subtitle_titles", "Delete selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_subtitle_titles');", disabled = nrow(target_rows) == 0)
           )
         ),
         count = nrow(target_rows)
@@ -4169,7 +4241,7 @@ server <- function(input, output, session) {
           article_lab_subtitle_candidate_table_ui(subtitle_rows),
           article_lab_action_bar(
             article_lab_button("article_lab_approve_subtitles", "Approve selected subtitles", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_subtitle_candidates');", disabled = nrow(subtitle_rows) == 0),
-            article_lab_button("article_lab_reject_subtitles", "Reject selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_subtitle_candidates');", disabled = nrow(subtitle_rows) == 0)
+            article_lab_button("article_lab_reject_subtitles", "Delete selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_subtitle_candidates');", disabled = nrow(subtitle_rows) == 0)
           ),
           div(class = "lab-status-copy", "Approved subtitle candidates stay available as variants for the Thumbnails step.")
         ),
@@ -4193,7 +4265,7 @@ server <- function(input, output, session) {
           ),
           article_lab_thumbnail_package_table_ui(package_rows),
           article_lab_action_bar(
-            article_lab_button("article_lab_dismiss_thumbnail_packages", "Dismiss selected packages", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_packages');", disabled = nrow(package_rows) == 0)
+            article_lab_button("article_lab_dismiss_thumbnail_packages", "Delete selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_packages');", disabled = nrow(package_rows) == 0)
           )
         ),
         count = nrow(package_rows)
@@ -4209,7 +4281,7 @@ server <- function(input, output, session) {
           article_lab_thumbnail_candidate_grid_ui(thumbnail_rows),
           article_lab_action_bar(
             article_lab_button("article_lab_approve_thumbnails", "Approve selected thumbnail", class = "lab-primary", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_candidates');", disabled = nrow(thumbnail_rows) == 0),
-            article_lab_button("article_lab_reject_thumbnails", "Reject selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_candidates');", disabled = nrow(thumbnail_rows) == 0)
+            article_lab_button("article_lab_reject_thumbnails", "Delete selected", class = "lab-danger", onclick = "window.articleLabSyncSelections('article_lab_thumbnail_candidates');", disabled = nrow(thumbnail_rows) == 0)
           ),
           div(class = "lab-status-copy", "Only one approved thumbnail is allowed per title/subtitle package. Approved packages move to Outline.")
         ),
@@ -4612,6 +4684,36 @@ server <- function(input, output, session) {
     }
     article_lab_save_generate_triage(con, payload$updates)
     article_lab_state$notice <- sprintf("Saved triage updates for %s title%s.", length(payload$updates), ifelse(length(payload$updates) == 1, "", "s"))
+    article_lab_refresh(article_lab_refresh() + 1L)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$article_lab_delete_generate_titles, {
+    if (!is.null(article_lab_state$draft) && nrow(article_lab_state$draft) > 0) {
+      draft <- article_lab_state$draft
+      selected_indexes <- which(vapply(seq_len(nrow(draft)), function(i) {
+        isTRUE(input[[article_lab_row_input_id("article_lab_generate_select", sprintf("draft_%02d", i))]])
+      }, logical(1)))
+      if (length(selected_indexes) == 0) {
+        article_lab_state$notice <- "Select at least one draft title before deleting it."
+        return(invisible(NULL))
+      }
+      article_lab_state$draft <- draft[-selected_indexes, , drop = FALSE]
+      article_lab_state$notice <- sprintf("Deleted %s selected draft title%s.", length(selected_indexes), ifelse(length(selected_indexes) == 1, "", "s"))
+      return(invisible(NULL))
+    }
+    rows <- article_lab_generate_candidates()
+    selected_ids <- collect_selected_ids(rows, "article_lab_generate_select", snapshot_ids = input$article_lab_generate_selected_snapshot)
+    if (length(selected_ids) == 0) {
+      article_lab_state$notice <- "Select at least one saved title before deleting it."
+      return(invisible(NULL))
+    }
+    placeholders <- paste(rep("?", length(selected_ids)), collapse = ", ")
+    deleted_n <- dbExecute(
+      con,
+      sprintf("UPDATE article_lab_title_candidates SET status = 'archived', promoted = 0, ready_for_human_rating = 0, archived = 1 WHERE candidate_id IN (%s)", placeholders),
+      params = as.list(selected_ids)
+    )
+    article_lab_state$notice <- sprintf("Deleted %s selected title%s from this workflow.", deleted_n, ifelse(deleted_n == 1, "", "s"))
     article_lab_refresh(article_lab_refresh() + 1L)
   }, ignoreInit = TRUE)
 

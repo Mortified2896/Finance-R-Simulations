@@ -49,7 +49,7 @@ load_research_source_by_id <- function(con, source_id) {
   ", params = list(source_id_value))
 }
 
-load_research_angles <- function(con, source_id = NULL) {
+load_research_angles <- function(con, source_id = NULL, include_completed = FALSE) {
   if (!dbExistsTable(con, "research_article_angles")) return(data.frame())
   source_id_value <- research_input_integer(source_id)
   angle_query <- paste0("
@@ -57,10 +57,13 @@ load_research_angles <- function(con, source_id = NULL) {
     FROM research_article_angles a
     LEFT JOIN research_sources s ON s.research_source_id = a.research_source_id
   ")
+  active_filter <- if (isTRUE(include_completed)) "" else "a.status NOT IN ('sent_to_title_lab', 'archived')"
   if (!is.na(source_id_value)) {
-    return(dbGetQuery(con, paste0(angle_query, " WHERE a.research_source_id = ? ORDER BY ", research_angle_sort_sql), params = list(source_id_value)))
+    where_sql <- paste(c("a.research_source_id = ?", active_filter[nzchar(active_filter)]), collapse = " AND ")
+    return(dbGetQuery(con, paste0(angle_query, " WHERE ", where_sql, " ORDER BY ", research_angle_sort_sql), params = list(source_id_value)))
   }
-  dbGetQuery(con, paste0(angle_query, " ORDER BY ", research_angle_sort_sql))
+  where_sql <- if (nzchar(active_filter)) paste0(" WHERE ", active_filter) else ""
+  dbGetQuery(con, paste0(angle_query, where_sql, " ORDER BY ", research_angle_sort_sql))
 }
 
 research_truncate <- function(value, max_chars = 90L) {

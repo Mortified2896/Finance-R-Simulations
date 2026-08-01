@@ -64,12 +64,17 @@ ensure_article_inbox_schema <- function(con) {
       provenance_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      archived_at TEXT,
       UNIQUE(article_candidate_id),
       FOREIGN KEY(article_candidate_id) REFERENCES article_candidates(candidate_id),
       FOREIGN KEY(research_source_id) REFERENCES research_sources(research_source_id),
       FOREIGN KEY(research_angle_id) REFERENCES research_article_angles(research_angle_id)
     )
   ")
+  project_columns <- article_inbox_table_columns(con, "article_projects")
+  if (!("archived_at" %in% project_columns)) {
+    dbExecute(con, "ALTER TABLE article_projects ADD COLUMN archived_at TEXT")
+  }
   dbExecute(con, "
     CREATE TABLE IF NOT EXISTS article_project_evidence_sources (
       article_project_evidence_source_id INTEGER PRIMARY KEY,
