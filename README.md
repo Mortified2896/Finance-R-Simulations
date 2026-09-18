@@ -20,6 +20,8 @@ The root Node package is marked `private` because these scripts are local workfl
 
 ## Common Commands
 
+Run these commands from the repository root after installing dependencies. The JavaScript checks are lightweight and do not require the local Medium database; `validate:medium-v2` expects the ignored SQLite database at `data/db/medium_articles.sqlite`.
+
 Install root Node dependencies:
 
 ```sh
