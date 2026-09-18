@@ -26,7 +26,7 @@ Install root Node dependencies:
 npm install
 ```
 
-Run lightweight JavaScript checks:
+Run the current lightweight JavaScript checks individually:
 
 ```sh
 npm run test:tag-bookmarklet
@@ -34,11 +34,13 @@ npm run test:search-tags
 npm run test:tag-watcher
 ```
 
-Validate the Medium Analysis V2 database workflow:
+Validate the Medium Analysis V2 database workflow when local data is available:
 
 ```sh
 npm run validate:medium-v2
 ```
+
+This validation expects the local SQLite database at `data/db/medium_articles.sqlite`, which is intentionally ignored by Git.
 
 Run the Medium Analysis V2 setup directly when needed:
 
