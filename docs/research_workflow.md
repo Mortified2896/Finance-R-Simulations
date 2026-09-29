@@ -1,26 +1,30 @@
-# Research Workflow
+# Research workflow reference
 
-The research workspace is a lightweight writing-oriented layer currently rendered inside the Article Inbox screen and stored in the local SQLite database. This UI colocation does not replace the planned central Idea Inbox; see [`article_lab_inbox_architecture.md`](article_lab_inbox_architecture.md).
+This describes existing local behavior and useful domain concepts, not a required
+Cloudflare UI or schema. The previous Inbox proposal is
+[historical design](article_lab_inbox_architecture.md).
 
-- `research_sources` is the curated writing inbox for papers and articles worth considering.
-- Raw imported paper data remains separate, including the existing `research_papers` table.
-- `research_article_angles` stores article premises created from a source.
-- Finished sources use `status = 'used'`, keep the article titles/URLs in `used_articles`, and record `finished_at`; they are hidden from the active ranked/unranked queues unless the `used` status filter is selected.
-- Selected angles can be sent to the existing Article Lab title-generation flow from the Shiny app.
+The Shiny research workspace is rendered inside Article Inbox and stored in the
+local SQLite database. Sources are evidence/context; source-derived angles are
+possible article premises, not automatically approved article drafts.
 
-Lower `manual_sort_order` values appear higher in the Article Inbox research workspace. Blank sort values appear after manually ranked items.
+- `research_sources` is the curated writing inbox for papers and articles.
+- Raw imported paper metadata remains separate, including `research_papers`.
+- `research_article_angles` stores premises derived from sources.
+- Finished sources use `status = 'used'`, retain article titles/URLs in `used_articles`, and record `finished_at`; active queues hide them unless selected by the status filter.
+- Selected angles can enter the existing title-generation workflow.
 
-Setup:
+Lower `manual_sort_order` values appear first; blank values follow ranked items.
+These names describe the existing implementation and need not become the new
+application's persistence model.
+
+Existing local setup and optional Vanguard bridge:
 
 ```sh
 Rscript scripts/writing_setup/apply_research_workflow_schema.R
-```
-
-Optional Vanguard bridge:
-
-```sh
 Rscript scripts/writing_setup/import_vanguard_papers_to_research_sources.R --dry-run
 Rscript scripts/writing_setup/import_vanguard_papers_to_research_sources.R
 ```
 
-Both writing scripts create a timestamped backup in `data/db/BackupFolder` before writing unless `--skip-backup` is passed.
+The scripts create a timestamped backup in `data/db/BackupFolder` before writes
+unless `--skip-backup` is passed. They are not setup steps for the review portal.
