@@ -6,7 +6,11 @@ The [PR #7 setup record](cloudflare-setup.md) reports these checks on 2026-09-29
 persistent RTX authentication, a temporary Worker returning HTTP 200 with the
 expected text, D1 creation and `SELECT 1`, zone reads, and deletion of test resources.
 These are recorded infrastructure results, not checks re-run by the docs cleanup.
-No production review app, D1 schema, or Google/OTP login is implemented yet.
+The Article Review MVP is now implemented in `apps/article_lab_web/`, with a
+production Worker, D1 migration and custom domain deployed. See the
+[app README](../apps/article_lab_web/README.md) and
+[Access setup](../apps/article_lab_web/ACCESS_SETUP.md) for current operation.
+Real Google/OTP authentication still requires the one-time dashboard setup.
 
 RTX user: `hermes` on `rtx-omnigent`. Recorded checkout:
 `/home/hermes/workspace/repos/Finance-R-Simulations`. The Mac used `codex-rtx` over
@@ -20,8 +24,8 @@ npm run cf -- d1 list
 ```
 
 Version pins live in the app's `package.json`, lockfile, and `.node-version`.
-There is not yet a runnable frontend or production deploy configuration.
-Once those exist, the authenticated command is `npm run cf -- deploy`.
+Build with `npm run build`; deploy with `npm run deploy`. Both Wrangler and the
+Vite frontend configuration are source-controlled.
 
 ## Credentials and permissions
 
@@ -70,7 +74,7 @@ and capacity before opening registration widely. D1 rejection is not seat remova
 ## Domain and release verification
 
 Existing zone: `moneymattersmedia.com`. Proposed app hostname:
-`feedback.moneymattersmedia.com`, not yet claimed or write-tested by the setup report.
+`feedback.moneymattersmedia.com`, now attached to `article-lab-review` and HTTPS-tested.
 Inspect it before attachment; preserve existing DNS/mail. No registrar migration,
 Tunnel, or HomeLab port forwarding is part of deploying this app.
 
