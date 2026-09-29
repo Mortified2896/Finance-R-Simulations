@@ -1,14 +1,11 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
-import { verifyIdentity, type Identity } from "./auth";
+import { createAuth, authReady, type AuthEnv, type Identity } from "./auth";
 import { renderMarkdown } from "../shared/markdown";
 import type { User, ArticleVersion, Review, Annotation } from "../shared/types";
-export type Env = {
-  DB: D1Database;
+export type Env = AuthEnv & {
   ASSETS: Fetcher;
-  ACCESS_TEAM_DOMAIN?: string;
-  ACCESS_AUD?: string;
   BOOTSTRAP_ADMIN_EMAIL?: string;
 };
 type AppEnv = { Bindings: Env; Variables: { user: User } };
@@ -26,6 +23,13 @@ export function createApp(
   const stmt = (db: D1Database, sql: string, ...args: unknown[]) =>
     db.prepare(sql).bind(...args);
   app.use("*", async (c, next) => {
+    const url = new URL(c.req.url);
+    if (url.hostname.endsWith(".workers.dev") && c.env.BETTER_AUTH_URL) {
+      return c.redirect(
+        new URL(url.pathname + url.search, c.env.BETTER_AUTH_URL).href,
+        308,
+      );
+    }
     await next();
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
@@ -49,6 +53,19 @@ export function createApp(
       err instanceof HTTPException ? err.status : 500,
     ),
   );
+  app.get("/api/auth-config", (c) => c.json({ ready: authReady(c.env) }));
+  // Auth owns its callback/state validation; mount before application approval.
+  app.on(["GET", "POST"], "/api/auth/*", async (c) => {
+    if (!authReady(c.env))
+      return c.json({ error: "Google sign-in setup is not complete." }, 503);
+    const response = await createAuth(c.env).handler(c.req.raw);
+    if (response.status >= 500)
+      return c.json(
+        { error: "Sign-in failed. Please retry or contact the administrator." },
+        500,
+      );
+    return response;
+  });
   app.use("/api/*", async (c, next) => {
     if (!["GET", "HEAD"].includes(c.req.method)) {
       if (c.req.header("Origin") !== new URL(c.req.url).origin)
@@ -56,28 +73,35 @@ export function createApp(
       if (!c.req.header("Content-Type")?.startsWith("application/json"))
         fail(400, "JSON request required.");
     }
-    if (!resolveIdentity && (!c.env.ACCESS_TEAM_DOMAIN || !c.env.ACCESS_AUD))
-      fail(
-        503,
-        "Sign-in setup is not complete. The administrator must configure Cloudflare Access.",
-      );
-    const token = c.req.header("Cf-Access-Jwt-Assertion");
-    if (!resolveIdentity && !token)
-      fail(401, "Sign in with Google or email through Cloudflare Access.");
     let identity: Identity;
-    try {
-      identity = resolveIdentity
-        ? await resolveIdentity(c.req.raw)
-        : await verifyIdentity(
-            token!,
-            c.env.ACCESS_TEAM_DOMAIN!,
-            c.env.ACCESS_AUD!,
-          );
-    } catch {
-      return c.json(
-        { error: "Your sign-in could not be verified. Sign in again." },
-        401,
-      );
+    if (resolveIdentity) identity = await resolveIdentity(c.req.raw);
+    else {
+      if (!authReady(c.env))
+        return c.json({ error: "Google sign-in setup is not complete." }, 503);
+      const sessionResponse = await createAuth(c.env).api.getSession({
+        headers: c.req.raw.headers,
+        asResponse: true,
+      });
+      // Preserve normal Better Auth refresh cookies on our protected API calls.
+      for (const cookie of sessionResponse.headers.getSetCookie())
+        c.header("Set-Cookie", cookie, { append: true });
+      if (!sessionResponse.ok)
+        return c.json({ error: "Sign-in could not be verified." }, 401);
+      const session = (await sessionResponse.json()) as {
+        user?: {
+          id: string;
+          email: string;
+          emailVerified: boolean;
+          name: string;
+        };
+      } | null;
+      if (!session?.user?.emailVerified)
+        return c.json({ error: "Sign in with Google to continue." }, 401);
+      identity = {
+        authId: session.user.id,
+        email: session.user.email.trim().toLowerCase(),
+        name: session.user.name,
+      };
     }
     const db = c.env.DB,
       t = now();
@@ -86,8 +110,9 @@ export function createApp(
       identity.email === c.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
     await stmt(
       db,
-      `INSERT INTO users(id,email,display_name,status,role,created_at,approved_at,last_login_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET last_login_at=excluded.last_login_at`,
+      `INSERT INTO users(id,auth_user_id,email,display_name,status,role,created_at,approved_at,last_login_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(auth_user_id) DO UPDATE SET email=excluded.email,display_name=excluded.display_name,last_login_at=excluded.last_login_at ON CONFLICT(email) DO UPDATE SET auth_user_id=COALESCE(users.auth_user_id,excluded.auth_user_id),last_login_at=excluded.last_login_at WHERE users.auth_user_id IS NULL OR users.auth_user_id=excluded.auth_user_id`,
       crypto.randomUUID(),
+      identity.authId,
       identity.email,
       identity.name,
       bootstrap ? "approved" : "pending",
@@ -98,16 +123,17 @@ export function createApp(
     ).run();
     const user = await stmt(
       db,
-      "SELECT * FROM users WHERE email=?",
-      identity.email,
+      "SELECT * FROM users WHERE auth_user_id=?",
+      identity.authId,
     ).first<User>();
-    await stmt(
-      db,
-      "INSERT INTO access_identities(issuer,subject,user_id) VALUES(?,?,?) ON CONFLICT DO NOTHING",
-      identity.issuer,
-      identity.subject,
-      user!.id,
-    ).run();
+    if (!user)
+      return c.json(
+        {
+          error:
+            "Account identity could not be linked. Contact the administrator.",
+        },
+        403,
+      );
     c.set("user", user!);
     await next();
   });

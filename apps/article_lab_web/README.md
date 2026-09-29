@@ -1,12 +1,12 @@
 # Article Review — Article Lab
 
 React + TypeScript / Vite frontend, Hono Worker API, Cloudflare Static Assets,
-D1 persistence, and Cloudflare Access authentication. No HomeLab service or
+D1 persistence, and Google OAuth through Better Auth. No HomeLab service or
 Tunnel is involved. The Shiny app remains untouched reference material.
 
 Live hostname: **https://feedback.moneymattersmedia.com**.
-See [the login handoff](ACCESS_SETUP.md) before inviting reviewers. The deployed
-API fails closed until its Access issuer/audience are configured.
+See [Google setup](GOOGLE_SETUP.md) before inviting reviewers. The deployed
+API fails closed until its Google OAuth client is configured.
 
 ## Local development
 
@@ -22,19 +22,21 @@ The Node harness binds **only 127.0.0.1**, displays LOCAL DEVELOPMENT ONLY on it
 account picker, and offers synthetic owner/Jane/Paul identities. It runs the
 same API against local workerd D1 stored in ignored `.local/d1`. It is not the
 production entry point; no deployed flag, environment variable, cookie, or
-header can turn this harness on. `worker/index.ts` always exports the Access-
-validated application. Never expose the local harness through a reverse proxy.
+header can turn this harness on. `worker/index.ts` always exports the Better Auth
+session-validated application. Never expose the local harness through a reverse proxy.
 
-`npm run dev` instead runs Wrangler with real JWT validation. Configure ignored
-`.dev.vars` with the Access settings if using that mode, and apply the migration
-locally with `npx wrangler d1 migrations apply article-lab-review --local`.
+`npm run dev` instead runs the actual Worker with Better Auth. Use ignored
+`.dev.vars` for local OAuth secrets, an explicitly registered local callback and
+base URL, and local D1 migrations. The loopback synthetic harness requires no
+Google secrets; it is deliberately separate from production login.
 
 ## Checks
 
 ```sh
 npm run build        # strict TypeScript + frontend bundle
-npm test             # real local D1 + cryptographic JWT tests
+npm test             # real local D1 + Better Auth session/OAuth tests
 npm run test:e2e      # Playwright desktop/mobile reviewer/admin flow
+npm run test:worker  # bundled auth runs in actual workerd + D1
 npm run format:check
 npm audit
 ```
@@ -64,21 +66,35 @@ resource; no additional remote development database is needed for this MVP.
 
 ## Data and security
 
-`migrations/0001_review.sql` creates users, Access identity links, articles,
-immutable article versions, assignments, reviews, and annotations. Internal
-UUIDs are foreign keys; normalized verified email merges Google/OTP accounts.
-Display name, creation/approval/login times, independent role/status, and Access
-subject/issuer links are retained. Login never resets a rejected/disabled account.
-Admin can approve/reject/disable/re-enable reviewers. Role elevation is restricted
-to explicit owner bootstrap, not a public UI.
+`migrations/0001_review.sql` defines the review domain; `0002_better_auth.sql`
+adds Better Auth's generated `auth_user`, `auth_account`, `auth_session`,
+`auth_verification` (OAuth state, not email OTP), and `auth_rate_limit` tables.
+The application `users.auth_user_id` links to the auth identity. Review ownership
+continues to use independent internal UUIDs, so providers can change without
+rewriting review foreign keys. The standard auth account schema includes an
+unused nullable password field; password authentication is disabled.
 
-Every API request validates an RS256 Access JWT, trusted team issuer, application
-audience, expiration and identity claims using `jose` and Cloudflare's rotating
-JWKS. Browser email headers are ignored. Mutation requests require same-origin
-JSON. Authorization is enforced in the Worker, including assignment ownership,
-approved status and admin roles. Queries bind parameters. Request size and all
-editable fields are bounded; failures return persistent UI errors without stack
-traces. CSP, no-store API responses, framing and MIME protections apply.
+Better Auth 1.7.6 uses its native D1/Kysely adapter inside the Worker. Sessions
+last 30 days, refresh after a day, use Secure/HttpOnly/SameSite=Lax host cookies,
+and are checked against D1 rather than cookie-cached. Its normal OAuth state,
+CSRF and trusted-origin checks are enabled explicitly. Google tokens are encrypted
+at rest. Native schema generation is reproducible with
+`npx tsx tools/generate-auth-schema.ts`; migrations are applied through Wrangler,
+never automatically during a public request. Normal session refresh cookies are
+forwarded from the API to the browser.
+
+Every protected API resolves the Better Auth session server-side, requires a
+verified email, and reads current application approval/role. Browser identity
+headers and the former Access headers are ignored. Login never resets approval
+or rejection. Admin can approve/reject/disable/re-enable reviewers; only explicit
+bootstrap can establish the owner admin. Account deletion and provider linking
+UI are outside this MVP.
+
+Mutation requests require same-origin JSON. Assignment ownership, approved status
+and admin roles are enforced server-side. Queries bind parameters. Request size
+and editable fields are bounded; failures stay visible without stack traces.
+CSP, no-store API responses, framing and MIME protections apply. Auth endpoints
+use Better Auth's D1-backed rate limits. No auth/deployment secret enters React.
 
 Markdown is parsed without raw HTML, sanitized to a safe HTML tree, and stored
 alongside its canonical DOM text. Images/embeds are excluded; unsafe links and
@@ -110,7 +126,7 @@ assignment revocation, AI generation, and legacy workflow migration are deferred
 ## Main paths
 
 - `src/`: inbox, review, admin, DOM anchoring, serialized autosave.
-- `worker/`: Access verification, validated API, D1 authorization/transactions.
+- `worker/`: Better Auth sessions, validated API, D1 authorization/transactions.
 - `shared/`: API shapes and safe version rendering.
 - `migrations/`: source-controlled D1 schema.
 - `tools/local.ts`: isolated synthetic identity harness.

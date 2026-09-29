@@ -25,4 +25,8 @@
       "custom_domain": true,
     },
   ],
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "BETTER_AUTH_URL": "https://feedback.moneymattersmedia.com",
+  },
 }

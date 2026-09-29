@@ -7,11 +7,21 @@ import { renderMarkdown } from "../shared/markdown";
 let mf: Miniflare, env: Env;
 const app = createApp(async (req) => {
   const email = req.headers.get("test-user") ?? "jane@example.test";
+  await env.DB.prepare(
+    "INSERT INTO auth_user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,1,?,?) ON CONFLICT DO NOTHING",
+  )
+    .bind(
+      email.toLowerCase(),
+      email,
+      email.toLowerCase(),
+      Date.now(),
+      Date.now(),
+    )
+    .run();
   return {
     email: email.toLowerCase(),
     name: email,
-    subject: req.headers.get("test-sub") ?? email,
-    issuer: "test",
+    authId: email.toLowerCase(),
   };
 });
 async function call(
@@ -46,11 +56,18 @@ beforeAll(async () => {
   );
   env = {
     DB: (await mf.getD1Database("DB")) as unknown as D1Database,
+    BETTER_AUTH_URL: "https://review.test",
     BOOTSTRAP_ADMIN_EMAIL: "owner@example.test",
     ASSETS: {} as Fetcher,
   };
   await env.DB.exec(
     (await readFile("migrations/0001_review.sql", "utf8")).replace(/\n/g, " "),
+  );
+  await env.DB.exec(
+    (await readFile("migrations/0002_better_auth.sql", "utf8")).replace(
+      /\n/g,
+      " ",
+    ),
   );
 });
 afterAll(async () => {
@@ -380,8 +397,9 @@ describe("D1 review lifecycle and authorization", () => {
     expect(r.status).toBe(503);
     r = await prod.fetch(new Request("https://review.test/api/me"), {
       ...env,
-      ACCESS_TEAM_DOMAIN: "https://example.cloudflareaccess.com",
-      ACCESS_AUD: "aud",
+      BETTER_AUTH_SECRET: "test-secret-which-is-at-least-32-characters",
+      GOOGLE_CLIENT_ID: "test",
+      GOOGLE_CLIENT_SECRET: "test",
     });
     expect(r.status).toBe(401);
   });

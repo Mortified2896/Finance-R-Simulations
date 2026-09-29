@@ -22,11 +22,28 @@ if (!exists) {
   const sql = await readFile("migrations/0001_review.sql", "utf8");
   await DB.exec(sql.replace(/\n/g, " "));
 }
+if (
+  !(await DB.prepare(
+    "SELECT name FROM sqlite_master WHERE name='auth_user'",
+  ).first())
+)
+  await DB.exec(
+    (await readFile("migrations/0002_better_auth.sql", "utf8")).replace(
+      /\n/g,
+      " ",
+    ),
+  );
 const accounts = [
   "owner@example.test",
   "jane@example.test",
   "paul@example.test",
 ];
+for (const email of accounts)
+  await DB.prepare(
+    "INSERT INTO auth_user(id,name,email,emailVerified,createdAt,updatedAt) VALUES(?,?,?,1,?,?) ON CONFLICT DO NOTHING",
+  )
+    .bind(email, email, email, Date.now(), Date.now())
+    .run();
 const app = createApp(async (request) => {
   const cookie = request.headers.get("cookie") ?? "";
   const email = decodeURIComponent(
@@ -36,12 +53,12 @@ const app = createApp(async (request) => {
   return {
     email,
     name: email.split("@")[0],
-    subject: email,
-    issuer: "local-harness",
+    authId: email,
   };
 });
 const env = {
   DB,
+  BETTER_AUTH_URL: `http://127.0.0.1:${port}`,
   BOOTSTRAP_ADMIN_EMAIL: accounts[0],
   ASSETS: {
     fetch: async (request: Request) => {

@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import type { User, Assignment, ReviewDetail } from "../shared/types";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { Admin } from "./Admin";
 import { ReviewPage } from "./ReviewPage";
+import { createAuthClient } from "better-auth/react";
+const authClient = createAuthClient();
 export function App() {
   const [user, setUser] = useState<User | null>(null),
     [loading, setLoading] = useState(true),
@@ -19,19 +21,57 @@ export function App() {
       if (data.user.status === "approved")
         setAssignments(await api<Assignment[]>("/assignments"));
     } catch (e) {
-      setError((e as Error).message);
+      if (e instanceof ApiError && e.status === 401) {
+        setUser(null);
+        setAssignments([]);
+      } else setError((e as Error).message);
     } finally {
       setLoading(false);
     }
   }
   useEffect(() => {
     void load();
+    if (new URLSearchParams(location.search).has("error"))
+      setError("Google sign-in was not completed. Please try again.");
   }, []);
   async function open(id: string) {
     setBusy(true);
     setError("");
     try {
       setDetail(await api<ReviewDetail>(`/reviews/${id}/open`, "POST", {}));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function signIn() {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await authClient.signIn.social({
+        provider: "google",
+        callbackURL: "/",
+        errorCallbackURL: "/?error=signin",
+      });
+      if (result.error)
+        throw new Error(result.error.message ?? "Google sign-in failed.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function signOut() {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await authClient.signOut();
+      if (result.error)
+        throw new Error(result.error.message ?? "Sign out failed.");
+      setUser(null);
+      setAssignments([]);
+      setAdmin(false);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -66,7 +106,15 @@ export function App() {
               )}
             </>
           )}
-          {user && !detail && <a href="/cdn-cgi/access/logout">Sign out</a>}
+          {user && !detail && (
+            <button
+              className="quiet"
+              disabled={busy}
+              onClick={() => void signOut()}
+            >
+              Sign out
+            </button>
+          )}
         </nav>
       </header>
       <main>
@@ -83,14 +131,10 @@ export function App() {
           <p>Loading your account…</p>
         ) : !user ? (
           <section className="welcome">
-            <h1>A thoughtful second look.</h1>
-            <p>
-              Sign in with Google or an email code to review articles and share
-              your feedback.
-            </p>
-            <a className="button" href="/">
-              Continue to sign in
-            </a>
+            <h1>Article Lab</h1>
+            <button disabled={busy} onClick={() => void signIn()}>
+              Continue with Google
+            </button>
           </section>
         ) : user.status !== "approved" ? (
           <section className="welcome">

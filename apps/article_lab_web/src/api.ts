@@ -1,3 +1,11 @@
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
 export async function api<T>(
   path: string,
   method = "GET",
@@ -24,6 +32,7 @@ export async function api<T>(
       "Your session may have expired. Keep this page open, sign in in another tab, then retry saving.",
     );
   }
-  if (!response.ok) throw new Error(result.error ?? "Request failed.");
+  if (!response.ok)
+    throw new ApiError(result.error ?? "Request failed.", response.status);
   return result as T;
 }
