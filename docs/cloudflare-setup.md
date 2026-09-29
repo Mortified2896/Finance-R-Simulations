@@ -1,7 +1,70 @@
 # Cloudflare infrastructure setup and Mac handoff
 
-Status on 2026-09-29: **RTX tooling prepared; Cloudflare authentication and live
-verification are blocked on Mac/browser account access. Not deployment-ready yet.**
+Status on 2026-09-29: **Scoped authentication installed and verified on RTX;
+Worker deployment/HTTP response and D1 creation/query verified; temporary resources
+removed. The migrated zone is active. Production application and custom-domain
+write verification remain outside this completed smoke test.**
+
+## Completed Mac continuation (2026-09-29)
+
+The Mac clone was clean on `main` at `cd243f7`; its unrelated work was preserved.
+The existing strict-host-checked `codex-rtx` SSH alias reached `hermes` on
+`rtx-omnigent`. Work continued in the existing RTX setup branch, without changing
+HomeLab routing, services, firewall rules, or exposing an origin.
+
+The user explicitly authorized moving `moneymattersmedia.com` from the previous
+Apple-login Cloudflare account to the email-login account, superseding the initial
+no-cutover handoff below. All 12 DNS records were reconstructed from the source UI
+and compared with both source and destination authoritative nameservers, including
+TTL 600 and DNS-only status. Tuta MX, SPF, DKIM, DMARC, verification, MTA-STS,
+existing A records, and both ACME challenges were preserved. No missing apex/www
+address was invented. Registrar DNSSEC had no DS records before the cutover.
+Porkbun nameservers were changed to the destination's assigned pair after explicit
+approval; registrar reload, parent registry, public resolvers, and Cloudflare's
+active-zone status confirmed the change. Existing mail routing still targets Tuta;
+actual email sending/receipt in the Tuta app has not been tested.
+
+After the account email was verified, an account-owned token was issued with:
+
+- Single destination account: Workers Admin and D1 Write.
+- Single migrated zone: Workers Routes Write, DNS Read, and Zone Read.
+- Expiration: December 29, 2026 (90 days); no IP restriction.
+- No DNS Write, KV, R2, billing, membership, token-management, or Tunnel grants.
+
+The user installed the token through the existing hidden-input SSH installer.
+No secret was passed through chat or command arguments. The credential directory
+is mode 700 and the file mode 600, both owned by `hermes`. Account/zone IDs and raw
+inventories remain outside Git. The token verification endpoint reports active.
+A fresh SSH invocation of `npm run cf -- d1 list` succeeded without browser login
+or manually exporting credentials.
+
+Live verification results:
+
+- Wrangler deployed a uniquely named temporary `article-lab-verify-*` Worker
+  from ignored `tmp/` through the credential launcher. A request from RTX with a
+  browser-style User-Agent returned HTTP 200 and exactly
+  `Cloudflare deployment verification OK`. The initial Python default User-Agent
+  request returned HTTP 403; the successful response is the tested HTTP path.
+- Wrangler created a uniquely named temporary D1 database. A direct authenticated
+  D1 API query `SELECT 1 AS verification` returned `[{"verification": 1}]`.
+- Authenticated reads succeeded for the active selected zone, its 12 DNS records,
+  Worker routes, account Worker custom domains, Workers, and D1 inventories.
+- Wrangler deleted the test D1 database. Its Worker deletion removed the Worker
+  but then exited with a KV inventory permission error (API code 10000), because
+  the token intentionally has no KV access. Subsequent authoritative API lists
+  confirmed zero Workers and zero D1 databases remain. No extra scope was granted.
+- Literal-token scanning of the checked repository files (excluding dependency
+  and Git internals), Wrangler logs, and existing shell histories found zero
+  matches outside the credential file. This is bounded evidence, not an audit of
+  every process or file on the host.
+
+No production Worker, D1 schema, feedback application, production route, Tunnel,
+or HomeLab ingress was created. Route/custom-domain reads and the issued policy
+are verified; route/custom-domain writes have not been exercised. Preserve the
+old account until the user is satisfied with mail/application acceptance.
+
+The sections below retain the original tooling preparation and handoff context;
+statements about missing credentials describe the initial state, not current state.
 
 ## Verified RTX state
 
@@ -123,10 +186,10 @@ Current official references, checked 2026-09-29:
   no HomeLab ingress. Revoke the automation token independently of normal login
   when it is no longer needed.
 
-## Outstanding acceptance items
+## Remaining acceptance and maintenance
 
-Mac Git branch/HEAD/status, account/domain/zone, delegation, resource inventory,
-actual token scope/storage, Worker deployment, D1 write access, and custom-domain
-capability are **unverified**. No password or Global API Key was used; no token
-exists to leak from this setup so far. No existing DNS or HomeLab networking was
-modified. The acceptance criterion remains unmet until the live checks succeed.
+Infrastructure smoke tests are complete as recorded above. Actual Tuta mail
+send/receive acceptance and custom-domain write capability remain untested.
+Production application work was explicitly excluded. Rotate the deployment token
+before December 29, 2026, and revoke it if RTX automation is no longer needed.
+Do not merge this PR or delete the previous Cloudflare account without user direction.
