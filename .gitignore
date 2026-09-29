@@ -47,6 +47,9 @@ Rplots.pdf
 __pycache__/
 *.pyc
 node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
 .opencode/vendor/
 
 # Project-specific private/generated data

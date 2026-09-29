@@ -1,0 +1,12 @@
+{
+  "name": "article-lab-cloudflare-tooling",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Infrastructure tooling only; the React/Worker application is not implemented.",
+  "engines": { "node": ">=22.0.0" },
+  "scripts": {
+    "cf": "python3 tools/cloudflare.py wrangler",
+    "cf:install-credential": "python3 tools/cloudflare.py install"
+  },
+  "devDependencies": { "wrangler": "4.143.0" }
+}
