@@ -8,6 +8,8 @@ import re
 import stat
 import sys
 import warnings
+import urllib.request
+import urllib.error
 
 PROJECT = Path(__file__).resolve().parents[1]
 DIRECTORY = Path.home() / ".config" / "finance-r-simulations"
@@ -60,6 +62,32 @@ def install():
     print(f"Credential saved privately to {CREDENTIAL}. Authentication is not yet verified.")
 
 
+def review_preflight():
+    """Read only deployment inventory; never print credentials or raw responses."""
+    check_private(DIRECTORY, directory=True)
+    check_private(CREDENTIAL)
+    data = validate(json.loads(CREDENTIAL.read_text()))
+    def get(path):
+        req = urllib.request.Request("https://api.cloudflare.com/client/v4/" + path,
+            headers={"Authorization": "Bearer " + data["api_token"]})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json.load(response)
+            if not result.get("success"):
+                fail("Cloudflare inventory request failed.")
+            return result["result"]
+        except urllib.error.HTTPError as error:
+            fail(f"Cloudflare inventory HTTP {error.code}; credentials were not printed.")
+    databases = get(f"accounts/{data['account_id']}/d1/database")
+    print(json.dumps({"databases": [{"name": d["name"], "uuid": d["uuid"]}
+        for d in databases if d["name"].startswith("article-lab-review")]}))
+    records = get(f"zones/{data['zone_id']}/dns_records?name=feedback.moneymattersmedia.com")
+    print(json.dumps({"feedback_dns_records": [{"name": r["name"], "type": r["type"]} for r in records]}))
+    domains = get(f"accounts/{data['account_id']}/workers/domains")
+    print(json.dumps({"feedback_worker_domains": [{"hostname": d["hostname"], "service": d["service"]}
+        for d in domains if d["hostname"] == "feedback.moneymattersmedia.com"]}))
+
+
 def wrangler(arguments):
     if not arguments:
         fail("Supply a Wrangler command, for example: npm run cf -- d1 list")
@@ -81,7 +109,7 @@ def wrangler(arguments):
     environment.update(CLOUDFLARE_API_TOKEN=data["api_token"],
                        CLOUDFLARE_ACCOUNT_ID=data["account_id"],
                        CLOUDFLARE_ZONE_ID=data["zone_id"],
-                       WRANGLER_SEND_METRICS="false", WRANGLER_LOG="info")
+                       WRANGLER_SEND_METRICS="false", WRANGLER_LOG="log", WRANGLER_WRITE_LOGS="false")
     os.umask(0o077)
     os.execve(binary, [str(binary), *arguments], environment)
 
@@ -90,6 +118,8 @@ if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["install"]:
             install()
+        elif sys.argv[1:] == ["review-preflight"]:
+            review_preflight()
         elif sys.argv[1:2] == ["wrangler"]:
             wrangler(sys.argv[2:])
         else:

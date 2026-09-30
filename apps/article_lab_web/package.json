@@ -1,12 +1,54 @@
 {
-  "name": "article-lab-cloudflare-tooling",
+  "name": "article-lab-review",
   "private": true,
   "version": "0.0.0",
-  "description": "Infrastructure tooling only; the React/Worker application is not implemented.",
-  "engines": { "node": ">=22.0.0" },
+  "description": "Cloudflare Article Review portal",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "cf": "python3 tools/cloudflare.py wrangler",
-    "cf:install-credential": "python3 tools/cloudflare.py install"
+    "cf:install-credential": "python3 tools/cloudflare.py install",
+    "build": "tsc --noEmit && vite build",
+    "dev": "npm run build && wrangler dev --ip 127.0.0.1 --port 5173",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "deploy": "npm run build && npm run cf -- deploy",
+    "dev:local": "npm run build && tsx tools/local.ts",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"worker/*.ts\" \"shared/*.ts\" \"tests/**/*.ts\" \"tools/local.ts\" \"*.{json,jsonc,ts,html}\"",
+    "test:worker": "wrangler deploy --dry-run --outdir .local/worker && tsx tools/verify-worker.ts"
   },
-  "devDependencies": { "wrangler": "4.143.0" }
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260929.1",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "better-call": "^1.4.0",
+    "miniflare": "^5.20260926.0-alpha",
+    "prettier": "^3.9.9",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2",
+    "wrangler": "4.143.0"
+  },
+  "dependencies": {
+    "better-auth": "1.7.6",
+    "hast-util-to-html": "^9.0.5",
+    "hast-util-to-string": "^3.0.1",
+    "hono": "^4.13.11",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "unified": "^11.0.5",
+    "zod": "^4.6.5"
+  },
+  "type": "module",
+  "overrides": {
+    "undici": "^7.29.1"
+  }
 }
