@@ -38,6 +38,7 @@ test("admin approval, assigned passage review, saved return, submit and admin in
   await admin
     .getByLabel("Subtitle", { exact: true })
     .fill("A synthetic article for review");
+  await admin.getByRole("tab", { name: "Markdown source", exact: true }).click();
   await admin
     .getByLabel("Markdown", { exact: true })
     .fill(

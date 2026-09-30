@@ -3,9 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "description": "Cloudflare Article Review portal",
-  "engines": {
-    "node": ">=22.0.0"
-  },
+  "engines": { "node": ">=22.0.0" },
   "scripts": {
     "cf": "python3 tools/cloudflare.py wrangler",
     "cf:install-credential": "python3 tools/cloudflare.py install",
@@ -35,6 +33,7 @@
     "wrangler": "4.143.0"
   },
   "dependencies": {
+    "@mdxeditor/editor": "4.3.1",
     "better-auth": "1.7.6",
     "hast-util-to-html": "^9.0.5",
     "hast-util-to-string": "^3.0.1",
@@ -48,7 +47,5 @@
     "zod": "^4.6.5"
   },
   "type": "module",
-  "overrides": {
-    "undici": "^7.29.1"
-  }
+  "overrides": { "undici": "^7.29.1" }
 }
