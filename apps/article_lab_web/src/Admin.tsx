@@ -7,7 +7,27 @@ import type {
 } from "../shared/types";
 import { api } from "./api";
 import { MarkdownComposer } from "./editor/MarkdownComposer";
-export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
+export function Admin({
+  onReview,
+  onDirtyChange,
+}: {
+  onReview: (d: ReviewDetail) => void;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [metadataDirty, setMetadataDirty] = useState(false);
+  useEffect(() => {
+    onDirtyChange(draftDirty || metadataDirty);
+  }, [draftDirty, metadataDirty, onDirtyChange]);
+  useEffect(() => {
+    if (!metadataDirty) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [metadataDirty]);
   const [users, setUsers] = useState<User[]>([]),
     [versions, setVersions] = useState<ArticleVersion[]>([]),
     [assignments, setAssignments] = useState<Assignment[]>([]),
@@ -56,6 +76,8 @@ export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
         body: data.get("body"),
       });
       form.reset();
+      setMetadataDirty(false);
+      setDraftDirty(false);
       setCanPublish(false);
       setComposerRevision((revision) => revision + 1);
     }, "Immutable article version published. Assign it below.");
@@ -104,24 +126,55 @@ export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
                       First seen: {new Date(u.created_at).toLocaleString()}
                     </small>
                   </td>
-                  <td>{u.status} · {u.role}</td>
+                  <td>
+                    {u.status} · {u.role}
+                  </td>
                   <td>
                     {u.role === "reviewer" && (
                       <div className="actions">
                         {u.status !== "approved" && (
-                          <button disabled={busy} onClick={() => void action(async () => {
-                            await api(`/admin/users/${u.id}`, "PATCH", { status: "approved" });
-                          }, "Reviewer approved.")}>Approve</button>
+                          <button
+                            disabled={busy}
+                            onClick={() =>
+                              void action(async () => {
+                                await api(`/admin/users/${u.id}`, "PATCH", {
+                                  status: "approved",
+                                });
+                              }, "Reviewer approved.")
+                            }
+                          >
+                            Approve
+                          </button>
                         )}
                         {u.status !== "rejected" && (
-                          <button className="quiet" disabled={busy} onClick={() => void action(async () => {
-                            await api(`/admin/users/${u.id}`, "PATCH", { status: "rejected" });
-                          }, "Reviewer rejected.")}>Reject</button>
+                          <button
+                            className="quiet"
+                            disabled={busy}
+                            onClick={() =>
+                              void action(async () => {
+                                await api(`/admin/users/${u.id}`, "PATCH", {
+                                  status: "rejected",
+                                });
+                              }, "Reviewer rejected.")
+                            }
+                          >
+                            Reject
+                          </button>
                         )}
                         {u.status === "approved" && (
-                          <button className="quiet" disabled={busy} onClick={() => void action(async () => {
-                            await api(`/admin/users/${u.id}`, "PATCH", { status: "disabled" });
-                          }, "Reviewer disabled.")}>Disable</button>
+                          <button
+                            className="quiet"
+                            disabled={busy}
+                            onClick={() =>
+                              void action(async () => {
+                                await api(`/admin/users/${u.id}`, "PATCH", {
+                                  status: "disabled",
+                                });
+                              }, "Reviewer disabled.")
+                            }
+                          >
+                            Disable
+                          </button>
                         )}
                       </div>
                     )}
@@ -138,50 +191,57 @@ export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
           Published text stays fixed. Changes create a new version with its own
           assignments and reviews.
         </p>
-        <form onSubmit={publish}>
+        <form onSubmit={publish} onChange={() => setMetadataDirty(true)}>
           <label>
             Article project
-            <select name="article_id">
+            <select name="article_id" disabled={busy}>
               <option value="">Create a new article</option>
               {articles.map((v) => (
-                <option key={v.article_id} value={v.article_id}>{v.title}</option>
+                <option key={v.article_id} value={v.article_id}>
+                  {v.title}
+                </option>
               ))}
             </select>
           </label>
           <label>
             Title
-            <input name="title" required maxLength={250} />
+            <input name="title" required maxLength={250} disabled={busy} />
           </label>
           <label>
             Subtitle
-            <input name="subtitle" maxLength={500} />
+            <input name="subtitle" maxLength={500} disabled={busy} />
           </label>
           <MarkdownComposer
             key={composerRevision}
             disabled={busy}
             onValidityChange={setCanPublish}
+            onDirtyChange={setDraftDirty}
           />
           <button disabled={busy || !canPublish}>Publish version</button>
         </form>
       </section>
       <section className="panel">
         <h2>Assign a review</h2>
-        <form onSubmit={(e) => {
-          e.preventDefault();
-          const data = new FormData(e.currentTarget);
-          void action(async () => {
-            await api("/admin/assignments", "POST", {
-              version_id: data.get("version_id"),
-              user_id: data.get("user_id"),
-            });
-          }, "Article assigned.");
-        }}>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const data = new FormData(e.currentTarget);
+            void action(async () => {
+              await api("/admin/assignments", "POST", {
+                version_id: data.get("version_id"),
+                user_id: data.get("user_id"),
+              });
+            }, "Article assigned.");
+          }}
+        >
           <label>
             Article version
             <select name="version_id" required>
               <option value="">Choose a version</option>
               {versions.map((v) => (
-                <option value={v.id} key={v.id}>{v.title} · v{v.version_number}</option>
+                <option value={v.id} key={v.id}>
+                  {v.title} · v{v.version_number}
+                </option>
               ))}
             </select>
           </label>
@@ -189,9 +249,13 @@ export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
             Reviewer
             <select name="user_id" required>
               <option value="">Choose an approved reviewer</option>
-              {users.filter((u) => u.status === "approved").map((u) => (
-                <option value={u.id} key={u.id}>{u.display_name} · {u.email}</option>
-              ))}
+              {users
+                .filter((u) => u.status === "approved")
+                .map((u) => (
+                  <option value={u.id} key={u.id}>
+                    {u.display_name} · {u.email}
+                  </option>
+                ))}
             </select>
           </label>
           <button disabled={busy || !versions.length}>Assign article</button>
@@ -206,20 +270,44 @@ export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
             <table>
               <thead>
                 <tr>
-                  <th>Article</th><th>Reviewer</th><th>Status</th><th>Feedback</th>
+                  <th>Article</th>
+                  <th>Reviewer</th>
+                  <th>Status</th>
+                  <th>Feedback</th>
                 </tr>
               </thead>
               <tbody>
                 {assignments.map((a) => (
                   <tr key={a.id}>
-                    <td>{a.title}<br /><small>Version {a.version_number}</small></td>
-                    <td>{a.display_name}<br /><small>{a.email}</small></td>
+                    <td>
+                      {a.title}
+                      <br />
+                      <small>Version {a.version_number}</small>
+                    </td>
+                    <td>
+                      {a.display_name}
+                      <br />
+                      <small>{a.email}</small>
+                    </td>
                     <td>{a.status}</td>
                     <td>
                       {a.status === "submitted" && (
-                        <button disabled={busy} onClick={() => void action(async () => onReview(
-                          await api<ReviewDetail>(`/admin/reviews/${a.id}`),
-                        ), "")}>View feedback</button>
+                        <button
+                          disabled={busy}
+                          onClick={() =>
+                            void action(
+                              async () =>
+                                onReview(
+                                  await api<ReviewDetail>(
+                                    `/admin/reviews/${a.id}`,
+                                  ),
+                                ),
+                              "",
+                            )
+                          }
+                        >
+                          View feedback
+                        </button>
                       )}
                     </td>
                   </tr>

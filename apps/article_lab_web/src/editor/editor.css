@@ -1,23 +1,98 @@
-.markdown-composer { min-width: 0; margin: 1rem 0; }
-.composer-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1rem; }
-.composer-heading h3 { margin: 0; }
-.composer-heading span, .composer-save-note { font-size: .88rem; color: #526071; }
-.composer-actions, .composer-modes { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
-.composer-actions { margin: .8rem 0; }
-.markdown-composer .composer-modes button[aria-selected="true"] { background: #153b4a; color: #fff; }
-.markdown-composer .composer-modes button[aria-selected="false"] { background: #f3f5f6; color: #263846; }
-.markdown-composer .composer-import { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; margin: 0; font-size: .88rem; }
-.markdown-composer .composer-import input { max-width: 14rem; padding: .35rem; }
-.markdown-composer .mdxeditor { border: 1px solid #cbd5dc; border-radius: .6rem; background: #fff; color: #182a36; }
-.markdown-composer .mdxeditor-toolbar { flex-wrap: wrap; border-radius: .6rem .6rem 0 0; }
-.markdown-composer .mdxeditor-toolbar button { min-width: 2rem; min-height: 2rem; }
-.markdown-composer .article-draft-content { min-height: 20rem; padding: 1.3rem; }
-.markdown-composer .article-draft-content:focus { outline: 2px solid #38697a; outline-offset: -2px; }
-.markdown-composer textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; }
-.composer-preview { padding: 1.3rem; border: 1px solid #cbd5dc; border-radius: .6rem; min-height: 10rem; background: #fff; }
+.markdown-composer {
+  min-width: 0;
+  margin: 1rem 0;
+}
+.composer-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 1rem;
+}
+.composer-heading h3 {
+  margin: 0;
+}
+.composer-heading span,
+.composer-save-note {
+  font-size: 0.88rem;
+  color: #526071;
+}
+.composer-actions,
+.composer-modes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.composer-actions {
+  margin: 0.8rem 0;
+}
+.markdown-composer .composer-modes button[aria-selected="true"] {
+  background: #153b4a;
+  color: #fff;
+}
+.markdown-composer .composer-modes button[aria-selected="false"] {
+  background: #f3f5f6;
+  color: #263846;
+}
+.markdown-composer .composer-import {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.88rem;
+}
+.markdown-composer .composer-import input {
+  max-width: 14rem;
+  padding: 0.35rem;
+}
+.markdown-composer .mdxeditor {
+  border: 1px solid #cbd5dc;
+  border-radius: 0.6rem;
+  background: #fff;
+  color: #182a36;
+}
+.markdown-composer .mdxeditor-toolbar {
+  flex-wrap: wrap;
+  border-radius: 0.6rem 0.6rem 0 0;
+}
+.markdown-composer .mdxeditor-toolbar button {
+  min-width: 2rem;
+  min-height: 2rem;
+}
+.markdown-composer .article-draft-content {
+  min-height: 20rem;
+  padding: 1.3rem;
+}
+.markdown-composer .article-draft-content:focus {
+  outline: 2px solid #38697a;
+  outline-offset: -2px;
+}
+.markdown-composer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, monospace;
+}
+.composer-preview {
+  padding: 1.3rem;
+  border: 1px solid #cbd5dc;
+  border-radius: 0.6rem;
+  min-height: 10rem;
+  background: #fff;
+}
 @media (max-width: 640px) {
-  .markdown-composer .article-draft-content { min-height: 14rem; padding: .85rem; }
-  .composer-actions { align-items: stretch; }
-  .composer-modes { width: 100%; }
-  .composer-modes button { flex: 1; font-size: .8rem; }
+  .markdown-composer .article-draft-content {
+    min-height: 14rem;
+    padding: 0.85rem;
+  }
+  .composer-actions {
+    align-items: stretch;
+  }
+  .composer-modes {
+    width: 100%;
+  }
+  .composer-modes button {
+    flex: 1;
+    font-size: 0.8rem;
+  }
 }

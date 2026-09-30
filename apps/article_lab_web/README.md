@@ -8,6 +8,27 @@ Live hostname: **https://feedback.moneymattersmedia.com**.
 See [Google setup](GOOGLE_SETUP.md) before inviting reviewers. The deployed
 API fails closed until its Google OAuth client is configured.
 
+## Visual drafting and private snapshots
+
+In Admin, enter a title and write in the MDXEditor visual editor or import a
+`.md`/`.markdown` file. Switch to Markdown source or Review preview to inspect
+the draft; the preview uses the same server sanitizer as the immutable snapshot.
+Publish version saves that private snapshot, then Assign a review grants an
+approved account access. Submitted inline comments appear under View feedback.
+Select an existing Article project when creating v2; v1 and its reviews stay fixed.
+
+The mutable article draft is **not autosaved**. Failed publication preserves it,
+and leaving Admin, opening submitted feedback, signing out or closing the page
+warns before discarding unsaved content. Export .md before leaving to retain a
+working copy. Reviewer feedback retains its existing D1 autosave. Markdown
+import/export is the current Omnigent bridge; there is no integration API yet.
+
+MDXEditor is pinned to 4.3.1 and loaded only when drafting. The Worker keeps
+`script-src 'self'` and authorizes Radix's dynamic scroll-lock stylesheet with a
+fresh CSS-only nonce in non-cacheable HTML. Its fixed Select viewport stylesheet
+has an exact CSP hash; toolbar browser tests detect dependency changes that break
+that policy. No arbitrary inline stylesheet or script permission is enabled.
+
 ## Local development
 
 Node 22+; dependencies are locked in `package-lock.json`.

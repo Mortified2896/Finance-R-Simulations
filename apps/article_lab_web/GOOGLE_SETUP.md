@@ -19,8 +19,13 @@ https://console.cloud.google.com/auth/overview.
    Only the normal identity scopes are needed: `openid`, `email`, `profile`.
 3. Create a **Web application** OAuth client. Authorized JavaScript origin is the
    production origin above. Authorized redirect URI is the exact callback above.
-4. If the OAuth app is in Testing, add the intended reviewers as test users. Use
-   the Google publishing flow when ready for the broader intended audience.
+4. Check Audience and Data Access before inviting reviewers. Google's current
+   [Testing policy](https://support.google.com/cloud/answer/15549945) exempts
+   Sign in with Google using only `openid`, email and profile from the test-user
+   list and seven-day authorization expiry. If additional scopes are requested,
+   Testing normally requires listed test users (up to 100). Workspace and
+   Advanced Protection restrictions can still block an account. Use the Google
+   publishing flow when ready for the broader intended audience.
 5. Store `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` as secrets for Worker
    `article-lab-review`. The client secret belongs only in Google and Worker
    secret storage, never in React, GitHub, screenshots or chat.

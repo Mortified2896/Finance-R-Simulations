@@ -6,6 +6,17 @@ import { ReviewPage } from "./ReviewPage";
 import { createAuthClient } from "better-auth/react";
 const authClient = createAuthClient();
 export function App() {
+  const [draftDirty, setDraftDirty] = useState(false);
+  function leaveDraft() {
+    if (
+      draftDirty &&
+      !window.confirm(
+        "Discard the unsaved article draft? Cancel and export .md first to keep it.",
+      )
+    )
+      return false;
+    return true;
+  }
   const [user, setUser] = useState<User | null>(null),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
@@ -63,6 +74,7 @@ export function App() {
     }
   }
   async function signOut() {
+    if (!leaveDraft()) return;
     setBusy(true);
     setError("");
     try {
@@ -72,6 +84,7 @@ export function App() {
       setUser(null);
       setAssignments([]);
       setAdmin(false);
+      setDraftDirty(false);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -90,6 +103,8 @@ export function App() {
               <button
                 className={!admin ? "active quiet" : "quiet"}
                 onClick={() => {
+                  if (!leaveDraft()) return;
+                  setDraftDirty(false);
                   setAdmin(false);
                   void load();
                 }}
@@ -163,7 +178,15 @@ export function App() {
             }}
           />
         ) : admin ? (
-          <Admin onReview={setDetail} />
+          <Admin
+            onDirtyChange={setDraftDirty}
+            onReview={(review) => {
+              if (leaveDraft()) {
+                setDraftDirty(false);
+                setDetail(review);
+              }
+            }}
+          />
         ) : (
           <>
             <div className="page-heading">

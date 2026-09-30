@@ -3,7 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "description": "Cloudflare Article Review portal",
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "cf": "python3 tools/cloudflare.py wrangler",
     "cf:install-credential": "python3 tools/cloudflare.py install",
@@ -47,5 +49,7 @@
     "zod": "^4.6.5"
   },
   "type": "module",
-  "overrides": { "undici": "^7.29.1" }
+  "overrides": {
+    "undici": "^7.29.1"
+  }
 }
