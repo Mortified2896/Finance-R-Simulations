@@ -372,6 +372,114 @@ describe("D1 review lifecycle and authorization", () => {
       ).status,
     ).toBe(403);
   });
+  it("admin reads unassigned snapshots and all submitted feedback without exposing drafts", async () => {
+    const created = await call("/admin/versions", "POST", {
+      title: "Admin library fixture",
+      body: "Saved article without self-assignment.",
+    });
+    const id = created.body.id;
+    const empty = await call(`/admin/versions/${id}`);
+    expect(empty.status).toBe(200);
+    expect(empty.body.version.body).toBe(
+      "Saved article without self-assignment.",
+    );
+    expect(empty.body.feedback).toEqual([]);
+    expect((await call("/assignments")).body).toEqual([]);
+    expect((await call(`/admin/versions/${crypto.randomUUID()}`)).status).toBe(
+      404,
+    );
+    for (const email of ["jane@example.test", "paul@example.test"]) {
+      expect(
+        (await call(`/admin/versions/${id}`, "GET", undefined, email)).status,
+      ).toBe(403);
+    }
+    const ids: string[] = [];
+    for (const [userId, email] of [
+      [jane, "jane@example.test"],
+      [paul, "paul@example.test"],
+    ]) {
+      await call("/admin/assignments", "POST", {
+        version_id: id,
+        user_id: userId,
+      });
+      const assigned = await call("/assignments", "GET", undefined, email);
+      const assignmentId = assigned.body.find(
+        (a: any) => a.version_id === id,
+      ).id;
+      ids.push(assignmentId);
+      const opened = await call(
+        `/reviews/${assignmentId}/open`,
+        "POST",
+        {},
+        email,
+      );
+      const text = opened.body.version.anchor_text;
+      const saved = await call(
+        `/reviews/${assignmentId}`,
+        "PUT",
+        {
+          revision: 0,
+          mutation_id: crypto.randomUUID(),
+          general_feedback: `${email} general feedback`,
+          annotations: [
+            {
+              id: crypto.randomUUID(),
+              exact_quote: text.slice(0, 5),
+              start_offset: 0,
+              end_offset: 5,
+              prefix: "",
+              suffix: text.slice(5, 69),
+              comment: `${email} private comment`,
+            },
+          ],
+        },
+        email,
+      );
+      expect(saved.status).toBe(200);
+    }
+    expect((await call(`/admin/versions/${id}`)).body.feedback).toEqual([]);
+    expect(
+      (
+        await call(
+          `/reviews/${ids[0]}/submit`,
+          "POST",
+          { revision: 1 },
+          "jane@example.test",
+        )
+      ).status,
+    ).toBe(200);
+    const partial = await call(`/admin/versions/${id}`);
+    expect(partial.body.feedback).toHaveLength(1);
+    expect(partial.body.feedback[0].reviewer.email).toBe("jane@example.test");
+    expect(partial.body.feedback[0].review.annotations[0].comment).toBe(
+      "jane@example.test private comment",
+    );
+    expect(JSON.stringify(partial.body)).not.toContain("paul@example.test");
+    expect(
+      (
+        await call(
+          `/reviews/${ids[1]}/submit`,
+          "POST",
+          { revision: 1 },
+          "paul@example.test",
+        )
+      ).status,
+    ).toBe(200);
+    const complete = await call(`/admin/versions/${id}`);
+    expect(complete.body.feedback).toHaveLength(2);
+    expect(
+      complete.body.feedback.map((f: any) => f.reviewer.email).sort(),
+    ).toEqual(["jane@example.test", "paul@example.test"]);
+    const next = await call("/admin/versions", "POST", {
+      article_id: created.body.article_id,
+      title: "Admin library fixture v2",
+      body: "New snapshot.",
+    });
+    expect(
+      (await call(`/admin/versions/${next.body.id}`)).body.feedback,
+    ).toEqual([]);
+    expect((await call(`/admin/versions/${id}`)).body).toEqual(complete.body);
+  });
   it("disabling immediately removes article access and does not reset on login", async () => {
     await call(`/admin/users/${jane}`, "PATCH", { status: "disabled" });
     expect(

@@ -17,6 +17,15 @@ Publish version saves that private snapshot, then Assign a review grants an
 approved account access. Submitted inline comments appear under View feedback.
 Select an existing Article project when creating v2; v1 and its reviews stay fixed.
 
+Admins land on **All articles**, which lists every saved version even without
+assignments. **Open article** reads the frozen snapshot, review statuses and all
+submitted feedback together, with reviewer names and passage highlights.
+**View review** opens one submitted review. Unfinished reviewer comments stay
+private until **Submit feedback → Confirm submission**; saving alone does not
+submit. No self-assignment is needed for editorial inspection. If an admin
+already has a personal assignment, **Your review** still opens it for editing or
+submission. Reviewer accounts continue to see only their own assigned reviews.
+
 The mutable article draft is **not autosaved**. Failed publication preserves it,
 and leaving Admin, opening submitted feedback, signing out or closing the page
 warns before discarding unsaved content. Export .md before leaving to retain a

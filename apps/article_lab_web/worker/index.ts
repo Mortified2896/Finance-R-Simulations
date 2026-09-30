@@ -486,6 +486,44 @@ export function createApp(
     await db.batch(batch);
     return c.json({ id, article_id: article }, 201);
   });
+  app.get("/api/admin/versions/:id", async (c) => {
+    const db = c.env.DB,
+      id = c.req.param("id");
+    const [version, reviews, annotations] = await Promise.all([
+      stmt(
+        db,
+        "SELECT * FROM article_versions WHERE id=?",
+        id,
+      ).first<ArticleVersion>(),
+      stmt(
+        db,
+        `SELECT r.*,u.id reviewer_id,u.display_name,u.email FROM reviews r JOIN review_assignments a ON a.id=r.id JOIN users u ON u.id=a.user_id WHERE a.version_id=? AND r.status='submitted' ORDER BY r.submitted_at,r.id`,
+        id,
+      ).all<
+        Review & { reviewer_id: string; display_name: string; email: string }
+      >(),
+      stmt(
+        db,
+        `SELECT x.* FROM annotations x JOIN reviews r ON r.id=x.review_id WHERE x.version_id=? AND r.status='submitted' ORDER BY x.start_offset,x.created_at`,
+        id,
+      ).all<Annotation & { review_id: string }>(),
+    ]);
+    if (!version) fail(404, "Article version not found.");
+    return c.json({
+      version,
+      feedback: reviews.results.map(
+        ({ reviewer_id, display_name, email, ...review }) => ({
+          reviewer: { id: reviewer_id, display_name, email },
+          review: {
+            ...review,
+            annotations: annotations.results.filter(
+              (a) => a.review_id === review.id,
+            ),
+          },
+        }),
+      ),
+    });
+  });
   app.post("/api/admin/assignments", async (c) => {
     const input = await body(
         c,
