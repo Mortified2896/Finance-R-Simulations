@@ -31,13 +31,39 @@ export function createApp(
       );
     }
     await next();
+    let styleSources = "'self'";
+    if (c.res.headers.get("Content-Type")?.startsWith("text/html")) {
+      // Radix's scroll lock creates a dynamic stylesheet. Authorize it with a
+      // fresh CSS-only nonce; scripts still require a same-origin external file.
+      const nonce = btoa(
+        String.fromCharCode(...crypto.getRandomValues(new Uint8Array(24))),
+      );
+      styleSources += ` 'nonce-${nonce}'`;
+      const headers = new Headers(c.res.headers);
+      headers.delete("ETag");
+      headers.delete("Content-Length");
+      headers.set("Cache-Control", "no-store");
+      c.res = new Response(
+        (await c.res.text()).replace(
+          "<head>",
+          `<head><meta name="article-style-nonce" content="${nonce}">`,
+        ),
+        { status: c.res.status, headers },
+      );
+      // Hono merges the original response headers when replacing c.res.
+      c.header("ETag", undefined);
+      c.header("Content-Length", undefined);
+      c.header("Cache-Control", "no-store");
+    }
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
     c.header("X-Frame-Options", "DENY");
     c.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     c.header(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+      // Radix Select's fixed viewport stylesheet has no nonce API in MDXEditor.
+      // Permit only its exact bytes, rather than arbitrary inline stylesheets.
+      `default-src 'self'; script-src 'self'; style-src 'self'; style-src-elem ${styleSources} 'sha256-441zG27rExd4/il+NvIqyL8zFx5XmyNQtE381kSkUJk='; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`,
     );
     c.header("Strict-Transport-Security", "max-age=31536000");
     if (c.req.path.startsWith("/api/")) c.header("Cache-Control", "no-store");
@@ -459,6 +485,44 @@ export function createApp(
     );
     await db.batch(batch);
     return c.json({ id, article_id: article }, 201);
+  });
+  app.get("/api/admin/versions/:id", async (c) => {
+    const db = c.env.DB,
+      id = c.req.param("id");
+    const [version, reviews, annotations] = await Promise.all([
+      stmt(
+        db,
+        "SELECT * FROM article_versions WHERE id=?",
+        id,
+      ).first<ArticleVersion>(),
+      stmt(
+        db,
+        `SELECT r.*,u.id reviewer_id,u.display_name,u.email FROM reviews r JOIN review_assignments a ON a.id=r.id JOIN users u ON u.id=a.user_id WHERE a.version_id=? AND r.status='submitted' ORDER BY r.submitted_at,r.id`,
+        id,
+      ).all<
+        Review & { reviewer_id: string; display_name: string; email: string }
+      >(),
+      stmt(
+        db,
+        `SELECT x.* FROM annotations x JOIN reviews r ON r.id=x.review_id WHERE x.version_id=? AND r.status='submitted' ORDER BY x.start_offset,x.created_at`,
+        id,
+      ).all<Annotation & { review_id: string }>(),
+    ]);
+    if (!version) fail(404, "Article version not found.");
+    return c.json({
+      version,
+      feedback: reviews.results.map(
+        ({ reviewer_id, display_name, email, ...review }) => ({
+          reviewer: { id: reviewer_id, display_name, email },
+          review: {
+            ...review,
+            annotations: annotations.results.filter(
+              (a) => a.review_id === review.id,
+            ),
+          },
+        }),
+      ),
+    });
   });
   app.post("/api/admin/assignments", async (c) => {
     const input = await body(

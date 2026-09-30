@@ -39,6 +39,9 @@ test("admin approval, assigned passage review, saved return, submit and admin in
     .getByLabel("Subtitle", { exact: true })
     .fill("A synthetic article for review");
   await admin
+    .getByRole("tab", { name: "Markdown source", exact: true })
+    .click();
+  await admin
     .getByLabel("Markdown", { exact: true })
     .fill(
       "## The value of a second look\n\nA thoughtful reviewer helps an article become clearer. Select this passage and leave a specific suggestion.\n\nGood feedback tells the writer what works, as well as what needs another look.",

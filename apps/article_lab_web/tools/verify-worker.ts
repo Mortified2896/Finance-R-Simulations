@@ -9,6 +9,18 @@ const mf = new Miniflare(
     compatibilityDate: "2026-09-29",
     compatibilityFlags: ["nodejs_compat"],
     d1Databases: ["DB"],
+    serviceBindings: {
+      ASSETS: async () => {
+        const html = await readFile("dist/index.html", "utf8");
+        return new Response(html, {
+          headers: {
+            "Content-Type": "text/html",
+            ETag: "synthetic",
+            "Content-Length": String(Buffer.byteLength(html)),
+          },
+        });
+      },
+    },
     bindings: {
       BETTER_AUTH_URL: origin,
       BETTER_AUTH_SECRET: crypto.randomUUID() + crypto.randomUUID(),
@@ -43,8 +55,29 @@ try {
   assert.match(r.headers.get("set-cookie")!, /HttpOnly/);
   assert.match(r.headers.get("set-cookie")!, /Secure/);
   assert.equal((await mf.dispatchFetch(origin + "/api/me")).status, 401);
+  const html = await mf.dispatchFetch(origin + "/");
+  assert.equal(html.status, 200);
+  assert.equal(html.headers.get("Cache-Control"), "no-store");
+  assert.equal(html.headers.get("ETag"), null);
+  assert.equal(html.headers.get("Content-Length"), null);
+  const nonce = (await html.text()).match(
+    /name="article-style-nonce" content="([^"]+)"/,
+  )?.[1];
+  assert.ok(nonce);
+  const policy = html.headers.get("Content-Security-Policy")!;
+  assert.ok(policy.includes(`style-src-elem 'self' 'nonce-${nonce}'`));
+  assert.ok(policy.includes("script-src 'self';"));
+  assert.ok(
+    !policy.includes("unsafe-inline") && !policy.includes("unsafe-eval"),
+  );
+  assert.notEqual(
+    (await mf.dispatchFetch(origin + "/")).headers.get(
+      "Content-Security-Policy",
+    ),
+    policy,
+  );
   console.log(
-    "Actual workerd bundle: D1-backed Google OAuth initiation, secure state cookie and anonymous denial passed. No Google login simulated or claimed.",
+    "Actual workerd bundle: D1-backed Google OAuth initiation, secure state cookie, anonymous denial and fresh CSS-only HTML nonce/CSP passed. No Google login simulated or claimed.",
   );
 } finally {
   await mf.dispose();

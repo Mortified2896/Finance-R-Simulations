@@ -44,7 +44,14 @@ export type Review = {
 export type ReviewDetail = {
   version: ArticleVersion;
   review: Review;
-  reviewer?: User;
+  reviewer?: Pick<User, "id" | "display_name" | "email">;
+};
+export type ArticleFeedback = {
+  version: ArticleVersion;
+  feedback: {
+    review: Review;
+    reviewer: NonNullable<ReviewDetail["reviewer"]>;
+  }[];
 };
 export type Assignment = {
   id: string;

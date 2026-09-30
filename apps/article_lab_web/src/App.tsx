@@ -1,15 +1,36 @@
 import { useEffect, useState } from "react";
-import type { User, Assignment, ReviewDetail } from "../shared/types";
+import type {
+  User,
+  Assignment,
+  ReviewDetail,
+  ArticleVersion,
+  ArticleFeedback,
+} from "../shared/types";
 import { api, ApiError } from "./api";
 import { Admin } from "./Admin";
 import { ReviewPage } from "./ReviewPage";
+import { ArticleOverview } from "./ArticleOverview";
 import { createAuthClient } from "better-auth/react";
 const authClient = createAuthClient();
 export function App() {
+  const [draftDirty, setDraftDirty] = useState(false);
+  function leaveDraft() {
+    if (
+      draftDirty &&
+      !window.confirm(
+        "Discard the unsaved article draft? Cancel and export .md first to keep it.",
+      )
+    )
+      return false;
+    return true;
+  }
   const [user, setUser] = useState<User | null>(null),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [assignments, setAssignments] = useState<Assignment[]>([]),
+    [adminAssignments, setAdminAssignments] = useState<Assignment[]>([]),
+    [versions, setVersions] = useState<ArticleVersion[]>([]),
+    [article, setArticle] = useState<ArticleFeedback | null>(null),
     [admin, setAdmin] = useState(false),
     [detail, setDetail] = useState<ReviewDetail | null>(null),
     [busy, setBusy] = useState(false);
@@ -18,8 +39,18 @@ export function App() {
     try {
       const data = await api<{ user: User }>("/me");
       setUser(data.user);
-      if (data.user.status === "approved")
-        setAssignments(await api<Assignment[]>("/assignments"));
+      if (data.user.status === "approved") {
+        if (data.user.role === "admin") {
+          const [v, a, own] = await Promise.all([
+            api<ArticleVersion[]>("/admin/versions"),
+            api<Assignment[]>("/admin/assignments"),
+            api<Assignment[]>("/assignments"),
+          ]);
+          setVersions(v);
+          setAdminAssignments(a);
+          setAssignments(own);
+        } else setAssignments(await api<Assignment[]>("/assignments"));
+      }
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         setUser(null);
@@ -45,6 +76,17 @@ export function App() {
       setBusy(false);
     }
   }
+  async function openArticle(id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      setArticle(await api<ArticleFeedback>(`/admin/versions/${id}`));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function signIn() {
     setBusy(true);
     setError("");
@@ -63,6 +105,7 @@ export function App() {
     }
   }
   async function signOut() {
+    if (!leaveDraft()) return;
     setBusy(true);
     setError("");
     try {
@@ -71,7 +114,11 @@ export function App() {
         throw new Error(result.error.message ?? "Sign out failed.");
       setUser(null);
       setAssignments([]);
+      setAdminAssignments([]);
+      setVersions([]);
+      setArticle(null);
       setAdmin(false);
+      setDraftDirty(false);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -85,11 +132,13 @@ export function App() {
           Article Lab <span>/ Review</span>
         </div>
         <nav>
-          {user?.status === "approved" && !detail && (
+          {user?.status === "approved" && !detail && !article && (
             <>
               <button
                 className={!admin ? "active quiet" : "quiet"}
                 onClick={() => {
+                  if (!leaveDraft()) return;
+                  setDraftDirty(false);
                   setAdmin(false);
                   void load();
                 }}
@@ -106,7 +155,7 @@ export function App() {
               )}
             </>
           )}
-          {user && !detail && (
+          {user && !detail && !article && (
             <button
               className="quiet"
               disabled={busy}
@@ -162,8 +211,95 @@ export function App() {
               void load();
             }}
           />
+        ) : article ? (
+          <ArticleOverview
+            detail={article}
+            assignments={adminAssignments.filter(
+              (a) => a.version_id === article.version.id,
+            )}
+            onBack={() => {
+              setArticle(null);
+              void load();
+            }}
+            onReview={setDetail}
+          />
         ) : admin ? (
-          <Admin onReview={setDetail} />
+          <Admin
+            onDirtyChange={setDraftDirty}
+            onReview={(review) => {
+              if (leaveDraft()) {
+                setDraftDirty(false);
+                setDetail(review);
+              }
+            }}
+          />
+        ) : user.role === "admin" ? (
+          <>
+            <div className="page-heading">
+              <h1>All articles</h1>
+              <p>
+                Every saved version and its submitted feedback. No
+                self-assignment needed.
+              </p>
+              <button
+                className="quiet"
+                disabled={busy}
+                onClick={() => void load()}
+              >
+                Refresh articles
+              </button>
+            </div>
+            {!versions.length ? (
+              <section className="panel">
+                <p>
+                  No saved articles yet. Open Admin to publish your first
+                  version.
+                </p>
+              </section>
+            ) : (
+              <div className="inbox">
+                {versions.map((v) => {
+                  const reviews = adminAssignments.filter(
+                    (a) => a.version_id === v.id,
+                  );
+                  const own = assignments.find((a) => a.version_id === v.id);
+                  return (
+                    <article className="inbox-row" key={v.id}>
+                      <div>
+                        <h2>{v.title}</h2>
+                        <p>{v.subtitle}</p>
+                        <small>
+                          Version {v.version_number} ·{" "}
+                          {
+                            reviews.filter((a) => a.status === "submitted")
+                              .length
+                          }{" "}
+                          submitted / {reviews.length} assigned
+                        </small>
+                      </div>
+                      <div className="actions">
+                        <button
+                          disabled={busy}
+                          onClick={() => void openArticle(v.id)}
+                        >
+                          Open article
+                        </button>
+                        {own && (
+                          <button
+                            className="quiet"
+                            disabled={busy}
+                            onClick={() => void open(own.id)}
+                          >
+                            Your review
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </>
         ) : (
           <>
             <div className="page-heading">

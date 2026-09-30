@@ -6,13 +6,36 @@ import type {
   ReviewDetail,
 } from "../shared/types";
 import { api } from "./api";
-export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
+import { MarkdownComposer } from "./editor/MarkdownComposer";
+export function Admin({
+  onReview,
+  onDirtyChange,
+}: {
+  onReview: (d: ReviewDetail) => void;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [metadataDirty, setMetadataDirty] = useState(false);
+  useEffect(() => {
+    onDirtyChange(draftDirty || metadataDirty);
+  }, [draftDirty, metadataDirty, onDirtyChange]);
+  useEffect(() => {
+    if (!metadataDirty) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [metadataDirty]);
   const [users, setUsers] = useState<User[]>([]),
     [versions, setVersions] = useState<ArticleVersion[]>([]),
     [assignments, setAssignments] = useState<Assignment[]>([]),
     [error, setError] = useState(""),
     [success, setSuccess] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [composerRevision, setComposerRevision] = useState(0),
+    [canPublish, setCanPublish] = useState(false);
   async function load() {
     const [u, v, a] = await Promise.all([
       api<User[]>("/admin/users"),
@@ -42,6 +65,7 @@ export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
   }
   async function publish(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (!canPublish || busy) return;
     const form = e.currentTarget,
       data = new FormData(form);
     await action(async () => {
@@ -52,6 +76,10 @@ export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
         body: data.get("body"),
       });
       form.reset();
+      setMetadataDirty(false);
+      setDraftDirty(false);
+      setCanPublish(false);
+      setComposerRevision((revision) => revision + 1);
     }, "Immutable article version published. Assign it below.");
   }
   const articles = [
@@ -163,10 +191,10 @@ export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
           Published text stays fixed. Changes create a new version with its own
           assignments and reviews.
         </p>
-        <form onSubmit={publish}>
+        <form onSubmit={publish} onChange={() => setMetadataDirty(true)}>
           <label>
             Article project
-            <select name="article_id">
+            <select name="article_id" disabled={busy}>
               <option value="">Create a new article</option>
               {articles.map((v) => (
                 <option key={v.article_id} value={v.article_id}>
@@ -177,17 +205,19 @@ export function Admin({ onReview }: { onReview: (d: ReviewDetail) => void }) {
           </label>
           <label>
             Title
-            <input name="title" required maxLength={250} />
+            <input name="title" required maxLength={250} disabled={busy} />
           </label>
           <label>
             Subtitle
-            <input name="subtitle" maxLength={500} />
+            <input name="subtitle" maxLength={500} disabled={busy} />
           </label>
-          <label>
-            Markdown
-            <textarea name="body" rows={10} required maxLength={150000} />
-          </label>
-          <button disabled={busy}>Publish version</button>
+          <MarkdownComposer
+            key={composerRevision}
+            disabled={busy}
+            onValidityChange={setCanPublish}
+            onDirtyChange={setDraftDirty}
+          />
+          <button disabled={busy || !canPublish}>Publish version</button>
         </form>
       </section>
       <section className="panel">
