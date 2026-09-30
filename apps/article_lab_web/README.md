@@ -1,55 +1,38 @@
-# Article Lab Cloudflare tooling
+# Article Lab Web
 
-Infrastructure only. No React UI, production Worker, or D1 schema exists yet.
-The existing `../human_preview_rating_app/` Shiny application remains unchanged.
+Future primary application. This directory currently contains Cloudflare tooling,
+not a React UI, production Worker, or D1 application schema.
 
-On RTX, as `hermes`:
+## Work to implement
+
+Build the [article review MVP](../../docs/article-review-mvp.md) here.
+[Architecture](../../docs/architecture.md) explains the broader direction;
+[O1's handoff](../../docs/o1-review-mvp-handoff.md) describes the next work.
+
+A practical layout is `src/` for the frontend, `worker/` for the API, `migrations/`
+for D1, and `wrangler.jsonc` for public configuration. Adapt it when the chosen
+Cloudflare-supported tooling has a clearer layout; this is not a rigid framework.
+
+## Existing tooling
 
 ```sh
-cd /home/hermes/workspace/repos/Finance-R-Simulations/apps/article_lab_web
+# From this directory, on the configured RTX environment:
 npm ci
 npx --no-install wrangler --version
-```
-
-Wrangler is pinned in `package.json` and `package-lock.json`; `.node-version`
-records the installed, supported Node version. No global tool upgrade is needed.
-
-After creating a scoped token in the Cloudflare dashboard, run this yourself in
-an interactive RTX terminal (or your existing SSH terminal connected to RTX):
-
-```sh
-npm run cf:install-credential
-```
-
-The token prompt hides input and does not put the value in a shell command.
-Do not paste it into chat or a recorded/shared terminal. Supply the account and
-zone IDs from the dashboard at the subsequent prompts. The installer refuses
-to overwrite an existing credential and does not claim that the token is valid.
-
-Future sessions use the saved credential without logging in:
-
-```sh
 npm run cf -- whoami
 npm run cf -- d1 list
-# Once an application configuration exists:
-npm run cf -- deploy
 ```
 
-The launcher reads `~/.config/finance-r-simulations/cloudflare.json` (mode 600,
-parent directory 700) and provides credentials only to its Wrangler process.
-It does not change shell profiles, GitHub authentication, or system services.
-Processes running as the same user and root can access this file; filesystem
-permissions do not isolate applications sharing the `hermes` account.
-Use `npm run cf -- ...` for authenticated commands; bare `npx wrangler` does
-not automatically load this custom credential file. Keep debug/request logging
-disabled. Never use `wrangler auth token` to display the token.
+`package.json` and `package-lock.json` pin Wrangler; `.node-version` records the
+provisioned Node version. This package is separate from the root helper package.
 
-To rotate, revoke the old token in Cloudflare, remove only this credential file,
-and rerun the installer. Revoking an API token does not revoke browser login.
+`tools/cloudflare.py` loads the RTX credential only into its Wrangler child
+process. Use `npm run cf -- <command>` for authenticated operations. Do not copy
+the token into the app, shell profile, frontend, Git, or a Worker secret.
 
-Future code belongs here: `src/` for React/TypeScript, `worker/` for the Worker,
-`migrations/` for D1 migrations, and `wrangler.jsonc` for public configuration.
-Version-control those sources; keep tokens, `.dev.vars`, `.env` files, local D1
-state, and `.wrangler/` out of Git. Do not route traffic to the RTX or add a Tunnel.
+The [development guide](../../docs/cloudflare-development.md) covers credentials,
+permissions, login setup, and the remaining live checks. Authentication is already
+installed on RTX; do not repeat installation during ordinary development.
 
-See [setup status and remaining verification](../../docs/cloudflare-setup.md).
+Add and document working dev/build/test/deploy commands as implementation lands.
+A mock login or successful build alone is not verification of real Google/OTP login.

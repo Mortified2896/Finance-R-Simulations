@@ -1,99 +1,72 @@
-# Medium Finance Article Lab
+# Article Lab
 
-This repository supports a local workflow for researching, developing, generating, evaluating, and preparing finance articles for publication on Medium. Its main interface is a Shiny application that combines the Article Inbox, research and evidence handling, title and asset generation, draft review, publishing preparation, and Medium preview analysis.
+Finance-content research, generation, evaluation, and human feedback in one
+repository: `Mortified2896/Finance-R-Simulations`.
 
-## Main Application
+## Direction and actual status
 
-The main interface lives in `apps/human_preview_rating_app/`. It uses the local SQLite database at `data/db/medium_articles.sqlite` by default and initializes its required schema when it starts.
+The next application lives in [`apps/article_lab_web/`](apps/article_lab_web/README.md)
+and targets React, TypeScript, Cloudflare Workers, and D1. Its first usable
+workflow is a persistent reviewer portal: Google or email-code login, owner
+approval, an article inbox, passage comments, general feedback, and saved drafts.
 
-Install the required R packages once:
+**Implemented so far:** project-local Wrangler tooling and an RTX credential
+launcher. The setup report records successful live Worker/D1 smoke tests.
+**Not implemented yet:** the React application, production D1 schema, reviewer
+login/approval, and feedback UI. Configuration is not a working product.
 
-```sh
-Rscript -e 'install.packages(c("shiny", "DBI", "RSQLite", "jsonlite", "DT"))'
-```
+The existing [`Shiny Article Lab`](apps/human_preview_rating_app/README.md) is
+currently unused. It remains available as a reference and source of useful
+functionality, not a production service that every change must preserve.
+Useful generation and Medium-success analysis features can move over as the new
+app develops. There is no requirement for a full port or a second repository.
 
-### Stable/default local app
+## Start here
 
-Launch the stable interface with the macOS launcher, either by double-clicking it or from the repository root:
+- [Architecture and migration direction](docs/architecture.md)
+- [Article review MVP](docs/article-review-mvp.md)
+- [Cloudflare development and authentication setup](docs/cloudflare-development.md)
+- [O1 implementation handoff](docs/o1-review-mvp-handoff.md)
+- [Documentation index: current, supporting, and historical](docs/README.md)
 
-```sh
-./01_manual_tools/rating/rate_medium_previews.command
-```
+## Cloudflare tooling
 
-Open <http://127.0.0.1:3840/> if the browser does not open automatically.
-
-### Experimental Design v2
-
-Launch the experimental interface with:
-
-```sh
-./01_manual_tools/rating/rate_medium_previews_design_v2.command
-```
-
-It opens at <http://127.0.0.1:3844/> and enables the experimental UI with `ARTICLE_LAB_UI_VERSION=v2`.
-
-These launchers run the same Shiny application code and currently use the same local database. Work performed in Design v2 is therefore not isolated from the stable interface. Design v2 is intended for interface experimentation and visual review; changes intended for the stable app should ultimately be verified on port `3840`.
-
-## Project Map
-
-- `apps/human_preview_rating_app/`: the main Shiny interface and its app-specific R helpers.
-- `scripts/`: reusable collection, import, schema, analysis, scoring, validation, test, and writing workflow scripts.
-- `scripts/writing_api/`: OpenAI-backed helpers used by Article Lab for titles, subtitles, thumbnails, outlines, full drafts, tags, and scoring.
-- `01_manual_tools/`: double-clickable macOS launchers, bookmarklets, watcher snippets, and manual workflow references.
-- `article_projects/`: article briefs, outlines, drafts, style guidance, and active project notes; active/private work is ignored.
-- `docs/`: durable documentation for the app, research workflow, analysis pipeline, scripts, and local-data policy.
-- `data/`: ignored local databases, source material, captures, downloads, queues, and generated analysis output.
-- `.local_gitignored/`: temporary diagnostics, one-off exports, and other scratch artifacts that should remain local.
-
-## Common Commands
-
-Install the root Node dependencies used by writing and browser helpers:
+On the configured RTX checkout, as `hermes`:
 
 ```sh
-npm install
+cd /home/hermes/workspace/repos/Finance-R-Simulations/apps/article_lab_web
+npm ci
+npm run cf -- whoami
+npm run cf -- d1 list
 ```
 
-The repository has one Node dependency scope at the root. Browser collectors that use CommonJS have a `.cjs` extension; writing helpers and tests use the root package's ES-module configuration.
+Use the credential launcher for authenticated commands; bare Wrangler does not
+load the project's private credential file. No frontend `dev`, build, or deploy
+script is claimed here until O1 implements and verifies it.
 
-Run focused stable/default local app regression checks:
+## Repository map
 
-```sh
-npm run test:article-inbox
-npm run test:article-production
-```
+| Location | Purpose |
+| --- | --- |
+| `apps/article_lab_web/` | New web application and its independent Node tooling |
+| `apps/human_preview_rating_app/` | Legacy Shiny UI and R helpers |
+| `scripts/` | Existing collection, import, analysis, scoring, and writing helpers |
+| `01_manual_tools/` | Existing Mac launchers and browser/manual utilities |
+| `docs/` | Current direction, operating notes, methodology, and historical references |
+| `data/`, `article_projects/`, `.local_gitignored/` | Ignored local/runtime material where present |
 
-Validate the Medium Analysis V2 objects in the current local database:
+The root `package.json` and lockfile belong to the existing Node helpers.
+`apps/article_lab_web/` has its own dependency scope and lockfile. Install in the
+package you are working on rather than mixing the two environments.
 
-```sh
-npm run validate:medium-v2
-```
+The [legacy app README](apps/human_preview_rating_app/README.md) contains its run
+and test commands. The [script inventory](docs/script_inventory.md) maps existing
+analysis tools; their existence does not require a Worker to run them.
 
-If validation reports that required V2 schema objects are missing, and the base Medium import tables already exist, run the setup/repair initializer and then validate again:
+## Data and licensing
 
-```sh
-Rscript scripts/apply_medium_analysis_v2_schema.R
-npm run validate:medium-v2
-```
+Keep private article drafts, reviewer data, credentials, database exports,
+downloads, and runtime state out of Git. Source-controlled schemas, configuration,
+and synthetic test fixtures belong in Git. See [runtime data](docs/local_only_files.md).
 
-The initializer backs up the database, creates missing V2 tables and columns, and refreshes the V2 cache indexes and views. It does not delete existing analysis rows and is not a routine prerequisite for validation.
-
-These are common entry points, not a complete test suite. The [script inventory](docs/script_inventory.md) and [manual tools index](01_manual_tools/manual_tools_index.md) cover the more specialized collection, import, scoring, and analysis commands.
-
-## Local Data
-
-Databases, browser profiles, downloaded media, raw API outputs, generated queues and analysis artifacts, credentials, caches, and scratch files must remain local and uncommitted. Use `.local_gitignored/` for temporary diagnostics, exports, and one-off artifacts. See the [local-only files policy](docs/local_only_files.md) for the authoritative list and handling guidance.
-
-## Documentation
-
-- [Contributor and agent instructions](AGENTS.md)
-- [Main application guide](docs/human_preview_rating_app.md)
-- [Manual tools index](01_manual_tools/manual_tools_index.md)
-- [Research and article-development workflow](docs/research_workflow.md)
-- [Medium Analysis V2 workflow](docs/medium_analysis_v2.md)
-- [Script inventory](docs/script_inventory.md)
-- [Local-only files policy](docs/local_only_files.md)
-- [Writing API helpers](scripts/writing_api/README.md)
-
-## License
-
-No license file is currently included in the repository.
+No root license is currently declared; see [repository notes](PUBLIC_REPO_NOTES.md).
