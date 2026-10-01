@@ -45,6 +45,7 @@ article_lab_default_model <- local({
   configured
 })
 article_lab_model_choices <- c(
+  "gpt-6.1-sol",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -67,6 +68,7 @@ article_lab_model_choices <- c(
 # built-in image_generation tool. Keep UI choices and request validation derived
 # from this single list so the two surfaces cannot drift.
 article_lab_image_generation_models <- c(
+  "gpt-6.1-sol",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -90,6 +92,7 @@ article_lab_validate_image_generation_model <- function(model, context = "Images
 
 article_lab_reasoning_capabilities <- function(model) {
   model <- trimws(as.character(model %||% "")[[1]])
+  if (grepl("^gpt-6\\.1(?:-|$)", model)) return(c("low", "medium", "high", "xhigh", "max"))
   if (grepl("^gpt-5\\.6(?:-|$)", model)) return(c("none", "low", "medium", "high", "xhigh", "max"))
   if (grepl("^gpt-5\\.[45](?:-|$)", model)) return(c("none", "low", "medium", "high", "xhigh"))
   if (grepl("^gpt-5(?:-|$)", model)) return(c("minimal", "low", "medium", "high"))
@@ -233,7 +236,7 @@ article_lab_default_claim_extraction_model <- local({
 })
 article_lab_claim_extraction_model_choices <- article_lab_model_choices_with_default(
   article_lab_default_claim_extraction_model,
-  base_choices = c("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5")
+  base_choices = c("gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5")
 )
 article_lab_default_evidence_selection_model <- local({
   configured <- Sys.getenv("OPENAI_EVIDENCE_SELECTION_MODEL", unset = "")
@@ -242,7 +245,7 @@ article_lab_default_evidence_selection_model <- local({
 })
 article_lab_evidence_selection_model_choices <- article_lab_model_choices_with_default(
   article_lab_default_evidence_selection_model,
-  base_choices = c("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5")
+  base_choices = c("gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5-mini", "gpt-5-nano", "gpt-5.4", "gpt-5")
 )
 article_lab_default_evidence_fallback_model <- local({
   configured <- Sys.getenv("OPENAI_EVIDENCE_FALLBACK_MODEL", unset = "")
@@ -251,7 +254,7 @@ article_lab_default_evidence_fallback_model <- local({
 })
 article_lab_evidence_fallback_model_choices <- article_lab_model_choices_with_default(
   article_lab_default_evidence_fallback_model,
-  base_choices = c("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5", "gpt-5.4-mini", "gpt-5-mini")
+  base_choices = c("gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5", "gpt-5.4-mini", "gpt-5-mini")
 )
 article_lab_evidence_reasoning_choices <- c("minimal", "low", "medium")
 article_lab_default_evidence_reasoning_effort <- Sys.getenv("OPENAI_EVIDENCE_REASONING_EFFORT", unset = "low")
