@@ -1,0 +1,37 @@
+{
+  "origin": "https://feedback.moneymattersmedia.com",
+  "runner_id": "rtx-article-lab",
+  "spool_dir": "/PRIVATE_RUNTIME_PATH/article-lab-spool",
+  "routes": [
+    {
+      "id": "glm-direct",
+      "label": "GLM subscription · Direct",
+      "provider": "glm",
+      "transport": "direct",
+      "model": "glm-5.3",
+      "response_models": ["glm-5.3"],
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "api_key_env": "ZAI_CODING_API_KEY"
+    },
+    {
+      "id": "glm-omniroute",
+      "label": "GLM subscription · OmniRoute",
+      "provider": "glm",
+      "transport": "omniroute",
+      "model": "glm/glm-5.3",
+      "response_models": ["glm-5.3"],
+      "base_url": "http://127.0.0.1:REPLACE_WITH_DISCOVERED_PORT/v1",
+      "api_key_env": "OMNIROUTE_API_KEY"
+    },
+    {
+      "id": "codex-omniroute",
+      "label": "Codex subscription · OmniRoute",
+      "provider": "codex",
+      "transport": "omniroute",
+      "model": "codex/gpt-5.5",
+      "response_models": ["gpt-5.5"],
+      "base_url": "http://127.0.0.1:REPLACE_WITH_DISCOVERED_PORT/v1",
+      "api_key_env": "OMNIROUTE_API_KEY"
+    }
+  ]
+}

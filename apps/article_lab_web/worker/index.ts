@@ -2,11 +2,14 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { createAuth, authReady, type AuthEnv, type Identity } from "./auth";
+import { handleLabRequest, handleRunnerRequest } from "./generation";
 import { renderMarkdown } from "../shared/markdown";
 import type { User, ArticleVersion, Review, Annotation } from "../shared/types";
 export type Env = AuthEnv & {
   ASSETS: Fetcher;
   BOOTSTRAP_ADMIN_EMAIL?: string;
+  ARTICLE_LAB_ROUTES?: string;
+  ARTICLE_LAB_RUNNER_TOKEN?: string;
 };
 type AppEnv = { Bindings: Env; Variables: { user: User } };
 export function createApp(
@@ -92,6 +95,10 @@ export function createApp(
       );
     return response;
   });
+  // Dedicated machine authentication; this token never grants browser/admin access.
+  app.all("/api/generation-runner/*", (c) =>
+    handleRunnerRequest(c.req.raw, c.env),
+  );
   app.use("/api/*", async (c, next) => {
     if (!["GET", "HEAD"].includes(c.req.method)) {
       if (c.req.header("Origin") !== new URL(c.req.url).origin)
@@ -174,6 +181,9 @@ export function createApp(
       fail(403, "Administrator access required.");
     await next();
   });
+  app.all("/api/admin/lab/*", (c) =>
+    handleLabRequest(c.req.raw, c.env, c.get("user")),
+  );
   async function body<T>(
     c: { req: { raw: Request } },
     schema: z.ZodType<T>,
