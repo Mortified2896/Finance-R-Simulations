@@ -213,3 +213,34 @@ text route and one explicitly configured image smoke test; no benchmark batch.
 
 Return the PR/commit, deployed build/URL, actual checks and exact remaining
 blockers. Do not describe the UI as working based only on a build or this foundation.
+
+## Continuation status (2026-10-03)
+
+Implemented and deployed on this branch (commits 6c30099, 0fd520e):
+
+- Admin writing workspace UI on the existing Cloudflare app: brief/evidence,
+  editable resolved prompts persisted per workspace, route/count settings,
+  generate/more with idempotent request IDs, honest job states, selection,
+  recoverable archival, ChatGPT Pro context export, MDXEditor draft import,
+  immutable version publishing with frozen image references.
+- Image jobs, uploads, alt text, draft thumbnails, private assets served through
+  per-version authorization; sanitizer allows same-origin `/api/assets/<uuid>` only.
+- Runner heartbeat + image lane (`OPENAI_IMAGE_API_KEY`, explicit flag, private
+  spool, replay). Hardened `article-lab-runner.service` is live on RTX.
+- 49 vitest (17 new Hono/workerd/D1 integration tests), 44 generation tests,
+  9 Playwright e2e, build, format and worker dry-run all pass.
+- Deployed to `feedback.moneymattersmedia.com` (version `e52dca33`) after a
+  private D1 export; 0003+0004 applied additively, existing data verified intact.
+
+Remaining blockers (also on the PR):
+
+1. R2: deployment token lacks R2 permission (auth error 10000). The
+   `article-lab-images` binding is staged but commented in `wrangler.jsonc`;
+   image lanes return 503 until the bucket exists and the binding is redeployed.
+2. No separately billed OpenAI Image API key is configured on RTX (the gateway
+   `OPENAI_API_KEY` is not an api.openai.com credential, verified 401).
+3. GLM direct lane blocked: `ZAI_API_KEY` is root-only on this host.
+4. Codex OmniRoute lane verified only up to a quota threshold (429, resets ~26h).
+5. Real owner Google login, one owner-clicked generation and one image smoke
+   test remain human steps; machine-path verification covers everything up to
+   the session boundary.
