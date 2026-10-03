@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { validateLocalRoutes, executeTextJob, ProviderFailure } from "./providers.mjs";
+import { validateLocalRoutes, executeTextJob, generateImage, ProviderFailure } from "./providers.mjs";
 
 export function validateOrigin(value) {
   const url = new URL(value);
@@ -25,8 +25,37 @@ export async function runOnce(config, { env = process.env, fetcher = fetch } = {
     if (!response.ok) throw new Error(`Article Lab returned HTTP ${response.status}.`);
     return response.json();
   };
+  // Availability signal first: last_seen proves polling, never provider health.
+  const imageKey = (env.OPENAI_IMAGE_API_KEY ?? "").trim();
+  const imageReady = Boolean(imageKey && imageKey !== env.OPENAI_API_KEY);
+  await post("/heartbeat", { runner_id: config.runner_id, route_ids: routes.map((route) => route.route.id), image_ready: imageReady });
   const { job } = await post("/claim", { runner_id: config.runner_id, route_ids: routes.map((route) => route.route.id) });
-  if (!job) return { status: "idle" };
+  if (!job) {
+    // Image lane: one explicit request per claim cycle, never retried here.
+    if (imageReady && config.images?.enabled) {
+      const claimed = await post("/images/claim", { runner_id: config.runner_id });
+      if (claimed.job) {
+        let result;
+        try {
+          const generated = await generateImage(claimed.job, { apiKey: imageKey, fetcher });
+          result = { lease_token: claimed.job.lease_token, image_base64: generated.bytes.toString("base64") };
+        } catch (error) {
+          const code = error instanceof ProviderFailure ? error.code : "runner_configuration";
+          await post(`/images/jobs/${encodeURIComponent(claimed.job.id)}/fail`, { lease_token: claimed.job.lease_token, code });
+          return { status: "image_failed", job_id: claimed.job.id, code };
+        }
+        // Spool before upload like text jobs; upload failure keeps the pixels.
+        const saved = path.join(spool, `image-${claimed.job.id}.json`);
+        await fs.writeFile(saved, JSON.stringify({ origin, job_id: claimed.job.id, kind: "image", result }), { mode: 0o600, flag: "wx" });
+        try {
+          await post(`/images/jobs/${claimed.job.id}/complete`, result);
+          await fs.unlink(saved);
+          return { status: "image_succeeded", job_id: claimed.job.id };
+        } catch { return { status: "completion_pending", job_id: claimed.job.id, saved }; }
+      }
+    }
+    return { status: "idle" };
+  }
   let result;
   try { result = await executeTextJob(job, routes, { env, fetcher }); }
   catch (error) {
@@ -49,7 +78,8 @@ export async function replayCompletion(config, filename, { env = process.env, fe
   if (!token || token.length < 32) throw new Error("Runner token is missing or too short.");
   const record = JSON.parse(await fs.readFile(filename, "utf8"));
   if (record.origin !== origin || !/^[0-9a-f-]{36}$/i.test(record.job_id)) throw new Error("Spool record does not match the configured Article Lab.");
-  const response = await fetcher(`${origin}/api/generation-runner/jobs/${record.job_id}/complete`, {
+  const endpoint = record.kind === "image" ? `/images/jobs/${record.job_id}/complete` : `/jobs/${record.job_id}/complete`;
+  const response = await fetcher(`${origin}/api/generation-runner${endpoint}`, {
     method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
     headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(record.result),
   });

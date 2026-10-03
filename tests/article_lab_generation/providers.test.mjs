@@ -75,6 +75,67 @@ test("image adapter rejects non-image bytes and has no implicit model selection"
   await assert.rejects(() => generateImage({ model: "configured-image-model", prompt: "Test" }, { apiKey: "key", fetcher: async () => response({ data: [{ b64_json: Buffer.from("<script>bad</script>").toString("base64") }] }) }), { code: "invalid_output" });
   await assert.rejects(() => generateImage({ prompt: "Test" }, { apiKey: "key" }));
 });
+test("the image lane is explicit: disabled without a distinct image key or config flag", async () => {
+  const spool = await fs.mkdtemp(path.join(os.tmpdir(), "article-lab-test-"));
+  const calls = [];
+  try {
+    for (const [extraEnv, imageConfig] of [[{}, { enabled: true }], [{ OPENAI_IMAGE_API_KEY: env.OPENAI_API_KEY }, { enabled: true }], [{ OPENAI_IMAGE_API_KEY: "synthetic-image-key" }, { enabled: false }]]) {
+      await runOnce({ origin: "https://lab.example", runner_id: "test", spool_dir: spool, routes: [glm], images: imageConfig }, { env: { ...env, ...extraEnv }, fetcher: async (url) => {
+        calls.push(url);
+        if (url.endsWith("/heartbeat")) return response({ ok: true });
+        return response({ job: null });
+      } });
+    }
+    assert.equal(calls.filter((url) => url.endsWith("/images/claim")).length, 0);
+    assert.deepEqual(await fs.readdir(spool), []);
+  } finally { await fs.rm(spool, { recursive: true, force: true }); }
+});
+test("image jobs generate once from the separate image key and spool before upload", async () => {
+  const spool = await fs.mkdtemp(path.join(os.tmpdir(), "article-lab-test-"));
+  const imageJob = { id: crypto.randomUUID(), article_id: crypto.randomUUID(), lease_token: crypto.randomUUID(), prompt: "A minimalist editorial thumbnail", model: "configured-image-model", size: "1536x1024", quality: "medium" };
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 2, 128, 0, 0, 1, 144, 8, 6, 0, 0, 0]);
+  try {
+    const result = await runOnce({ origin: "https://lab.example", runner_id: "test", spool_dir: spool, routes: [glm], images: { enabled: true } }, { env: { ...env, OPENAI_IMAGE_API_KEY: "synthetic-image-key" }, fetcher: async (url, options) => {
+      if (url.endsWith("/heartbeat")) return response({ ok: true });
+      if (url.endsWith("/images/claim")) return response({ job: imageJob });
+      if (url.endsWith("/claim")) return response({ job: null });
+      if (url.includes("api.openai.com")) {
+        assert.equal(JSON.parse(options.body).model, "configured-image-model");
+        assert.equal(options.headers.Authorization, "Bearer synthetic-image-key");
+        return response({ data: [{ b64_json: png.toString("base64") }] });
+      }
+      const payload = JSON.parse(options.body);
+      assert.equal(payload.lease_token, imageJob.lease_token);
+      assert.equal(JSON.stringify(payload).includes("synthetic-image-key"), false);
+      return new Response("offline", { status: 503 });
+    }});
+    assert.equal(result.status, "completion_pending");
+    const spooled = JSON.parse(await fs.readFile(result.saved, "utf8"));
+    assert.equal(spooled.kind, "image");
+    assert.equal(spooled.result.image_base64.length > 0, true);
+    await replayCompletion({ origin: "https://lab.example", runner_id: "test", spool_dir: spool, routes: [glm] }, result.saved, { env: { ...env, OPENAI_IMAGE_API_KEY: "synthetic-image-key" }, fetcher: async (url) => {
+      assert.match(url, /\/images\/jobs\/[0-9a-f-]+\/complete$/);
+      return response({ ok: true });
+    } });
+    assert.deepEqual(await fs.readdir(spool), []);
+  } finally { await fs.rm(spool, { recursive: true, force: true }); }
+});
+test("image provider failures are reported once and never retried or spooled", async () => {
+  const spool = await fs.mkdtemp(path.join(os.tmpdir(), "article-lab-test-"));
+  const imageJob = { id: crypto.randomUUID(), article_id: crypto.randomUUID(), lease_token: crypto.randomUUID(), prompt: "x", model: "configured-image-model", size: "1536x1024", quality: "medium" };
+  try {
+    const result = await runOnce({ origin: "https://lab.example", runner_id: "test", spool_dir: spool, routes: [glm], images: { enabled: true } }, { env: { ...env, OPENAI_IMAGE_API_KEY: "synthetic-image-key" }, fetcher: async (url) => {
+      if (url.endsWith("/heartbeat")) return response({ ok: true });
+      if (url.endsWith("/images/claim")) return response({ job: imageJob });
+      if (url.endsWith("/claim")) return response({ job: null });
+      if (url.includes("api.openai.com")) return new Response("quota", { status: 429 });
+      assert.match(url, /\/images\/jobs\/[0-9a-f-]+\/fail$/);
+      return response({ ok: true });
+    }});
+    assert.equal(result.status, "image_failed");
+    assert.deepEqual(await fs.readdir(spool), []);
+  } finally { await fs.rm(spool, { recursive: true, force: true }); }
+});
 test("runner requires a bare HTTPS origin; credentials cannot be redirected", () => {
   for (const url of ["http://lab.example", "https://secret@lab.example", "https://lab.example/path", "https://lab.example/?token=x"]) assert.throws(() => validateOrigin(url));
 });
@@ -83,19 +144,20 @@ test("runner claims once, generates once and uploads a result without leaking ke
   try {
     const result = await runOnce({ origin: "https://lab.example", runner_id: "test", spool_dir: spool, routes: [glm] }, { env, fetcher: async (url, options) => {
       calls.push(url);
+      if (url.endsWith("/heartbeat")) { assert.match(options.body, /"image_ready":false/); return response({ ok: true }); }
       if (url.endsWith("/claim")) { assert.equal(options.headers.Origin, undefined); return response({ job }); }
       if (url.includes("api.z.ai")) return chat();
       const payload = JSON.parse(options.body); assert.equal(payload.actual_model, "glm-test"); assert.equal(JSON.stringify(payload).includes("synthetic-glm-key"), false);
       return response({ ok: true });
     }});
-    assert.equal(result.status, "succeeded"); assert.equal(calls.length, 3); assert.deepEqual(await fs.readdir(spool), []);
+    assert.equal(result.status, "succeeded"); assert.equal(calls.length, 4); assert.deepEqual(await fs.readdir(spool), []);
   } finally { await fs.rm(spool, { recursive: true, force: true }); }
 });
 test("failed completion leaves a private spool and replay never calls the provider", async () => {
   const spool = await fs.mkdtemp(path.join(os.tmpdir(), "article-lab-test-")), job = makeJob();
   const config = { origin: "https://lab.example", runner_id: "test", spool_dir: spool, routes: [glm] };
   try {
-    const result = await runOnce(config, { env, fetcher: async (url) => url.endsWith("/claim") ? response({ job }) : url.includes("api.z.ai") ? chat() : new Response("offline", { status: 503 }) });
+    const result = await runOnce(config, { env, fetcher: async (url) => url.endsWith("/heartbeat") ? response({ ok: true }) : url.endsWith("/claim") ? response({ job }) : url.includes("api.z.ai") ? chat() : new Response("offline", { status: 503 }) });
     assert.equal(result.status, "completion_pending"); assert.equal((await fs.stat(result.saved)).mode & 0o777, 0o600);
     assert.equal((await fs.stat(spool)).mode & 0o777, 0o700);
     let calls = 0;

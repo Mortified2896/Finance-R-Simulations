@@ -2,6 +2,9 @@
   "origin": "https://feedback.moneymattersmedia.com",
   "runner_id": "rtx-article-lab",
   "spool_dir": "/PRIVATE_RUNTIME_PATH/article-lab-spool",
+  "images": {
+    "enabled": true
+  },
   "routes": [
     {
       "id": "glm-direct",
