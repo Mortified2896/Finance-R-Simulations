@@ -11,7 +11,7 @@ const actor = { id: "00000000-0000-4000-8000-000000000001", role: "admin", statu
 const origin = "https://article-lab.example";
 function fixture() {
   const native = new DatabaseSync(":memory:");
-  for (const filename of ["0001_review.sql", "0003_generation_foundation.sql"]) native.exec(fs.readFileSync(new URL(`../../apps/article_lab_web/migrations/${filename}`, import.meta.url), "utf8"));
+  for (const filename of ["0001_review.sql", "0003_generation_foundation.sql", "0004_image_assets.sql"]) native.exec(fs.readFileSync(new URL(`../../apps/article_lab_web/migrations/${filename}`, import.meta.url), "utf8"));
   native.prepare("INSERT INTO users(id,email,display_name,status,role,created_at,last_login_at) VALUES(?,?,?,?,?,?,?)").run(actor.id, "owner@example.test", "Owner", "approved", "admin", "2026-01-01", "2026-01-01");
   class Prepared {
     constructor(query, values = []) { this.query = query; this.values = values; }
