@@ -12,6 +12,7 @@
     "build": "tsc --noEmit && vite build",
     "dev": "npm run build && wrangler dev --ip 127.0.0.1 --port 5173",
     "test": "vitest run",
+    "test:generation": "node --experimental-strip-types --test ../../tests/article_lab_generation/*.test.mjs",
     "test:e2e": "playwright test",
     "deploy": "npm run build && npm run cf -- deploy",
     "dev:local": "npm run build && tsx tools/local.ts",

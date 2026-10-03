@@ -2,11 +2,22 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { createAuth, authReady, type AuthEnv, type Identity } from "./auth";
+import {
+  handleLabRequest,
+  handleRunnerRequest,
+  serveAsset,
+  type ObjectStore,
+} from "./generation";
 import { renderMarkdown } from "../shared/markdown";
+import { uuid } from "../shared/generation";
 import type { User, ArticleVersion, Review, Annotation } from "../shared/types";
 export type Env = AuthEnv & {
   ASSETS: Fetcher;
   BOOTSTRAP_ADMIN_EMAIL?: string;
+  ARTICLE_LAB_ROUTES?: string;
+  ARTICLE_LAB_RUNNER_TOKEN?: string;
+  ARTICLE_LAB_IMAGES?: string;
+  IMAGES?: ObjectStore;
 };
 type AppEnv = { Bindings: Env; Variables: { user: User } };
 export function createApp(
@@ -92,11 +103,24 @@ export function createApp(
       );
     return response;
   });
+  // Dedicated machine authentication; this token never grants browser/admin access.
+  app.all("/api/generation-runner/*", (c) =>
+    handleRunnerRequest(c.req.raw, c.env),
+  );
   app.use("/api/*", async (c, next) => {
     if (!["GET", "HEAD"].includes(c.req.method)) {
       if (c.req.header("Origin") !== new URL(c.req.url).origin)
         fail(403, "Request origin rejected.");
-      if (!c.req.header("Content-Type")?.startsWith("application/json"))
+      // Only image uploads are multipart; the same-origin check above still applies.
+      const upload =
+        c.req.method === "POST" &&
+        /^\/api\/admin\/lab\/workspaces\/[0-9a-f-]+\/image-upload$/.test(
+          c.req.path,
+        );
+      if (
+        !upload &&
+        !c.req.header("Content-Type")?.startsWith("application/json")
+      )
         fail(400, "JSON request required.");
     }
     let identity: Identity;
@@ -169,11 +193,19 @@ export function createApp(
       fail(403, "Your account is not approved.");
     await next();
   });
+  // Session-authorized image bytes: admin, or reviewer assigned to the exact
+  // immutable version that froze this asset. No public or guessable URL access.
+  app.get("/api/assets/:id", (c) =>
+    serveAsset(c.req.raw, c.env, c.get("user")),
+  );
   app.use("/api/admin/*", async (c, next) => {
     if (c.get("user").role !== "admin")
       fail(403, "Administrator access required.");
     await next();
   });
+  app.all("/api/admin/lab/*", (c) =>
+    handleLabRequest(c.req.raw, c.env, c.get("user")),
+  );
   async function body<T>(
     c: { req: { raw: Request } },
     schema: z.ZodType<T>,
@@ -439,15 +471,16 @@ export function createApp(
   );
   app.post("/api/admin/versions", async (c) => {
     const input = await body(
-      c,
-      z.object({
-        article_id: z.string().uuid().optional(),
-        title: z.string().trim().min(1).max(250),
-        subtitle: z.string().max(500).default(""),
-        body: z.string().min(1).max(150000),
-      }),
-    );
-    const db = c.env.DB,
+        c,
+        z.object({
+          article_id: z.string().uuid().optional(),
+          title: z.string().trim().min(1).max(250),
+          subtitle: z.string().max(500).default(""),
+          body: z.string().min(1).max(150000),
+          thumbnail_asset_id: z.string().uuid().optional(),
+        }),
+      ),
+      db = c.env.DB,
       article = input.article_id ?? crypto.randomUUID(),
       id = crypto.randomUUID(),
       t = now();
@@ -456,6 +489,49 @@ export function createApp(
       !(await stmt(db, "SELECT id FROM articles WHERE id=?", article).first())
     )
       fail(404, "Article not found.");
+    // Freeze exactly which stored assets this immutable version references.
+    // Later thumbnail or alt-text edits never reach a reviewer of this version.
+    // Every /api/assets/<token> in the draft must be a valid asset reference;
+    // anything else is refused rather than silently dropped.
+    const tokens = [
+      ...new Set(
+        [...input.body.matchAll(/\/api\/assets\/([^)\s"']+)/gi)].map(
+          (match) => match[1]!,
+        ),
+      ),
+    ];
+    const linked = new Map<string, "inline" | "thumbnail">();
+    for (const token of tokens) {
+      let assetId = "";
+      try {
+        assetId = uuid(token);
+      } catch {
+        assetId = "";
+      }
+      if (!assetId)
+        fail(
+          400,
+          "The draft contains an invalid image reference. Insert images from the workspace, or remove the broken /api/assets/ link.",
+        );
+      linked.set(assetId, "inline");
+    }
+    if (input.thumbnail_asset_id)
+      linked.set(input.thumbnail_asset_id, "thumbnail");
+    const assetRows = linked.size
+      ? (
+          await stmt(
+            db,
+            `SELECT id FROM image_assets WHERE archived_at IS NULL AND article_id=? AND id IN (${[...linked.keys()].map(() => "?").join(",")})`,
+            article,
+            ...linked.keys(),
+          ).all()
+        ).results.map((row) => row.id as string)
+      : [];
+    if (assetRows.length !== linked.size)
+      fail(
+        400,
+        "The draft references an image that is missing, archived or belongs to another article.",
+      );
     const rendered = renderMarkdown(input.body),
       batch = [];
     if (!input.article_id)
@@ -483,6 +559,16 @@ export function createApp(
         article,
       ),
     );
+    for (const assetId of assetRows)
+      batch.push(
+        stmt(
+          db,
+          "INSERT INTO version_assets(version_id,image_asset_id,role) VALUES(?,?,?)",
+          id,
+          assetId,
+          linked.get(assetId),
+        ),
+      );
     await db.batch(batch);
     return c.json({ id, article_id: article }, 201);
   });

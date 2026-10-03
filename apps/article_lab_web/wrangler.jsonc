@@ -19,6 +19,17 @@
       "migrations_dir": "migrations",
     },
   ],
+  // Image storage is staged but not deployed yet: the scoped deployment token
+  // has no R2 permission (auth error 10000), so the private bucket cannot be
+  // created or confirmed. Create `article-lab-images` (or grant the token R2
+  // edit on it), then uncomment this binding and redeploy. Until then the
+  // image lanes return an honest 503 and the UI reports them unconfigured.
+  // "r2_buckets": [
+  //   {
+  //     "binding": "IMAGES",
+  //     "bucket_name": "article-lab-images",
+  //   },
+  // ],
   "routes": [
     {
       "pattern": "feedback.moneymattersmedia.com",

@@ -43,12 +43,22 @@ export function MarkdownComposer({
   disabled,
   onValidityChange,
   onDirtyChange,
+  initialMarkdown = "",
+  heading = "Article draft",
+  onMarkdownChange,
 }: {
   disabled: boolean;
   onValidityChange: (valid: boolean) => void;
   onDirtyChange: (dirty: boolean) => void;
+  initialMarkdown?: string;
+  heading?: string;
+  onMarkdownChange?: (markdown: string) => void;
 }) {
-  const [markdown, setMarkdown] = useState("");
+  const [markdown, setMarkdownState] = useState(initialMarkdown);
+  const setMarkdown = (next: string) => {
+    setMarkdownState(next);
+    onMarkdownChange?.(next);
+  };
   const [mode, setMode] = useState<Mode>("visual");
   const [editorError, setEditorError] = useState("");
   const [importError, setImportError] = useState("");
@@ -138,7 +148,7 @@ export function MarkdownComposer({
   return (
     <div className="markdown-composer">
       <div className="composer-heading">
-        <h3>Article draft</h3>
+        <h3>{heading}</h3>
         <span>Markdown underneath. No Markdown knowledge required.</span>
       </div>
       <input name="body" type="hidden" value={markdown} />
@@ -245,7 +255,8 @@ export function MarkdownComposer({
           <>
             <p className="hint">
               This is the sanitized rendering that will be frozen for review.
-              Unsupported images, embeds and raw HTML are excluded in this MVP.
+              Same-origin article images render here; external images, embeds
+              and raw HTML are excluded.
             </p>
             <div
               className="prose composer-preview"

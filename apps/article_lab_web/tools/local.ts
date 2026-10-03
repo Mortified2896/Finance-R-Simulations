@@ -12,27 +12,31 @@ const mf = new Miniflare(
     script: 'export default {fetch(){return new Response("local database")}}',
     d1Databases: ["DB"],
     d1Persist: ".local/d1",
+    r2Buckets: ["IMAGES"],
   }),
 );
 const DB = await mf.getD1Database("DB");
+const IMAGES = await mf.getR2Bucket("IMAGES");
 const exists = await DB.prepare(
   "SELECT name FROM sqlite_master WHERE name='users'",
 ).first();
 if (!exists) {
-  const sql = await readFile("migrations/0001_review.sql", "utf8");
-  await DB.exec(sql.replace(/\n/g, " "));
+  // Apply every migration in order; the local database must match production
+  // shape. Comments must be stripped before collapsing newlines, or the first
+  // `--` line would comment out the whole script.
+  for (const file of [
+    "migrations/0001_review.sql",
+    "migrations/0002_better_auth.sql",
+    "migrations/0003_generation_foundation.sql",
+    "migrations/0004_image_assets.sql",
+  ])
+    await DB.exec(
+      (await readFile(file, "utf8"))
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("--"))
+        .join(" "),
+    );
 }
-if (
-  !(await DB.prepare(
-    "SELECT name FROM sqlite_master WHERE name='auth_user'",
-  ).first())
-)
-  await DB.exec(
-    (await readFile("migrations/0002_better_auth.sql", "utf8")).replace(
-      /\n/g,
-      " ",
-    ),
-  );
 const accounts = [
   "owner@example.test",
   "jane@example.test",
@@ -60,6 +64,23 @@ const env = {
   DB,
   BETTER_AUTH_URL: `http://127.0.0.1:${port}`,
   BOOTSTRAP_ADMIN_EMAIL: accounts[0],
+  // Local synthetic generation lanes; never credentials. Lets browser tests
+  // exercise the workspace against the machine API directly.
+  ARTICLE_LAB_ROUTES: JSON.stringify([
+    {
+      id: "glm-omniroute",
+      label: "GLM subscription · OmniRoute (local test)",
+      provider: "glm",
+      transport: "omniroute",
+      model: "glm/glm-5.3",
+      response_models: ["glm-5.3", "glm/glm-5.3"],
+    },
+  ]),
+  ARTICLE_LAB_RUNNER_TOKEN:
+    process.env.ARTICLE_LAB_RUNNER_TOKEN ??
+    "local-test-runner-token-0123456789abcdef",
+  ARTICLE_LAB_IMAGES: JSON.stringify({ models: ["gpt-image-1"] }),
+  IMAGES,
   ASSETS: {
     fetch: async (request: Request) => {
       let path = resolve("dist", "." + new URL(request.url).pathname);

@@ -8,6 +8,7 @@ import type {
 } from "../shared/types";
 import { api, ApiError } from "./api";
 import { Admin } from "./Admin";
+import { GenerationWorkspace } from "./GenerationWorkspace";
 import { ReviewPage } from "./ReviewPage";
 import { ArticleOverview } from "./ArticleOverview";
 import { createAuthClient } from "better-auth/react";
@@ -32,6 +33,7 @@ export function App() {
     [versions, setVersions] = useState<ArticleVersion[]>([]),
     [article, setArticle] = useState<ArticleFeedback | null>(null),
     [admin, setAdmin] = useState(false),
+    [writing, setWriting] = useState(() => location.hash.startsWith("#writing/")),
     [detail, setDetail] = useState<ReviewDetail | null>(null),
     [busy, setBusy] = useState(false);
   async function load() {
@@ -118,6 +120,8 @@ export function App() {
       setVersions([]);
       setArticle(null);
       setAdmin(false);
+      setWriting(false);
+      history.replaceState(null, "", location.pathname + location.search);
       setDraftDirty(false);
     } catch (e) {
       setError((e as Error).message);
@@ -135,23 +139,44 @@ export function App() {
           {user?.status === "approved" && !detail && !article && (
             <>
               <button
-                className={!admin ? "active quiet" : "quiet"}
+                className={!admin && !writing ? "active quiet" : "quiet"}
                 onClick={() => {
                   if (!leaveDraft()) return;
                   setDraftDirty(false);
                   setAdmin(false);
+                  setWriting(false);
+                  history.replaceState(null, "", location.pathname + location.search);
                   void load();
                 }}
               >
                 Articles
               </button>
               {user.role === "admin" && (
-                <button
-                  className={admin ? "active quiet" : "quiet"}
-                  onClick={() => setAdmin(true)}
-                >
-                  Admin
-                </button>
+                <>
+                  <button
+                    className={writing ? "active quiet" : "quiet"}
+                    onClick={() => {
+                      if (!leaveDraft()) return;
+                      setDraftDirty(false);
+                      setAdmin(false);
+                      setWriting(true);
+                    }}
+                  >
+                    Writing
+                  </button>
+                  <button
+                    className={admin ? "active quiet" : "quiet"}
+                    onClick={() => {
+                      if (!leaveDraft()) return;
+                      setDraftDirty(false);
+                      history.replaceState(null, "", location.pathname + location.search);
+                      setWriting(false);
+                      setAdmin(true);
+                    }}
+                  >
+                    Admin
+                  </button>
+                </>
               )}
             </>
           )}
@@ -223,6 +248,8 @@ export function App() {
             }}
             onReview={setDetail}
           />
+        ) : writing && user.role === "admin" ? (
+          <GenerationWorkspace onDirtyChange={setDraftDirty} />
         ) : admin ? (
           <Admin
             onDirtyChange={setDraftDirty}
