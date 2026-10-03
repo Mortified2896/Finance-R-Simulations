@@ -33,7 +33,7 @@ export function App() {
     [versions, setVersions] = useState<ArticleVersion[]>([]),
     [article, setArticle] = useState<ArticleFeedback | null>(null),
     [admin, setAdmin] = useState(false),
-    [writing, setWriting] = useState(false),
+    [writing, setWriting] = useState(() => location.hash.startsWith("#writing/")),
     [detail, setDetail] = useState<ReviewDetail | null>(null),
     [busy, setBusy] = useState(false);
   async function load() {
@@ -121,6 +121,7 @@ export function App() {
       setArticle(null);
       setAdmin(false);
       setWriting(false);
+      history.replaceState(null, "", location.pathname + location.search);
       setDraftDirty(false);
     } catch (e) {
       setError((e as Error).message);
@@ -144,6 +145,7 @@ export function App() {
                   setDraftDirty(false);
                   setAdmin(false);
                   setWriting(false);
+                  history.replaceState(null, "", location.pathname + location.search);
                   void load();
                 }}
               >
@@ -154,6 +156,8 @@ export function App() {
                   <button
                     className={writing ? "active quiet" : "quiet"}
                     onClick={() => {
+                      if (!leaveDraft()) return;
+                      setDraftDirty(false);
                       setAdmin(false);
                       setWriting(true);
                     }}
@@ -163,6 +167,9 @@ export function App() {
                   <button
                     className={admin ? "active quiet" : "quiet"}
                     onClick={() => {
+                      if (!leaveDraft()) return;
+                      setDraftDirty(false);
+                      history.replaceState(null, "", location.pathname + location.search);
                       setWriting(false);
                       setAdmin(true);
                     }}
